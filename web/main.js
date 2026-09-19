@@ -16,14 +16,22 @@ import {
   overlapsPlayer,
   raycast,
 } from "./game-state.js";
+import { seedFromSearch, seedLabel } from "./seed.js";
+import { createPointerLockController } from "./pointer-lock.js";
 
 const canvas = document.getElementById("game");
 const coordsEl = document.getElementById("coords");
+const seedEl = document.getElementById("seed");
 const selectedEl = document.getElementById("selected");
 const statsEl = document.getElementById("stats");
 const hotbarEl = document.getElementById("hotbar-slots");
 const lockHintEl = document.getElementById("lock-hint");
 const errorEl = document.getElementById("error");
+const SEED = seedFromSearch(window.location.search, World.default_seed());
+const pointerLock = createPointerLockController(
+  () => document.pointerLockElement === canvas,
+  () => canvas.requestPointerLock(),
+);
 
 const BLOCK_NAMES = Object.fromEntries(
   Object.entries(BLOCK_INFO).map(([id, info]) => [id, info.name]),
@@ -81,7 +89,7 @@ try {
   for (let y = 0; y < MAX_Y; y += 1) {
     for (let z = 0; z < DEPTH; z += 1) {
       for (let x = 0; x < WIDTH; x += 1) {
-        const value = asNumber(World.block(BigInt(x), BigInt(y), BigInt(z)));
+        const value = asNumber(World.block(SEED, BigInt(x), BigInt(y), BigInt(z)));
         setBlock(x, y, z, value);
         if (value !== 0) blockCount += 1;
       }
@@ -239,7 +247,7 @@ try {
   }
 
   const spawnCell = [Math.floor(WIDTH / 2) + 1, Math.floor(DEPTH / 2)];
-  const spawnHeight = asNumber(World.column_height(BigInt(spawnCell[0]), BigInt(spawnCell[1])));
+  const spawnHeight = asNumber(World.column_height(SEED, BigInt(spawnCell[0]), BigInt(spawnCell[1])));
   const player = createPlayer(spawnCell, spawnHeight);
   const inventory = createInventory();
   let selectedSlot = 0;
@@ -297,6 +305,7 @@ try {
     const name = item === null || item.block === 0 ? "empty" : BLOCK_NAMES[item.block];
     const count = item === null ? 0 : item.count;
     coordsEl.textContent = `x ${player.x.toFixed(1)} · y ${player.y.toFixed(1)} · z ${player.z.toFixed(1)}`;
+    seedEl.textContent = `seed: ${seedLabel(SEED)}`;
     selectedEl.textContent = `selected: ${name} · ${count}`;
   }
 
@@ -334,18 +343,21 @@ try {
     if (button !== null) selectSlot(Number(button.dataset.slot));
   });
   canvas.addEventListener("click", () => {
-    if (document.pointerLockElement !== canvas) canvas.requestPointerLock();
+    pointerLock.request();
   });
   canvas.addEventListener("mousedown", (event) => {
     event.preventDefault();
     if (document.pointerLockElement !== canvas) {
-      canvas.requestPointerLock();
+      pointerLock.request();
       return;
     }
     interact(event.button);
   });
   canvas.addEventListener("contextmenu", (event) => event.preventDefault());
-  document.addEventListener("pointerlockchange", updateLockHint);
+  document.addEventListener("pointerlockchange", () => {
+    pointerLock.handleChange();
+    updateLockHint();
+  });
   document.addEventListener("mousemove", (event) => {
     if (document.pointerLockElement !== canvas) return;
     player.yaw += event.movementX * 0.0022;
@@ -372,6 +384,7 @@ try {
   updateHud();
   window.__bend2craft = {
     world: {
+      seed: seedLabel(SEED),
       width: WIDTH,
       depth: DEPTH,
       maxY: MAX_Y,

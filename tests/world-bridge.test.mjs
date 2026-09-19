@@ -14,7 +14,7 @@ let wood = 0;
 for (let y = 0; y < maxY; y += 1) {
   for (let z = 0; z < depth; z += 1) {
     for (let x = 0; x < width; x += 1) {
-      const block = Number(World.block(BigInt(x), BigInt(y), BigInt(z)));
+      const block = Number(World.block(1337n, BigInt(x), BigInt(y), BigInt(z)));
       if (block === 3) grass += 1;
       if (block === 4) leaves += 1;
       if (block === 5) wood += 1;

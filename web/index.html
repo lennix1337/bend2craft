@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#87b8d8">
+  <title>Bend2Craft</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main id="game-shell">
+    <canvas id="game" aria-label="Voxel world"></canvas>
+    <div id="crosshair" aria-hidden="true"></div>
+    <section id="hud" aria-live="polite">
+      <div class="brand">BEND2CRAFT <span>inventory slice</span></div>
+      <div id="coords">loading world…</div>
+      <div id="selected">selected: —</div>
+      <div id="stats">— blocks visible</div>
+    </section>
+    <section id="hotbar" aria-label="Inventory">
+      <div id="hotbar-slots"></div>
+    </section>
+    <section id="help">
+      <strong id="lock-hint">Click to capture the mouse</strong>
+      <span>WASD move · mouse look · Space jump</span>
+      <span>1–9 hotbar · left click remove · right click place</span>
+    </section>
+    <div id="error" role="alert" hidden></div>
+  </main>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

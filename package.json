@@ -1,0 +1,12 @@
+{
+  "name": "bend2craft",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check:bend": "bash scripts/check-bend.sh world/world.bend",
+    "proof": "bash scripts/check-bend.sh world/PROOF.bend",
+    "test": "bash scripts/run-bun.sh tests/world-bridge.test.mjs && bash scripts/run-bun.sh tests/inventory.test.mjs",
+    "dev": "bash scripts/run-bun.sh web/index.html",
+    "build": "BEND_NO_TELEMETRY=1 bash scripts/run-bun.sh vendor/bend/bend2/main.ts web/index.html -o dist"
+  }
+}

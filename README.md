@@ -53,14 +53,21 @@ The project scripts automatically prefer `.tools/bun/bin/bun`.
 Run these commands from WSL at the repository root:
 
 ```bash
-npm run check:bend  # type-check world/world.bend
-npm run proof       # verify LAWS.bend and PROOF.bend
-npm run test        # world bridge and inventory regression tests
-npm run dev         # start the Bun development server
-npm run build       # create the static bundle in dist/
+npm run verify       # all Bend, proof, test, build and diff checks
+npm run check:bend   # type-check world/world.bend
+npm run proof        # verify LAWS.bend and PROOF.bend
+npm run test         # world, inventory and game-state regression tests
+npm run dev          # start the Bun development server
+npm run build        # create the static bundle in dist/
 ```
 
 Open the URL printed by Bun in a Windows browser.
+
+## Development workflow
+
+The pure player/world state lives in `web/game-state.js` and is tested without a browser. The DOM/WebGL adapter lives in `web/main.js`; validate it manually with `npm run dev` after passing `npm run verify`.
+
+For a long-lived local server, keep the background process silent, check readiness once with `curl`, and stop it after the browser smoke test. This avoids stale readiness notifications after the server has been killed.
 
 ## Controls
 

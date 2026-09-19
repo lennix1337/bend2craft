@@ -6,6 +6,15 @@ Bend2Craft is a small Minecraft-inspired voxel sandbox. The canonical repository
 
 The world model is authored in Bend 2 under `world/`. The browser layer in `web/` is an adapter: it materializes the Bend block contract, simulates camera/input, and renders with WebGL. Do not duplicate terrain-generation formulas in JavaScript.
 
+Start here:
+
+- Bend world contract: `world/world.bend`
+- Bend laws and proofs: `world/LAWS.bend`, `world/PROOF.bend`
+- Pure inventory API: `web/inventory.js`
+- Pure player/world state: `web/game-state.js`
+- Browser integration: `web/main.js`
+- Regression tests: `tests/`
+
 ## Toolchain
 
 - Bend 2 is pinned as the `vendor/bend` submodule.
@@ -18,10 +27,11 @@ The world model is authored in Bend 2 under `world/`. The browser layer in `web/
 Run from WSL at the repository root:
 
 ```bash
-npm run check:bend
-npm run proof
-npm run test
-npm run build
+npm run verify       # all Bend, proof, test, build and diff checks
+npm run check:bend   # focused Bend checker
+npm run proof        # focused law/proof check
+npm run test         # world, inventory and game-state regressions
+npm run build        # static browser bundle
 ```
 
 For browser behavior, run `npm run dev` and validate the canvas at `http://localhost:3000/`. Test movement, collision, inventory selection, block removal/placement, and tree rendering when those features exist.
@@ -30,6 +40,7 @@ For browser behavior, run `npm run dev` and validate the canvas at `http://local
 
 - Keep world generation pure and typed in Bend.
 - Keep inventory operations in a dependency-free module that can be tested without a browser.
+- Keep all repository-authored source comments, UI copy, tests, plans and documentation in English.
 - Add a failing test before changing behavior, then run the focused test, implement the smallest fix, and run the full checks.
 - Keep block IDs and their meanings synchronized through one explicit contract. Current IDs are documented in `world/world.bend` and `web/inventory.js`.
 - Preserve affine/termination guarantees in Bend. Do not use `@unsafe` to hide a failed proof.

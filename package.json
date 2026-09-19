@@ -5,7 +5,8 @@
   "scripts": {
     "check:bend": "bash scripts/check-bend.sh world/world.bend",
     "proof": "bash scripts/check-bend.sh world/PROOF.bend",
-    "test": "bash scripts/run-bun.sh tests/world-bridge.test.mjs && bash scripts/run-bun.sh tests/inventory.test.mjs",
+    "test": "bash scripts/run-bun.sh tests/world-bridge.test.mjs && bash scripts/run-bun.sh tests/inventory.test.mjs && bash scripts/run-bun.sh tests/game-state.test.mjs",
+    "verify": "npm run check:bend && npm run proof && npm run test && npm run build && git diff --check HEAD",
     "dev": "bash scripts/run-bun.sh web/index.html",
     "build": "BEND_NO_TELEMETRY=1 bash scripts/run-bun.sh vendor/bend/bend2/main.ts web/index.html -o dist"
   }

@@ -6,6 +6,16 @@ import {
   createInventory,
   selectedItem,
 } from "./inventory.js";
+import {
+  EYE_HEIGHT,
+  JUMP_SPEED,
+  cameraDirection,
+  createPlayer,
+  createWorldState,
+  movePlayer,
+  overlapsPlayer,
+  raycast,
+} from "./game-state.js";
 
 const canvas = document.getElementById("game");
 const coordsEl = document.getElementById("coords");
@@ -26,12 +36,6 @@ const BLOCK_COLORS = {
   5: [0.55, 0.34, 0.18],
 };
 const FACE_SHADES = [1.0, 0.52, 0.82, 0.7, 0.92, 0.62];
-const PLAYER_RADIUS = 0.3;
-const PLAYER_HEIGHT = 1.8;
-const EYE_HEIGHT = 1.62;
-const MOVE_SPEED = 4.5;
-const JUMP_SPEED = 7.0;
-const GRAVITY = 20.0;
 
 const FACES = [
   { dir: [0, 1, 0], corners: [[0, 1, 0], [1, 1, 0], [1, 1, 1], [0, 1, 1]] },
@@ -70,16 +74,8 @@ try {
   const WIDTH = asNumber(World.width());
   const DEPTH = asNumber(World.depth());
   const MAX_Y = asNumber(World.max_y());
-  const SIZE = WIDTH * DEPTH * MAX_Y;
-  const blocks = new Uint8Array(SIZE);
-
-  const indexOf = (x, y, z) => x + WIDTH * (z + DEPTH * y);
-  const inside = (x, y, z) =>
-    x >= 0 && x < WIDTH && y >= 0 && y < MAX_Y && z >= 0 && z < DEPTH;
-  const blockAt = (x, y, z) => inside(x, y, z) ? blocks[indexOf(x, y, z)] : 0;
-  const setBlock = (x, y, z, value) => {
-    if (inside(x, y, z)) blocks[indexOf(x, y, z)] = value;
-  };
+  const world = createWorldState(WIDTH, DEPTH, MAX_Y);
+  const { inside, blockAt, setBlock } = world;
 
   let blockCount = 0;
   for (let y = 0; y < MAX_Y; y += 1) {
@@ -244,15 +240,7 @@ try {
 
   const spawnCell = [Math.floor(WIDTH / 2) + 1, Math.floor(DEPTH / 2)];
   const spawnHeight = asNumber(World.column_height(BigInt(spawnCell[0]), BigInt(spawnCell[1])));
-  const player = {
-    x: spawnCell[0] + 0.5,
-    y: spawnHeight + 0.05,
-    z: spawnCell[1] + 0.5,
-    yaw: 0,
-    pitch: -0.18,
-    velocityY: 0,
-    grounded: false,
-  };
+  const player = createPlayer(spawnCell, spawnHeight);
   const inventory = createInventory();
   let selectedSlot = 0;
   const held = new Set();
@@ -280,64 +268,8 @@ try {
     updateHud();
   }
 
-  function collidesAt(x, y, z) {
-    const minX = Math.floor(x - PLAYER_RADIUS + 0.0001);
-    const maxX = Math.floor(x + PLAYER_RADIUS - 0.0001);
-    const minY = Math.floor(y + 0.0001);
-    const maxY = Math.floor(y + PLAYER_HEIGHT - 0.0001);
-    const minZ = Math.floor(z - PLAYER_RADIUS + 0.0001);
-    const maxZ = Math.floor(z + PLAYER_RADIUS - 0.0001);
-    for (let by = minY; by <= maxY; by += 1) {
-      for (let bz = minZ; bz <= maxZ; bz += 1) {
-        for (let bx = minX; bx <= maxX; bx += 1) {
-          if (blockAt(bx, by, bz) !== 0) return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  function overlapsPlayer(x, y, z) {
-    return x + 1 > player.x - PLAYER_RADIUS &&
-      x < player.x + PLAYER_RADIUS &&
-      y + 1 > player.y &&
-      y < player.y + PLAYER_HEIGHT &&
-      z + 1 > player.z - PLAYER_RADIUS &&
-      z < player.z + PLAYER_RADIUS;
-  }
-
-  function cameraDirection() {
-    const cosPitch = Math.cos(player.pitch);
-    return [
-      Math.sin(player.yaw) * cosPitch,
-      Math.sin(player.pitch),
-      -Math.cos(player.yaw) * cosPitch,
-    ];
-  }
-
-  function raycast() {
-    lastEmpty = null;
-    const direction = cameraDirection();
-    const origin = [player.x, player.y + EYE_HEIGHT, player.z];
-    let previous = null;
-    for (let distance = 0.1; distance <= 8; distance += 0.05) {
-      const x = Math.floor(origin[0] + direction[0] * distance);
-      const y = Math.floor(origin[1] + direction[1] * distance);
-      const z = Math.floor(origin[2] + direction[2] * distance);
-      const cell = `${x},${y},${z}`;
-      if (cell === previous) continue;
-      previous = cell;
-      if (blockAt(x, y, z) !== 0) {
-        return { hit: [x, y, z], place: lastEmpty };
-      }
-      lastEmpty = [x, y, z];
-    }
-    return null;
-  }
-
-  let lastEmpty = null;
   function interact(button) {
-    const target = raycast();
+    const target = raycast(world, player);
     if (!target) return;
     const [x, y, z] = target.hit;
     if (button === 0) {
@@ -348,7 +280,7 @@ try {
     } else if (button === 2 && target.place) {
       const [px, py, pz] = target.place;
       const item = selectedItem(inventory, selectedSlot);
-      if (!inside(px, py, pz) || blockAt(px, py, pz) !== 0 || overlapsPlayer(px, py, pz)) return;
+      if (!inside(px, py, pz) || blockAt(px, py, pz) !== 0 || overlapsPlayer(player, px, py, pz)) return;
       if (item === null || item.block === 0 || !consume(inventory, selectedSlot)) return;
       setBlock(px, py, pz, item.block);
       blockCount += 1;
@@ -358,41 +290,6 @@ try {
     renderHotbar();
     updateHud();
     rebuildMesh();
-  }
-
-  function movePlayer(dt) {
-    const forward = (held.has("KeyW") ? 1 : 0) - (held.has("KeyS") ? 1 : 0);
-    const strafe = (held.has("KeyD") ? 1 : 0) - (held.has("KeyA") ? 1 : 0);
-    const length = Math.hypot(forward, strafe) || 1;
-    const f = forward / length;
-    const s = strafe / length;
-    const dx = (Math.sin(player.yaw) * f + Math.cos(player.yaw) * s) * MOVE_SPEED * dt;
-    const dz = (-Math.cos(player.yaw) * f + Math.sin(player.yaw) * s) * MOVE_SPEED * dt;
-
-    if (!collidesAt(player.x + dx, player.y, player.z)) player.x += dx;
-    if (!collidesAt(player.x, player.y, player.z + dz)) player.z += dz;
-
-    player.velocityY -= GRAVITY * dt;
-    const dy = player.velocityY * dt;
-    const nextY = player.y + dy;
-    if (!collidesAt(player.x, nextY, player.z)) {
-      player.y = nextY;
-      player.grounded = false;
-    } else if (dy < 0) {
-      player.y = Math.floor(nextY) + 1;
-      player.velocityY = 0;
-      player.grounded = true;
-    } else {
-      player.y = Math.floor(nextY + PLAYER_HEIGHT) - PLAYER_HEIGHT;
-      player.velocityY = 0;
-    }
-
-    if (player.y < -10) {
-      player.x = spawnCell[0] + 0.5;
-      player.y = spawnHeight + 0.05;
-      player.z = spawnCell[1] + 0.5;
-      player.velocityY = 0;
-    }
   }
 
   function updateHud() {
@@ -411,7 +308,7 @@ try {
     gl.useProgram(program);
 
     const eye = [player.x, player.y + EYE_HEIGHT, player.z];
-    const direction = cameraDirection();
+    const direction = cameraDirection(player);
     const center = [eye[0] + direction[0], eye[1] + direction[1], eye[2] + direction[2]];
     const view = lookAt(eye, center, [0, 1, 0]);
     const projection = perspective(Math.PI / 2.6, canvas.width / canvas.height, 0.05, 120);
@@ -489,7 +386,7 @@ try {
   function frame(now) {
     const dt = Math.min((now - previousTime) / 1000, 0.05);
     previousTime = now;
-    movePlayer(dt);
+    movePlayer(world, player, held, dt, spawnCell, spawnHeight);
     updateHud();
     render();
     requestAnimationFrame(frame);

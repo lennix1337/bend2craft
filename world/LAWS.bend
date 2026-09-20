@@ -1,5 +1,6 @@
 import Base
 import ./world.bend as World
+import ./entities.bend as Entities
 
 law air_above_surface:
   {World.block(1337n, 40n, 15n, 40n) == 0 : U32}
@@ -33,3 +34,6 @@ law known_diamond_ore:
 
 law known_village_furnace:
   {World.block(1337n, 25n, 9n, 27n) == 11 : U32}
+
+law wander_dir_pins_heading:
+  {Entities.wander_dir(3n, 48n) == 7 : U32}

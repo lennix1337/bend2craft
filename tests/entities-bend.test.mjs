@@ -13,22 +13,33 @@ assert.ok(mobs.length > 0);
 assert.ok(mobs.every((mob) => mob.$ === "Mob" && Number(mob.health) === 20 && mob.alive === true));
 assert.ok(new Set(mobs.map((mob) => Number(mob.kind))).size >= 1);
 
-const stepped = listValues(Entities.step(Entities.spawn(1337n, 0n, 0n, 80n, 80n), 40.5, 40.5, 1.0));
+const stepped = listValues(Entities.step(Entities.spawn(1337n, 0n, 0n, 80n, 80n), 40.5, 40.5, 1.0, 0n));
 assert.equal(stepped.length, mobs.length);
 
 const budgetedInput = {
   $: "Con",
-  head: Entities.make_mob(1n, 2, 10.0, 8.0, 0.5, 20.0, true),
+  head: Entities.make_mob(1n, 2, 10.0, 8.0, 0.5, 20.0, true, 0),
   tail: {
     $: "Con",
-    head: Entities.make_mob(2n, 2, 100.0, 8.0, 0.5, 20.0, true),
+    head: Entities.make_mob(2n, 2, 100.0, 8.0, 0.5, 20.0, true, 0),
     tail: { $: "Nil" },
   },
 };
-const budgeted = listValues(Entities.step_budgeted(budgetedInput, 0.0, 0.5, 1.0, 32.0));
+const budgeted = listValues(Entities.step_budgeted(budgetedInput, 0.0, 0.5, 1.0, 32.0, 0n));
 assert.ok(Number(budgeted[0].x) < 10.0);
 assert.ok(Number(budgeted[1].x) < 100.0);
 assert.ok(10.0 - Number(budgeted[0].x) > 100.0 - Number(budgeted[1].x));
+
+// Passive mobs graze: wander headings stay inside the 8 compass dirs and
+// the herd drifts over ticks while the headcount is preserved.
+assert.ok(Number(Entities.wander_dir(3n, 48n)) < 8);
+const herd = Entities.spawn(1337n, 0n, 0n, 80n, 80n);
+const grazed = listValues(Entities.step(herd, 40.5, 40.5, 1.0, 96n));
+assert.equal(grazed.length, listValues(herd).length);
+const passive = grazed.filter((mob) => Number(mob.kind) === 1 && mob.alive);
+assert.ok(passive.length > 0);
+assert.ok(passive.some((mob) => Number(mob.dir) !== 0));
+assert.ok(passive.every((mob) => Number(mob.dir) < 8));
 
 const drop = Entities.drop_for(budgeted[0]);
 const dropState = { $: "Con", head: drop, tail: { $: "Nil" } };

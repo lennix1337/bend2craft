@@ -2,7 +2,7 @@ import Base
 import ./world.bend as World
 
 type Mob is Data:
-  Mob{id: Nat, kind: U32, x: F32, y: F32, z: F32, health: F32, alive: Bool}
+  Mob{id: Nat, kind: U32, x: F32, y: F32, z: F32, health: F32, alive: Bool, dir: U32}
 
 type Drop is Data:
   Drop{id: Nat, item: U32, x: F32, y: F32, z: F32, amount: U32, velocity_y: F32, settled: Bool}
@@ -21,9 +21,9 @@ def fraction(+numerator: U32, +denominator: U32) -> F32:
   F32.div(U32.to_f32(numerator), U32.to_f32(denominator))
 
 def make_mob(
-  id: Nat, kind: U32, x: F32, y: F32, z: F32, health: F32, alive: Bool
+  id: Nat, kind: U32, x: F32, y: F32, z: F32, health: F32, alive: Bool, dir: U32
 ) -> Mob:
-  Mob{id, kind, x, y, z, health, alive}
+  Mob{id, kind, x, y, z, health, alive, dir}
 
 def cons_mob(mob: Mob, tail: List<&2, Mob>) -> List<&2, Mob>:
   Con{mob, tail}
@@ -47,7 +47,7 @@ def combat_hit(state: CombatResult) -> Bool:
   hit
 
 def drop_for(mob: Mob) -> Drop:
-  Mob{id, kind, x, y, z, health, alive} = mob
+  Mob{id, kind, x, y, z, health, alive, dir} = mob
   +item = Bool.pick(U32, U32.is_eq(kind, 1), 12, 13)
   Drop{id, item, x, y, z, 1, 0.0, False{}}
 
@@ -70,7 +70,8 @@ def spawn_x(
         U32.to_f32(U32.from_nat(height)),
         F32.add(U32.to_f32(U32.from_nat(z)), fraction(1, 2)),
         20.0,
-        True{}
+        True{},
+        0
       )
       +updated = Bool.pick(List<&2, Mob>, selected, cons_mob(mob, mobs), mobs)
       spawn_x(seed, p, Nat.add(x, 8n), z, Nat.add(next_id, 1n), updated)
@@ -91,8 +92,23 @@ def spawn(
 ) -> List<&2, Mob>:
   spawn_z(seed, Nat.div(depth, 8n), origin_x, origin_z, Nat.div(width, 8n), 0n, Nil{})
 
-def step_mob(mob: Mob, player_x: F32, player_z: F32, +dt: F32) -> Mob:
-  Mob{+id, +kind, +x, +y, +z, +health, +alive} = mob
+# Passive mobs wander: every 24 ticks they pick one of 8 compass headings
+# derived from their id, so grazing needs no stored state or RNG.
+def wander_dir(+id: Nat, +tick: Nat) -> U32:
+  U32.from_nat(Nat.mod(Nat.add(Nat.mul(id, 7n), Nat.div(tick, 24n)), 8n))
+
+def wander_sx(+dir: U32) -> F32:
+  +neg = Bool.or(U32.is_eq(dir, 5), Bool.or(U32.is_eq(dir, 6), U32.is_eq(dir, 7)))
+  +pos = Bool.or(U32.is_eq(dir, 1), Bool.or(U32.is_eq(dir, 2), U32.is_eq(dir, 3)))
+  Bool.pick(F32, neg, F32.neg(1.0), Bool.pick(F32, pos, 1.0, 0.0))
+
+def wander_sz(+dir: U32) -> F32:
+  +neg = Bool.or(U32.is_eq(dir, 0), Bool.or(U32.is_eq(dir, 1), U32.is_eq(dir, 7)))
+  +pos = Bool.or(U32.is_eq(dir, 3), Bool.or(U32.is_eq(dir, 4), U32.is_eq(dir, 5)))
+  Bool.pick(F32, neg, F32.neg(1.0), Bool.pick(F32, pos, 1.0, 0.0))
+
+def step_mob(mob: Mob, player_x: F32, player_z: F32, +dt: F32, +tick: Nat) -> Mob:
+  Mob{+id, +kind, +x, +y, +z, +health, +alive, +old_dir} = mob
   +hostile = U32.is_eq(kind, 2)
   +active = Bool.and(hostile, alive)
   +dx = F32.sub(player_x, x)
@@ -100,21 +116,28 @@ def step_mob(mob: Mob, player_x: F32, player_z: F32, +dt: F32) -> Mob:
   +distance = F32.sqrt(F32.add(F32.mul(dx, dx), F32.mul(dz, dz)))
   +safe_distance = Bool.pick(F32, F32.is_eq(distance, 0.0), 1.0, distance)
   +speed = F32.mul(fraction(8, 10), dt)
-  +next_x = Bool.pick(F32, active, F32.add(x, F32.mul(F32.div(dx, safe_distance), speed)), x)
-  +next_z = Bool.pick(F32, active, F32.add(z, F32.mul(F32.div(dz, safe_distance), speed)), z)
-  make_mob(id, kind, next_x, y, next_z, health, alive)
+  +chase_x = F32.add(x, F32.mul(F32.div(dx, safe_distance), speed))
+  +chase_z = F32.add(z, F32.mul(F32.div(dz, safe_distance), speed))
+  +passive = Bool.and(Bool.not(hostile), alive)
+  +dir = Bool.pick(U32, passive, wander_dir(id, tick), old_dir)
+  +graze = F32.mul(fraction(1, 2), dt)
+  +graze_x = F32.add(x, F32.mul(wander_sx(dir), graze))
+  +graze_z = F32.add(z, F32.mul(wander_sz(dir), graze))
+  +next_x = Bool.pick(F32, active, chase_x, Bool.pick(F32, passive, graze_x, x))
+  +next_z = Bool.pick(F32, active, chase_z, Bool.pick(F32, passive, graze_z, z))
+  make_mob(id, kind, next_x, y, next_z, health, alive, dir)
 
-def step(+mobs: List<&2, Mob>, +player_x: F32, +player_z: F32, +dt: F32) -> List<&2, Mob>:
+def step(+mobs: List<&2, Mob>, +player_x: F32, +player_z: F32, +dt: F32, +tick: Nat) -> List<&2, Mob>:
   match mobs:
     case Nil{}:
       Nil{}
     case Con{+head, tail}:
-      cons_mob(step_mob(head, player_x, player_z, dt), step(tail, player_x, player_z, dt))
+      cons_mob(step_mob(head, player_x, player_z, dt, tick), step(tail, player_x, player_z, dt, tick))
 
 def step_mob_budgeted(
-  +mob: Mob, player_x: F32, player_z: F32, +dt: F32, +active_radius: F32
+  +mob: Mob, player_x: F32, player_z: F32, +dt: F32, +active_radius: F32, +tick: Nat
 ) -> Mob:
-  Mob{+id, +kind, +x, +y, +z, +health, +alive} = mob
+  Mob{+id, +kind, +x, +y, +z, +health, +alive, +old_dir} = mob
   +dx = F32.sub(player_x, x)
   +dz = F32.sub(player_z, z)
   +distance = F32.sqrt(F32.add(F32.mul(dx, dx), F32.mul(dz, dz)))
@@ -125,21 +148,28 @@ def step_mob_budgeted(
   +active = Bool.and(hostile, alive)
   +safe_distance = Bool.pick(F32, F32.is_eq(distance, 0.0), 1.0, distance)
   +speed = F32.mul(fraction(8, 10), effective_dt)
-  +next_x = Bool.pick(F32, active, F32.add(x, F32.mul(F32.div(dx, safe_distance), speed)), x)
-  +next_z = Bool.pick(F32, active, F32.add(z, F32.mul(F32.div(dz, safe_distance), speed)), z)
-  make_mob(id, kind, next_x, y, next_z, health, alive)
+  +chase_x = F32.add(x, F32.mul(F32.div(dx, safe_distance), speed))
+  +chase_z = F32.add(z, F32.mul(F32.div(dz, safe_distance), speed))
+  +passive = Bool.and(Bool.not(hostile), alive)
+  +dir = Bool.pick(U32, passive, wander_dir(id, tick), old_dir)
+  +graze = F32.mul(fraction(1, 2), effective_dt)
+  +graze_x = F32.add(x, F32.mul(wander_sx(dir), graze))
+  +graze_z = F32.add(z, F32.mul(wander_sz(dir), graze))
+  +next_x = Bool.pick(F32, active, chase_x, Bool.pick(F32, passive, graze_x, x))
+  +next_z = Bool.pick(F32, active, chase_z, Bool.pick(F32, passive, graze_z, z))
+  make_mob(id, kind, next_x, y, next_z, health, alive, dir)
 
 def step_budgeted(
   +mobs: List<&2, Mob>, +player_x: F32, +player_z: F32,
-  +dt: F32, +active_radius: F32
+  +dt: F32, +active_radius: F32, +tick: Nat
 ) -> List<&2, Mob>:
   match mobs:
     case Nil{}:
       Nil{}
     case Con{+head, tail}:
       cons_mob(
-        step_mob_budgeted(head, player_x, player_z, dt, active_radius),
-        step_budgeted(tail, player_x, player_z, dt, active_radius)
+        step_mob_budgeted(head, player_x, player_z, dt, active_radius, tick),
+        step_budgeted(tail, player_x, player_z, dt, active_radius, tick)
       )
 
 def threat_damage(mobs: List<&2, Mob>, +player_x: F32, +player_z: F32) -> F32:
@@ -147,7 +177,7 @@ def threat_damage(mobs: List<&2, Mob>, +player_x: F32, +player_z: F32) -> F32:
     case Nil{}:
       0.0
     case Con{+head, tail}:
-      Mob{+id, +kind, +x, +y, +z, +health, +alive} = head
+      Mob{+id, +kind, +x, +y, +z, +health, +alive, +dir} = head
       +dx = F32.sub(player_x, x)
       +dz = F32.sub(player_z, z)
       +distance = F32.sqrt(F32.add(F32.mul(dx, dx), F32.mul(dz, dz)))
@@ -161,13 +191,13 @@ def attack.go(
     case Nil{}:
       CombatResult{Nil{}, drops, False{}}
     case Con{+head, tail}:
-      Mob{+id, +kind, +x, +y, +z, +health, +alive} = head
+      Mob{+id, +kind, +x, +y, +z, +health, +alive, +dir} = head
       +target = Bool.and(Nat.is_eq(id, target_id), alive)
       +next_health = Bool.pick(F32, target, F32.sub(health, damage), health)
       +next_alive = Bool.pick(Bool, target, F32.is_gt(next_health, 0.0), alive)
       +killed = Bool.and(target, Bool.not(next_alive))
       +next_drops = Bool.pick(List<&2, Drop>, killed, cons_drop(drop_for(head), drops), drops)
-      +updated = make_mob(id, kind, x, y, z, next_health, next_alive)
+      +updated = make_mob(id, kind, x, y, z, next_health, next_alive, dir)
       +rest = attack.go(tail, target_id, damage, next_drops)
       CombatResult{cons_mob(updated, combat_mobs(rest)), combat_drops(rest), Bool.or(target, combat_hit(rest))}
 

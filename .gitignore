@@ -1,4 +1,5 @@
 .tools/
 dist/
+.dev/
 .bend/
 node_modules/

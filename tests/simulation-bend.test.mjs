@@ -1,0 +1,26 @@
+import assert from "node:assert/strict";
+import Simulation from "../world/simulation.bend";
+import Crops from "../world/crops.bend";
+import Farmland from "../world/farmland.bend";
+
+let state = Simulation.empty();
+assert.equal(state.$, "Simulation");
+const planted = Crops.plant(Crops.empty(), 4n, 9n, 4n, 20, 0);
+state = Simulation.with_crops(state, planted.state);
+state = Simulation.with_farmland(state, Farmland.add(Farmland.empty(), 4n, 8n, 4n).state);
+state = Simulation.pin(state, 2n, 3n);
+state = Simulation.pin(state, 8n, 9n);
+assert.equal(Number(Simulation.pinned_count(state)), 2);
+const water = { $: "Con", head: { $: "Water", x: 7n, z: 4n }, tail: { $: "Nil" } };
+state = Simulation.tick_with_water(state, 4n, water);
+assert.equal(Number(Simulation.time(state)), 4);
+assert.equal(Number(Simulation.chunk_ticks(state, 2n, 3n)), 4);
+assert.equal(Number(Simulation.sim_crops(state).crops.head.stage), 17);
+state = Simulation.tick_with_water(state, 4n, water);
+assert.equal(Number(Simulation.sim_crops(state).crops.head.stage), 18);
+state = Simulation.tick_with_water(state, 4n, water);
+assert.equal(Number(Simulation.sim_crops(state).crops.head.stage), 19);
+state = Simulation.unpin(state, 2n, 3n);
+assert.equal(Number(Simulation.pinned_count(state)), 1);
+assert.equal(Number(Simulation.chunk_ticks(state, 2n, 3n)), 0);
+console.log("bend simulation ok");

@@ -1,9 +1,17 @@
+import PlayerDomain from "../world/player.bend";
+
 export const PLAYER_RADIUS = 0.3;
 export const PLAYER_HEIGHT = 1.8;
 export const EYE_HEIGHT = 1.62;
 export const MOVE_SPEED = 4.5;
 export const JUMP_SPEED = 7.0;
 export const GRAVITY = 20.0;
+
+const PLAYER_STATES = new WeakMap();
+const DOMAIN_COORDINATE_OFFSET = 1048576;
+const COLLISION_WIDTH = 5;
+const COLLISION_HEIGHT = 6;
+const COLLISION_DEPTH = 5;
 
 export function createWorldState(width, depth, maxY) {
   const blocks = new Uint8Array(width * depth * maxY);
@@ -17,104 +25,198 @@ export function createWorldState(width, depth, maxY) {
   return { width, depth, maxY, blocks, inside, blockAt, setBlock };
 }
 
-export function createPlayer(spawnCell, spawnHeight) {
+function stateView(raw) {
   return {
-    x: spawnCell[0] + 0.5,
-    y: spawnHeight + 0.05,
-    z: spawnCell[1] + 0.5,
-    yaw: 0,
-    pitch: -0.18,
-    velocityY: 0,
-    grounded: false,
+    x: Number(raw.x) - DOMAIN_COORDINATE_OFFSET,
+    y: Number(raw.y),
+    z: Number(raw.z) - DOMAIN_COORDINATE_OFFSET,
+    yaw: Number(raw.yaw),
+    pitch: Number(raw.pitch),
+    velocityY: Number(raw.velocity_y),
+    grounded: raw.grounded,
+    health: Number(raw.health),
+    hunger: Number(raw.hunger),
   };
 }
 
-export function collidesAt(world, player, x, y, z) {
-  const minX = Math.floor(x - PLAYER_RADIUS + 0.0001);
-  const maxX = Math.floor(x + PLAYER_RADIUS - 0.0001);
-  const minY = Math.floor(y + 0.0001);
-  const maxY = Math.floor(y + PLAYER_HEIGHT - 0.0001);
-  const minZ = Math.floor(z - PLAYER_RADIUS + 0.0001);
-  const maxZ = Math.floor(z + PLAYER_RADIUS - 0.0001);
-  for (let by = minY; by <= maxY; by += 1) {
-    for (let bz = minZ; bz <= maxZ; bz += 1) {
-      for (let bx = minX; bx <= maxX; bx += 1) {
-        if (world.blockAt(bx, by, bz) !== 0) return true;
+function stateRaw(player) {
+  const raw = PlayerDomain.state(
+    Number(player.x) + DOMAIN_COORDINATE_OFFSET,
+    Number(player.y),
+    Number(player.z) + DOMAIN_COORDINATE_OFFSET,
+    Number(player.yaw),
+    Number(player.pitch),
+    Number(player.velocityY),
+    Boolean(player.grounded),
+    Number.isFinite(Number(player.health)) ? Number(player.health) : 20,
+    Number.isFinite(Number(player.hunger)) ? Number(player.hunger) : 20,
+  );
+  PLAYER_STATES.set(player, raw);
+  return raw;
+}
+
+export function createPlayer(spawnCell, spawnHeight) {
+  const raw = PlayerDomain.create(
+    BigInt(spawnCell[0]) + BigInt(DOMAIN_COORDINATE_OFFSET),
+    BigInt(spawnCell[1]) + BigInt(DOMAIN_COORDINATE_OFFSET),
+    BigInt(spawnHeight),
+  );
+  const player = stateView(raw);
+  PLAYER_STATES.set(player, raw);
+  return player;
+}
+
+export function clampPlayer(player, width = 48, depth = 48) {
+  return player;
+}
+
+function blockList(values) {
+  let list = { $: "Nil" };
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    list = { $: "Con", head: values[index], tail: list };
+  }
+  return list;
+}
+
+function collisionRegion(world, x, y, z) {
+  const originX = Math.floor(x) - 2;
+  const originY = Math.max(0, Math.floor(y) - 1);
+  const originZ = Math.floor(z) - 2;
+  const values = [];
+  for (let localY = 0; localY < COLLISION_HEIGHT; localY += 1) {
+    for (let localZ = 0; localZ < COLLISION_DEPTH; localZ += 1) {
+      for (let localX = 0; localX < COLLISION_WIDTH; localX += 1) {
+        values.push(world.blockAt(originX + localX, originY + localY, originZ + localZ));
       }
     }
   }
-  return false;
+  return {
+    blocks: blockList(values),
+    originX: originX + DOMAIN_COORDINATE_OFFSET,
+    originY,
+    originZ: originZ + DOMAIN_COORDINATE_OFFSET,
+  };
+}
+
+export function isSolid(block) {
+  return PlayerDomain.solid(block);
+}
+
+export function collidesAt(world, player, x, y, z) {
+  const region = collisionRegion(world, x, y, z);
+  return PlayerDomain.collides(
+    stateRaw(player),
+    x + DOMAIN_COORDINATE_OFFSET,
+    y,
+    z + DOMAIN_COORDINATE_OFFSET,
+    region.blocks,
+    BigInt(region.originX),
+    BigInt(region.originY),
+    BigInt(region.originZ),
+    BigInt(COLLISION_WIDTH),
+    BigInt(COLLISION_HEIGHT),
+    BigInt(COLLISION_DEPTH),
+  );
 }
 
 export function overlapsPlayer(player, x, y, z) {
-  return x + 1 > player.x - PLAYER_RADIUS &&
-    x < player.x + PLAYER_RADIUS &&
-    y + 1 > player.y &&
-    y < player.y + PLAYER_HEIGHT &&
-    z + 1 > player.z - PLAYER_RADIUS &&
-    z < player.z + PLAYER_RADIUS;
+  return PlayerDomain.overlaps(
+    stateRaw(player),
+    BigInt(x) + BigInt(DOMAIN_COORDINATE_OFFSET),
+    BigInt(y),
+    BigInt(z) + BigInt(DOMAIN_COORDINATE_OFFSET),
+  );
+}
+
+export function applyDamage(player, amount) {
+  const raw = PlayerDomain.damage(stateRaw(player), amount);
+  Object.assign(player, stateView(raw));
+  PLAYER_STATES.set(player, raw);
+  return player.health;
+}
+
+export function eatFood(player, nutrition) {
+  const raw = PlayerDomain.eat(stateRaw(player), nutrition);
+  Object.assign(player, stateView(raw));
+  PLAYER_STATES.set(player, raw);
+  return player.hunger;
 }
 
 export function cameraDirection(player) {
-  const cosPitch = Math.cos(player.pitch);
-  return [
-    Math.sin(player.yaw) * cosPitch,
-    Math.sin(player.pitch),
-    -Math.cos(player.yaw) * cosPitch,
-  ];
+  const direction = PlayerDomain.direction(stateRaw(player));
+  return [Number(direction.x), Number(direction.y), Number(direction.z)];
 }
 
-export function raycast(world, player, maxDistance = 8, step = 0.05) {
-  const direction = cameraDirection(player);
-  const origin = [player.x, player.y + EYE_HEIGHT, player.z];
-  let previous = null;
-  let lastEmpty = null;
-  for (let distance = 0.1; distance <= maxDistance; distance += step) {
-    const x = Math.floor(origin[0] + direction[0] * distance);
-    const y = Math.floor(origin[1] + direction[1] * distance);
-    const z = Math.floor(origin[2] + direction[2] * distance);
-    const cell = `${x},${y},${z}`;
-    if (cell === previous) continue;
-    previous = cell;
-    if (world.blockAt(x, y, z) !== 0) {
-      return { hit: [x, y, z], place: lastEmpty };
+export function raycast(world, player) {
+  const rayWidth = 17;
+  const rayDepth = 17;
+  const rayHeight = world.maxY + 16;
+  const originX = Math.floor(player.x) - 8;
+  const originZ = Math.floor(player.z) - 8;
+  const values = [];
+  for (let y = 0; y < rayHeight; y += 1) {
+    for (let z = 0; z < rayDepth; z += 1) {
+      for (let x = 0; x < rayWidth; x += 1) {
+        values.push(y < world.maxY
+          ? world.blockAt(originX + x, y, originZ + z)
+          : 0);
+      }
     }
-    lastEmpty = [x, y, z];
   }
-  return null;
+  const result = PlayerDomain.raycast(
+    stateRaw(player),
+    blockList(values),
+    BigInt(originX + DOMAIN_COORDINATE_OFFSET),
+    0n,
+    BigInt(originZ + DOMAIN_COORDINATE_OFFSET),
+    BigInt(rayWidth),
+    BigInt(rayHeight),
+    BigInt(rayDepth),
+  );
+  if (result.$ !== "Hit") return null;
+  return {
+    hit: [Number(result.hit_x) - DOMAIN_COORDINATE_OFFSET, Number(result.hit_y), Number(result.hit_z) - DOMAIN_COORDINATE_OFFSET],
+    place: result.has_place
+      ? [Number(result.place_x) - DOMAIN_COORDINATE_OFFSET, Number(result.place_y), Number(result.place_z) - DOMAIN_COORDINATE_OFFSET]
+      : null,
+  };
 }
 
-export function movePlayer(world, player, held, dt, spawnCell, spawnHeight) {
-  const forward = (held.has("KeyW") ? 1 : 0) - (held.has("KeyS") ? 1 : 0);
-  const strafe = (held.has("KeyD") ? 1 : 0) - (held.has("KeyA") ? 1 : 0);
-  const length = Math.hypot(forward, strafe) || 1;
-  const f = forward / length;
-  const s = strafe / length;
-  const dx = (Math.sin(player.yaw) * f + Math.cos(player.yaw) * s) * MOVE_SPEED * dt;
-  const dz = (-Math.cos(player.yaw) * f + Math.sin(player.yaw) * s) * MOVE_SPEED * dt;
-
-  if (!collidesAt(world, player, player.x + dx, player.y, player.z)) player.x += dx;
-  if (!collidesAt(world, player, player.x, player.y, player.z + dz)) player.z += dz;
-
-  player.velocityY -= GRAVITY * dt;
-  const dy = player.velocityY * dt;
-  const nextY = player.y + dy;
-  if (!collidesAt(world, player, player.x, nextY, player.z)) {
-    player.y = nextY;
-    player.grounded = false;
-  } else if (dy < 0) {
-    player.y = Math.floor(nextY) + 1;
-    player.velocityY = 0;
-    player.grounded = true;
-  } else {
-    player.y = Math.floor(nextY + PLAYER_HEIGHT) - PLAYER_HEIGHT;
-    player.velocityY = 0;
+export function movePlayer(world, player, held, dt, spawnCell, spawnHeight, width = 48, depth = 48) {
+  if (Number(player.health) <= 0) {
+    const respawned = PlayerDomain.create(
+      BigInt(spawnCell[0]) + BigInt(DOMAIN_COORDINATE_OFFSET),
+      BigInt(spawnCell[1]) + BigInt(DOMAIN_COORDINATE_OFFSET),
+      BigInt(spawnHeight),
+    );
+    Object.assign(player, stateView(respawned));
+    PLAYER_STATES.set(player, respawned);
+    return;
   }
+  let keys = 0;
+  if (held.has("KeyW")) keys |= 1;
+  if (held.has("KeyA")) keys |= 2;
+  if (held.has("KeyS")) keys |= 4;
+  if (held.has("KeyD")) keys |= 8;
+  if (held.has("Space")) keys |= 16;
 
-  if (player.y < -10) {
-    player.x = spawnCell[0] + 0.5;
-    player.y = spawnHeight + 0.05;
-    player.z = spawnCell[1] + 0.5;
-    player.velocityY = 0;
-  }
+  const region = collisionRegion(world, player.x, player.y, player.z);
+  const raw = PlayerDomain.step(
+    stateRaw(player),
+    keys,
+    dt,
+    region.blocks,
+    BigInt(region.originX),
+    BigInt(region.originY),
+    BigInt(region.originZ),
+    BigInt(COLLISION_WIDTH),
+    BigInt(COLLISION_HEIGHT),
+    BigInt(COLLISION_DEPTH),
+    BigInt(spawnCell[0]) + BigInt(DOMAIN_COORDINATE_OFFSET),
+    BigInt(spawnCell[1]) + BigInt(DOMAIN_COORDINATE_OFFSET),
+    BigInt(spawnHeight),
+  );
+  const next = stateView(raw);
+  Object.assign(player, next);
+  PLAYER_STATES.set(player, raw);
 }

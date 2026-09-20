@@ -1,0 +1,88 @@
+import assert from "node:assert/strict";
+import Inventory from "../world/inventory.bend";
+
+function slotsFromList(list) {
+  const slots = [];
+  for (let node = list; node?.$ === "Con"; node = node.tail) slots.push(node.head);
+  assert.equal(list?.$ === "Nil" || slots.length === 36, true);
+  return slots;
+}
+
+function valuesFromList(list) {
+  const values = [];
+  for (let node = list; node?.$ === "Con"; node = node.tail) values.push(Number(node.head));
+  return values;
+}
+
+const slots = slotsFromList(Inventory.create());
+assert.equal(slots.length, 36);
+assert.deepEqual(slots[0], { $: "Slot", item: 1, count: 32, durability: 0 });
+
+const collected = Inventory.collect(Inventory.create(), 5, 1n);
+assert.equal(collected.$, "InventoryResult");
+assert.equal(collected.ok, true);
+assert.deepEqual(slotsFromList(collected.slots)[4], { $: "Slot", item: 5, count: 9, durability: 0 });
+
+const recipes = valuesFromList(Inventory.recipe_data());
+assert.equal(recipes.length, 96);
+assert.deepEqual(recipes.slice(0, 6), [5, 1, 0, 0, 8, 4]);
+assert.deepEqual(recipes.slice(88, 94), [8, 2, 9, 2, 27, 1]);
+
+const crafted = Inventory.craft(collected.slots, 0n);
+assert.equal(crafted.ok, true);
+const craftedSlots = slotsFromList(crafted.slots);
+assert.deepEqual(craftedSlots[4], { $: "Slot", item: 5, count: 8, durability: 0 });
+assert.deepEqual(craftedSlots[5], { $: "Slot", item: 8, count: 4, durability: 0 });
+assert.equal(Inventory.can_collect_block(5, 1n), true);
+assert.equal(Inventory.can_collect_block(5, 0n), false);
+assert.equal(Inventory.can_collect_block(7, 1n), false);
+assert.equal(Inventory.can_place(5, true, true, false), true);
+assert.equal(Inventory.can_place(8, true, true, false), false);
+assert.equal(Inventory.can_place(5, false, true, false), false);
+const wool = Inventory.pickup(Inventory.create(), 12, 2n);
+assert.equal(wool.ok, true);
+const woolSlot = slotsFromList(wool.slots).find((slot) => Number(slot.item) === 12);
+assert.equal(woolSlot.count, 2);
+assert.equal(Number(Inventory.tool_max_durability(11)), 59);
+const toolUse = Inventory.use_tool(11, 59);
+assert.equal(toolUse.valid, true);
+assert.equal(Number(toolUse.durability), 58);
+assert.equal(toolUse.broken, false);
+const lastUse = Inventory.use_tool(11, 1);
+assert.equal(lastUse.broken, true);
+assert.equal(Inventory.can_mine(0, 1), false);
+assert.equal(Inventory.can_mine(11, 1), true);
+assert.equal(Inventory.can_mine(0, 2), true);
+assert.equal(Number(Inventory.tool_max_durability(17)), 131);
+assert.equal(Number(Inventory.tool_max_durability(18)), 250);
+assert.equal(Number(Inventory.tool_max_durability(19)), 1561);
+assert.equal(Number(Inventory.tool_max_durability(27)), 59);
+assert.equal(Number(Inventory.food_value(13)), 4);
+assert.equal(Number(Inventory.food_value(14)), 0);
+assert.equal(Inventory.mine_drop(11, 1, 1n).valid, true);
+assert.equal(Number(Inventory.mine_drop(11, 1, 1n).item), 1);
+assert.equal(Inventory.mine_drop(0, 1, 1n).valid, false);
+assert.equal(Inventory.mine_drop(11, 1, 0n).valid, false);
+assert.equal(Number(Inventory.mine_drop(11, 8, 1n).item), 14);
+assert.equal(Inventory.mine_drop(17, 10, 1n).valid, false);
+assert.equal(Number(Inventory.mine_drop(18, 10, 1n).item), 16);
+assert.equal(Number(Inventory.mine_drop(0, 11, 1n).item), 21);
+assert.equal(Inventory.can_place(21, true, true, false), true);
+assert.equal(Number(Inventory.mine_drop(0, 12, 1n).item), 22);
+assert.equal(Inventory.can_place(22, true, true, false), true);
+assert.equal(Inventory.can_collect_block(13, 1n), true);
+assert.equal(Inventory.can_place(23, true, true, false), true);
+assert.equal(Number(Inventory.mine_drop(0, 13, 1n).item), 23);
+assert.equal(Inventory.can_collect_block(14, 1n), true);
+assert.equal(Inventory.can_collect_block(15, 1n), true);
+assert.equal(Inventory.can_place(24, true, true, false), true);
+assert.equal(Number(Inventory.mine_drop(0, 14, 1n).item), 24);
+assert.equal(Inventory.pickup(Inventory.create(), 20, 1n).ok, true);
+assert.equal(Inventory.pickup(Inventory.create(), 22, 1n).ok, true);
+assert.equal(Inventory.pickup(Inventory.create(), 27, 1n).ok, true);
+const toolInventory = Inventory.pickup(Inventory.create(), 11, 1n);
+const toolIndex = slotsFromList(toolInventory.slots).findIndex((slot) => Number(slot.item) === 11);
+const damagedTool = Inventory.use_tool_at(toolInventory.slots, BigInt(toolIndex));
+assert.equal(damagedTool.ok, true);
+assert.equal(Number(slotsFromList(damagedTool.slots)[toolIndex].durability), 58);
+console.log("bend inventory ok");

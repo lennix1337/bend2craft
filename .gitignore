@@ -2,3 +2,4 @@
 dist/
 .bend/
 node_modules/
+.dev/

@@ -18,13 +18,56 @@
       <div id="selected">selected: —</div>
       <div id="stats">— blocks visible</div>
     </section>
-    <section id="hotbar" aria-label="Inventory">
+    <section id="hotbar" aria-label="Hotbar">
       <div id="hotbar-slots"></div>
+    </section>
+    <section id="held-item-view" aria-label="Held item">
+      <canvas id="held-item-canvas" width="72" height="72" aria-hidden="true"></canvas>
+      <span id="held-item-label">Empty hand</span>
+    </section>
+    <button id="inventory-toggle" type="button" aria-controls="inventory-panel" aria-expanded="false">Inventory (E)</button>
+    <button id="furnace-toggle" type="button" aria-controls="furnace-panel" aria-expanded="false">Furnace (R)</button>
+    <section id="inventory-panel" aria-labelledby="inventory-title" hidden>
+      <header class="inventory-header">
+        <div>
+          <h2 id="inventory-title">Inventory &amp; crafting</h2>
+          <p>Click an item, then a destination slot to move it.</p>
+        </div>
+        <button type="button" data-close-inventory>Close</button>
+      </header>
+      <div class="inventory-content">
+        <section class="inventory-section" aria-labelledby="items-title">
+          <h3 id="items-title">Items</h3>
+          <div id="inventory-slots" class="inventory-grid" aria-label="All inventory slots"></div>
+        </section>
+        <section class="crafting-section" aria-labelledby="recipes-title">
+          <h3 id="recipes-title">Recipes</h3>
+          <div id="recipe-list" class="recipe-list"></div>
+          <p id="inventory-message" role="status" aria-live="polite">Select a recipe when you have its ingredients.</p>
+        </section>
+      </div>
+    </section>
+    <section id="furnace-panel" aria-labelledby="furnace-title" hidden>
+      <header class="inventory-header">
+        <div>
+          <h2 id="furnace-title">Furnace</h2>
+          <p>Right-click a placed furnace to smelt raw iron with coal.</p>
+        </div>
+        <button type="button" data-close-furnace>Close</button>
+      </header>
+      <div class="furnace-content">
+        <div id="furnace-status" role="status" aria-live="polite">No fuel loaded.</div>
+        <div class="furnace-actions">
+          <button type="button" data-furnace-action="input">Load raw iron</button>
+          <button type="button" data-furnace-action="fuel">Load coal</button>
+          <button type="button" data-furnace-action="output">Take iron ingot</button>
+        </div>
+      </div>
     </section>
     <section id="help">
       <strong id="lock-hint">Click to capture the mouse</strong>
-      <span>WASD move · mouse look · Space jump</span>
-      <span>1–9 hotbar · left click remove · right click place</span>
+      <span>WASD · mouse look · Space jump</span>
+      <span>1–9 hotbar · E inventory · R furnace · G eat · F attack · T trade · N sleep · click mine/place</span>
     </section>
     <div id="error" role="alert" hidden></div>
   </main>

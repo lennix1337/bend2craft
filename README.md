@@ -48,7 +48,13 @@ The Bend 2 compiler is pinned as the `vendor/bend` submodule. Bend 2's JavaScrip
 - Held-item and humanoid character descriptors with a live first-person held-item panel and public character-view API.
 - Bend2 bulk sky/cave light levels and dynamic torch point light feed face shading without per-cell bridge calls.
 - Standalone Bend2 light flood-fill primitive with walls, alternate routes and bounded propagation tests.
-- Distance fog, face shading and a lightweight day/night presentation cycle.
+- Distance fog, face shading and a day/night sky with sunsets, stars, a square sun and moon, and a Day counter.
+- Minecraft-style title screen with Singleplayer world list, create-world form (name, seed, mode, difficulty) and options.
+- Survival, Creative and Hardcore modes with Peaceful/Easy/Normal/Hard difficulties; hardcore death deletes the world.
+- Heart and hunger bars, fall damage, sprinting (Shift or double-tap W) with extra hunger drain and FOV kick.
+- Passive mobs graze with deterministic Bend-owned wander headings; zombies burn in daylight.
+- Pixel-art pig and zombie models with animated legs, swinging arms, snouts and faces from the shared texture atlas.
+- Aimed crosshair melee, break/place/eat particles, footsteps and procedural WebAudio sounds.
 - Seed-scoped local save/load for player, inventory and Bend-owned block edits.
 - First-person camera, WASD movement, mouse look and jumping.
 - AABB collision, block raycast, block removal and block placement.
@@ -163,14 +169,16 @@ The same seed produces the same heights, trees and block layout. Different seeds
 
 - `WASD`: move
 - Mouse: look after clicking the canvas
+- `Shift` or double-tap `W`: sprint (drains hunger faster, FOV kick)
 - `Space`: jump; keep it held to jump again as soon as you land
 - `1` through `9`: select a hotbar slot
 - `E`: open the inventory and wood crafting panel
 - Right-click a placed furnace or press `R` after selecting one to open its container
 - `G`: eat the selected food item
-- Left click: mine the targeted block; hard blocks require the correct pickaxe tier
+- Left click: attack the mob under the crosshair, otherwise mine the targeted block; hard blocks require the correct pickaxe tier
 - Right click: place the selected block if the stack has items
-- `Esc`: release the mouse pointer lock
+- `F`: attack the nearest mob in reach
+- `Esc`: open the pause menu
 
 ## Development rules
 

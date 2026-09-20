@@ -44,15 +44,25 @@ assert.equal(landed.grounded, true);
 const jumped = Player.step(landed, 16, 0.016, blocks, 0n, 0n, 0n, 5n, 6n, 5n, 2n, 2n, 1n);
 assert.equal(jumped.grounded, false);
 assert.ok(Number(jumped.velocity_y) > 0);
-const starving = Player.tick_survival(state, 1000.0);
+const starving = Player.tick_survival(state, 1000.0, false);
 assert.ok(Number(starving.hunger) < 20);
 assert.ok(Number(starving.health) < 20);
+const walked = Player.tick_survival(state, 20.0, false);
+const sprinted = Player.tick_survival(state, 20.0, true);
+assert.ok(Number(sprinted.hunger) < Number(walked.hunger));
 const damaged = Player.damage(state, 4.0);
 assert.equal(Number(damaged.health), 16);
 assert.equal(Number(damaged.hunger), 20);
 const fed = Player.eat(state, 4.0);
 assert.equal(Number(fed.hunger), 20);
-const hungry = Player.tick_survival(state, 20.0);
+const hungry = Player.tick_survival(state, 20.0, false);
 const fedHungry = Player.eat(hungry, 4.0);
 assert.ok(Number(fedHungry.hunger) > Number(hungry.hunger));
+let walker = state;
+let runner = state;
+for (let index = 0; index < 30; index += 1) {
+  walker = Player.step(walker, 1, 0.016, blocks, 0n, 0n, 0n, 5n, 6n, 5n, 2n, 2n, 1n);
+  runner = Player.step(runner, 33, 0.016, blocks, 0n, 0n, 0n, 5n, 6n, 5n, 2n, 2n, 1n);
+}
+assert.ok(2.5 - Number(runner.z) > (2.5 - Number(walker.z)) * 1.25);
 console.log("bend player ok");

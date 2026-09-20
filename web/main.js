@@ -39,6 +39,7 @@ import {
   clampPlayer,
   createPlayer,
   eatFood,
+  isSprinting,
   movePlayer,
   overlapsPlayer,
   raycast,
@@ -56,6 +57,33 @@ import { createColumnHeightCache } from "./drop-ground-cache.js";
 import { buildChunkBuckets, concatBendLists } from "./entity-chunks.js";
 import { seedFromSearch, seedLabel } from "./seed.js";
 import { createPointerLockController } from "./pointer-lock.js";
+import {
+  DIFFICULTIES,
+  DIFFICULTY_NAMES,
+  GAME_MODES,
+  MODE_DESCRIPTIONS,
+  MODE_NAMES,
+  createDefaultOptions,
+  createWorldConfig,
+  cycleDifficulty,
+  cycleMode,
+  loadJson,
+  randomSeedText,
+  sanitizeOptions,
+  saveJson,
+  validateWorldConfig,
+} from "./settings.js";
+import {
+  advanceTime,
+  brightness,
+  dayCount,
+  isDay,
+  skyColor,
+} from "./daynight.js";
+import { mobBox, rayHitBox } from "./aim.js";
+import { appendMobModel } from "./mob-mesh.js";
+import { skyBodies } from "./sky-mesh.js";
+import { toneSchedule } from "./sfx.js";
 
 const canvas = document.getElementById("game");
 const coordsEl = document.getElementById("coords");
@@ -77,12 +105,54 @@ const furnaceStatusEl = document.getElementById("furnace-status");
 const lockHintEl = document.getElementById("lock-hint");
 const helpEl = document.getElementById("help");
 const errorEl = document.getElementById("error");
+const vitalsEl = document.getElementById("vitals");
+const heartsEl = document.getElementById("hearts");
+const hungerEl = document.getElementById("hunger");
+const toastEl = document.getElementById("toast");
+const vignetteEl = document.getElementById("vignette");
+const flashEl = document.getElementById("damage-flash");
+const screens = {
+  title: document.getElementById("screen-title"),
+  worlds: document.getElementById("screen-worlds"),
+  create: document.getElementById("screen-create"),
+  options: document.getElementById("screen-options"),
+  help: document.getElementById("screen-help"),
+  pause: document.getElementById("screen-pause"),
+  death: document.getElementById("screen-death"),
+};
+const worldListEl = document.getElementById("world-list");
+const worldNameInput = document.getElementById("input-world-name");
+const seedInput = document.getElementById("input-seed");
+const modeDescriptionEl = document.getElementById("mode-description");
+const createErrorEl = document.getElementById("create-error");
+const fovInput = document.getElementById("input-fov");
+const fovValue = document.getElementById("fov-value");
+const sensitivityInput = document.getElementById("input-sensitivity");
+const sensitivityValue = document.getElementById("sensitivity-value");
+const pauseInfoEl = document.getElementById("pause-info");
+const deathTitleEl = document.getElementById("death-title");
+const deathDetailEl = document.getElementById("death-detail");
+const deathStatsEl = document.getElementById("death-stats");
 const SEED = seedFromSearch(window.location.search, World.default_seed());
 const SAVE_KEY = `bend2craft-save-${seedLabel(SEED)}`;
 const pointerLock = createPointerLockController(
   () => document.pointerLockElement === canvas,
   () => canvas.requestPointerLock(),
 );
+
+const OPTIONS_KEY = "bend2craft.options.v1";
+const WORLDS_KEY = "bend2craft.worlds.v1";
+const PENDING_KEY = "bend2craft.pending.v1";
+const HARDCORE_DEATH_KEY = "bend2craft.hardcore-death";
+
+let options = sanitizeOptions(loadJson(localStorage, OPTIONS_KEY, createDefaultOptions()));
+let draftConfig = createWorldConfig({ mode: GAME_MODES.SURVIVAL, difficulty: DIFFICULTIES.NORMAL });
+let optionsReturn = "title";
+let screen = "title";
+let selectedWorldId = null;
+let currentFov = 69;
+let toastTimer = 0;
+let audioContext = null;
 
 const BLOCK_COLORS = {
   1: [0.34, 0.38, 0.42],
@@ -128,6 +198,128 @@ function showError(error) {
   throw error;
 }
 
+function toast(message) {
+  toastEl.textContent = message;
+  toastEl.hidden = false;
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => {
+    toastEl.hidden = true;
+  }, 2600);
+}
+
+function playToneNotes(kind) {
+  if (!options.sound) return;
+  try {
+    if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioContext.state === "suspended") void audioContext.resume();
+    const now = audioContext.currentTime;
+    const notes = toneSchedule(kind);
+    notes.forEach(([frequency, duration, type, gain], index) => {
+      const oscillator = audioContext.createOscillator();
+      const amplifier = audioContext.createGain();
+      oscillator.type = type;
+      oscillator.frequency.value = frequency;
+      amplifier.gain.setValueAtTime(gain, now + index * 0.09);
+      amplifier.gain.exponentialRampToValueAtTime(0.001, now + index * 0.09 + duration);
+      oscillator.connect(amplifier);
+      amplifier.connect(audioContext.destination);
+      oscillator.start(now + index * 0.09);
+      oscillator.stop(now + index * 0.09 + duration);
+    });
+  } catch {
+    // Audio is decorative; never break the game loop.
+  }
+}
+
+function flashDamage() {
+  flashEl.style.transition = "none";
+  flashEl.style.opacity = "1";
+  requestAnimationFrame(() => {
+    flashEl.style.transition = "opacity 0.4s ease";
+    flashEl.style.opacity = "0";
+  });
+}
+
+function showScreen(name) {
+  screen = name;
+  for (const [key, element] of Object.entries(screens)) {
+    element.hidden = key !== name;
+  }
+  if (name !== "playing" && document.pointerLockElement === canvas) {
+    document.exitPointerLock();
+  }
+}
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[char]);
+}
+
+function loadWorlds() {
+  const data = loadJson(localStorage, WORLDS_KEY, { version: 1, worlds: [] });
+  if (!data || !Array.isArray(data.worlds)) return [];
+  return data.worlds;
+}
+
+function persistWorlds(worlds) {
+  saveJson(localStorage, WORLDS_KEY, { version: 1, worlds });
+}
+
+function findWorld(id) {
+  return loadWorlds().find((world) => world.id === id) ?? null;
+}
+
+function describeWorld(world) {
+  const mode = MODE_NAMES[world.mode] ?? "Survival";
+  const difficulty = DIFFICULTY_NAMES[world.difficulty] ?? "";
+  const played = world.lastPlayed ? new Date(world.lastPlayed).toLocaleString() : "never";
+  return `${mode}${difficulty ? ` · ${difficulty}` : ""} · seed ${world.seed} · played ${played}`;
+}
+
+function renderWorldList(currentSeed) {
+  const worlds = loadWorlds();
+  if (!worlds.some((world) => world.id === selectedWorldId)) {
+    selectedWorldId = worlds.find((world) => world.seed === currentSeed)?.id ?? worlds[0]?.id ?? null;
+  }
+  worldListEl.innerHTML = worlds.length === 0
+    ? `<p class="world-empty">No saved worlds yet. Create one to start surviving.</p>`
+    : worlds.map((world) => `
+      <div class="world-item${world.id === selectedWorldId ? " selected" : ""}${world.seed === currentSeed ? " current" : ""}" data-world="${world.id}" role="button" tabindex="0">
+        <strong>${escapeHtml(world.name)}${world.seed === currentSeed ? " (current)" : ""}</strong>
+        <small>${escapeHtml(describeWorld(world))}</small>
+      </div>`).join("");
+}
+
+function renderCreateMenu() {
+  createErrorEl.hidden = true;
+  const modeButton = screens.create.querySelector('[data-action="cycle-mode"]');
+  const difficultyButton = screens.create.querySelector('[data-action="cycle-difficulty"]');
+  modeButton.textContent = `Game Mode: ${MODE_NAMES[draftConfig.mode]}`;
+  modeDescriptionEl.textContent = MODE_DESCRIPTIONS[draftConfig.mode];
+  difficultyButton.textContent = `Difficulty: ${DIFFICULTY_NAMES[draftConfig.difficulty]}`;
+  difficultyButton.disabled = draftConfig.mode === GAME_MODES.HARDCORE;
+}
+
+function renderOptionsMenu() {
+  fovInput.value = String(options.fov);
+  fovValue.textContent = String(options.fov);
+  sensitivityInput.value = String(options.sensitivity);
+  sensitivityValue.textContent = Number(options.sensitivity).toFixed(1);
+  screens.options.querySelector('[data-action="toggle-coords"]').textContent =
+    `Coordinates: ${options.showCoords ? "ON" : "OFF"}`;
+  screens.options.querySelector('[data-action="toggle-sound"]').textContent =
+    `Sound: ${options.sound ? "ON" : "OFF"}`;
+  screens.options.querySelector('[data-action="toggle-fovkick"]').textContent =
+    `Sprint FOV: ${options.fovKick ? "ON" : "OFF"}`;
+}
+
+function saveOptions() {
+  options = sanitizeOptions(options);
+  saveJson(localStorage, OPTIONS_KEY, options);
+  renderOptionsMenu();
+}
+
 let gl;
 let program;
 let positionBuffer;
@@ -151,6 +343,10 @@ let horizonMesh = { positions: [], colors: [], uvs: [], quadCount: 0 };
 let visibleFaceCount = 0;
 let daylight = 1;
 let worldTime = 0;
+let skyPositionBuffer;
+let skyColorBuffer;
+let skyUvBuffer;
+let skyVertexCount = 0;
 
 try {
   gl = canvas.getContext("webgl", { antialias: false, alpha: false });
@@ -163,6 +359,59 @@ try {
   } catch {
     savedGame = null;
   }
+
+  // Menu session: the world boots behind the title screen; Play releases it.
+  const pendingConfig = loadJson(localStorage, PENDING_KEY, null);
+  if (pendingConfig !== null) {
+    try { window.localStorage.removeItem(PENDING_KEY); } catch { /* best effort */ }
+  }
+  const seedString = seedLabel(SEED);
+  function upsertWorldMeta(patch = {}) {
+    const worlds = loadWorlds();
+    const existing = worlds.find((world) => world.seed === seedString);
+    const base = existing ?? {
+      id: `w${Date.now().toString(36)}`,
+      name: pendingConfig?.name ?? "New World",
+      seedText: pendingConfig?.seedText ?? seedString,
+      seed: seedString,
+      mode: GAME_MODES.SURVIVAL,
+      difficulty: DIFFICULTIES.NORMAL,
+      createdAt: Date.now(),
+    };
+    const next = {
+      ...base,
+      ...patch,
+      name: patch.name ?? pendingConfig?.name ?? base.name,
+      mode: patch.mode ?? pendingConfig?.mode ?? base.mode,
+      difficulty: patch.difficulty ?? pendingConfig?.difficulty ?? base.difficulty,
+      lastPlayed: Date.now(),
+    };
+    if (next.mode === GAME_MODES.HARDCORE) next.difficulty = DIFFICULTIES.HARD;
+    const index = worlds.findIndex((world) => world.seed === seedString);
+    if (index === -1) worlds.unshift(next);
+    else worlds[index] = next;
+    persistWorlds(worlds.slice(0, 24));
+    return next;
+  }
+  let worldMeta = upsertWorldMeta();
+  const isCreative = () => worldMeta.mode === GAME_MODES.CREATIVE;
+  const isHardcore = () => worldMeta.mode === GAME_MODES.HARDCORE;
+
+  let paused = true;
+  let skyTime = 0.03;
+  let skyElapsed = 0;
+  let skyBodiesDirty = true;
+  let particles = [];
+  let peakY = null;
+  let stepAcc = 0;
+  let burnTimer = 0;
+  let orbitAngle = 0.6;
+  let lastHit = { id: -1, at: 0 };
+  let lastDamageCause = "unknown";
+  let prevFrame = null;
+  let deathStats = { mined: 0, placed: 0, kills: 0, time: 0 };
+  let keydownLastWtap = 0;
+  const mobAnim = new Map();
 
   const lightSourceFieldCache = new Map();
   const sourceFieldKey = (source) => `${source.x},${source.y},${source.z},${source.block}`;
@@ -365,6 +614,9 @@ try {
   dynamicPositionBuffer = gl.createBuffer();
   dynamicColorBuffer = gl.createBuffer();
   dynamicUvBuffer = gl.createBuffer();
+  skyPositionBuffer = gl.createBuffer();
+  skyColorBuffer = gl.createBuffer();
+  skyUvBuffer = gl.createBuffer();
   positionLocation = gl.getAttribLocation(program, "aPosition");
   colorLocation = gl.getAttribLocation(program, "aColor");
   uvLocation = gl.getAttribLocation(program, "aUV");
@@ -443,22 +695,18 @@ try {
   }
 
   function appendMobCube(positions, colors, uvs, mob) {
-    const base = mob.kind === 2 ? [0.72, 0.16, 0.14] : [0.92, 0.92, 0.82];
-    const tile = mob.kind === 2 ? 9 : 4;
-    const scale = [0.72, 1.0, 0.72];
-    for (let faceIndex = 0; faceIndex < FACES.length; faceIndex += 1) {
-      const color = base.map((channel) => channel * FACE_SHADES[faceIndex] * daylight);
-      for (const cornerIndex of [0, 1, 2, 0, 2, 3]) {
-        const corner = FACES[faceIndex].corners[cornerIndex];
-        positions.push(
-          mob.x + (corner[0] - 0.5) * scale[0],
-          mob.y + corner[1] * scale[1],
-          mob.z + (corner[2] - 0.5) * scale[2],
-        );
-        colors.push(color[0], color[1], color[2]);
-        appendUV(uvs, tile, cornerIndex);
-      }
-    }
+    const last = mobAnim.get(mob.id);
+    const moved = last === undefined || Math.hypot(mob.x - last.x, mob.z - last.z) > 0.001;
+    mobAnim.set(mob.id, { x: mob.x, z: mob.z });
+    appendMobModel({ positions, colors, uvs }, {
+      kind: mob.kind,
+      x: mob.x,
+      y: mob.y,
+      z: mob.z,
+      dir: mob.dir ?? 0,
+      moving: moved,
+      hurtTimer: lastHit.id === mob.id && performance.now() - lastHit.at < 250 ? 1 : 0,
+    }, daylight, performance.now());
   }
 
   function appendVillagerCube(positions, colors, uvs, villager) {
@@ -477,6 +725,60 @@ try {
         appendUV(uvs, villager.profession === 2 ? 3 : 5, cornerIndex);
       }
     }
+  }
+
+  function appendParticleCube(positions, colors, uvs, particle) {
+    const fade = Math.max(0, particle.life / particle.maxLife);
+    const size = particle.size * (0.4 + 0.6 * fade);
+    for (let faceIndex = 0; faceIndex < FACES.length; faceIndex += 1) {
+      const color = particle.color.map((channel) => channel * FACE_SHADES[faceIndex] * daylight);
+      for (const cornerIndex of [0, 1, 2, 0, 2, 3]) {
+        const corner = FACES[faceIndex].corners[cornerIndex];
+        positions.push(
+          particle.x + (corner[0] - 0.5) * size,
+          particle.y + (corner[1] - 0.5) * size,
+          particle.z + (corner[2] - 0.5) * size,
+        );
+        colors.push(color[0], color[1], color[2]);
+        appendUV(uvs, 1, cornerIndex);
+      }
+    }
+  }
+
+  function spawnParticles(x, y, z, color, count, speed = 2.5, size = 0.12, life = 0.7) {
+    for (let i = 0; i < count; i += 1) {
+      const angle = Math.random() * Math.PI * 2;
+      const up = Math.random() * speed;
+      const outward = (0.3 + Math.random() * 0.7) * speed;
+      particles.push({
+        x, y: y + Math.random() * 0.5, z,
+        vx: Math.cos(angle) * outward,
+        vy: up,
+        vz: Math.sin(angle) * outward,
+        life: life * (0.6 + Math.random() * 0.4),
+        maxLife: life,
+        size: size * (0.7 + Math.random() * 0.6),
+        color,
+      });
+    }
+    if (particles.length > 400) particles.splice(0, particles.length - 400);
+    simulationDynamicDirty = true;
+  }
+
+  function updateParticles(dt) {
+    if (particles.length === 0) return;
+    const alive = [];
+    for (const particle of particles) {
+      particle.life -= dt;
+      if (particle.life <= 0) continue;
+      particle.vy -= 12 * dt;
+      particle.x += particle.vx * dt;
+      particle.y += particle.vy * dt;
+      particle.z += particle.vz * dt;
+      alive.push(particle);
+    }
+    particles = alive;
+    simulationDynamicDirty = true;
   }
 
   function appendDropCube(positions, colors, uvs, drop) {
@@ -507,6 +809,7 @@ try {
     }
     for (const villager of villagers) appendVillagerCube(positions, colors, uvs, villager);
     for (const drop of drops) appendDropCube(positions, colors, uvs, drop);
+    for (const particle of particles) appendParticleCube(positions, colors, uvs, particle);
     dynamicVertexCount = positions.length / 3;
     dynamicQuadCount = dynamicVertexCount / 6;
     gl.bindBuffer(gl.ARRAY_BUFFER, dynamicPositionBuffer);
@@ -806,6 +1109,7 @@ try {
         z: Number(mob.z),
         health: Number(mob.health),
         alive: mob.alive,
+        dir: Number(mob.dir ?? 0),
       });
     }
     return views;
@@ -872,15 +1176,17 @@ try {
     };
   }
 
+  let simTick = 0;
   function stepMobsBudgeted(dt) {
+    simTick += 1;
     const partition = splitActiveEntityBuckets(
       mobDomainState,
       (mob) => ({ x: Number(mob.x), z: Number(mob.z) }),
       "mob",
     );
     mobDomainState = concatBendLists(
-      Entities.step(partition.active, player.x, player.z, dt),
-      Entities.step(partition.dormant, player.x, player.z, dt / 5),
+      Entities.step(partition.active, player.x, player.z, dt, BigInt(simTick)),
+      Entities.step(partition.dormant, player.x, player.z, dt / 5, BigInt(simTick)),
     );
   }
 
@@ -932,9 +1238,39 @@ try {
     stepMobsBudgeted(dt);
     mobs = mobViews(mobDomainState);
     const threat = Number(Entities.threat_damage(mobDomainState, player.x, player.z));
-    if (threat > 0) applyDamage(player, threat * dt);
+    if (threat > 0 && !isCreative() && worldMeta.difficulty !== DIFFICULTIES.PEACEFUL) {
+      const multiplier = worldMeta.difficulty === DIFFICULTIES.EASY ? 0.75
+        : worldMeta.difficulty === DIFFICULTIES.HARD || isHardcore() ? 1.3 : 1;
+      lastDamageCause = "mob";
+      applyDamage(player, threat * multiplier * dt);
+    }
+    if (isCreative() && player.hunger < 20) eatFood(player, 20);
+    burnMobsInDaylight(dt);
     collectNearbyDrops();
     return true;
+  }
+
+  function burnMobsInDaylight(dt) {
+    if (!isDay(skyTime) || mobDomainState?.$ !== "Con") return;
+    burnTimer += dt;
+    if (burnTimer < 2) return;
+    burnTimer = 0;
+    let burned = false;
+    for (const mob of mobs) {
+      if (!mob.alive || mob.kind !== 2) continue;
+      const result = Entities.attack(mobDomainState, BigInt(mob.id), 2.0);
+      if (!result.hit) continue;
+      mobDomainState = result.mobs;
+      dropDomainState = concatBendLists(result.drops, dropDomainState ?? { $: "Nil" });
+      spawnParticles(mob.x, mob.y + 1, mob.z, [1, 0.5, 0.1], 3, 1.2, 0.1, 0.4);
+      burned = true;
+    }
+    if (burned) {
+      mobs = mobViews(mobDomainState);
+      drops = dropViews(dropDomainState);
+      playToneNotes("burn");
+      simulationDynamicDirty = true;
+    }
   }
 
   function updateVillagers(dt) {
@@ -1005,6 +1341,7 @@ try {
     }
     villagerTick = Number(result.next_tick);
     worldTime = 0;
+    skyTime = 0.03;
     setInventoryMessage("Good morning.");
     updateHud();
     return true;
@@ -1012,26 +1349,36 @@ try {
 
   function attackNearestMob() {
     if (mobDomainState === null) return false;
+    const eye = [player.x, player.y + EYE_HEIGHT, player.z];
+    const direction = cameraDirection(player);
     let nearest = null;
-    let nearestDistance = 4 * 4;
+    let nearestDistance = 4.5;
     for (const mob of mobs) {
       if (!mob.alive) continue;
-      const dx = mob.x - player.x;
-      const dz = mob.z - player.z;
-      const distance = dx * dx + dz * dz;
-      if (distance < nearestDistance) {
+      const dist = rayHitBox(eye, direction, mobBox(mob), nearestDistance);
+      if (dist !== null && dist < nearestDistance) {
         nearest = mob;
-        nearestDistance = distance;
+        nearestDistance = dist;
       }
     }
     if (nearest === null) return false;
     const result = Entities.attack(mobDomainState, BigInt(nearest.id), 4.0);
     if (!result.hit) return false;
+    lastHit = { id: nearest.id, at: performance.now() };
     mobDomainState = result.mobs;
     mobs = mobViews(mobDomainState);
-    dropDomainState = result.drops;
+    dropDomainState = concatBendLists(result.drops, dropDomainState ?? { $: "Nil" });
     drops = dropViews(dropDomainState);
-    setInventoryMessage("Mob hit.");
+    spawnParticles(nearest.x, nearest.y + 0.8, nearest.z, [0.8, 0.1, 0.1], 8, 2.5);
+    playToneNotes(nearest.kind === 2 ? "groan" : "hurt");
+    const victim = mobs.find((mob) => mob.id === nearest.id);
+    if (victim && !victim.alive) {
+      deathStats.kills += 1;
+      if (nearest.kind === 1) playToneNotes("oink");
+      setInventoryMessage(`Defeated! ${deathStats.kills} mob${deathStats.kills === 1 ? "" : "s"} slain.`);
+    } else {
+      setInventoryMessage("Mob hit.");
+    }
     rebuildDynamicMesh();
     return true;
   }
@@ -1294,6 +1641,8 @@ try {
     }
     if (!consume(inventory, selectedSlot)) return false;
     eatFood(player, nutrition);
+    spawnParticles(player.x, player.y + 1.4, player.z, [0.5, 0.8, 0.3], 8, 1.5);
+    playToneNotes("eat");
     setInventoryMessage(`${itemName(item)} eaten.`);
     refreshInventoryUi();
     updateHud();
@@ -1313,7 +1662,7 @@ try {
       if (!added.ok) return false;
       nextFurnaces = added.world;
     }
-    if (!consume(inventory, selectedSlot)) return false;
+    if (!isCreative() && !consume(inventory, selectedSlot)) return false;
     furnaceWorldState = nextFurnaces;
     if (block === 11) {
       const chunkX = Math.floor(x / CHUNK_SIZE);
@@ -1424,8 +1773,22 @@ try {
     return views;
   }
 
+  function aimedMobInReach() {
+    const eye = [player.x, player.y + EYE_HEIGHT, player.z];
+    const direction = cameraDirection(player);
+    for (const mob of mobs) {
+      if (!mob.alive) continue;
+      if (rayHitBox(eye, direction, mobBox(mob), 4.5) !== null) return true;
+    }
+    return false;
+  }
+
   function interact(button) {
     const target = raycast(world, player);
+    if (button === 0 && aimedMobInReach()) {
+      attackNearestMob();
+      return;
+    }
     if (!target) return;
     const [x, y, z] = target.hit;
     if (button === 2 && itemId(selectedItem(inventory, selectedSlot)) === "wooden_hoe" && tillBlockAt(x, y, z)) {
@@ -1450,7 +1813,10 @@ try {
         rebuildMesh();
         return;
       }
-      const drop = mineDrop(selectedItem(inventory, selectedSlot), removedBlock, y);
+      const miningItem = isCreative()
+        ? { item: "diamond_pickaxe", count: 1 }
+        : selectedItem(inventory, selectedSlot);
+      const drop = mineDrop(miningItem, removedBlock, y);
       if (!drop.valid) {
         setInventoryMessage("The selected tool cannot mine this block.");
         return;
@@ -1458,6 +1824,9 @@ try {
       const dropItem = itemNameFromId(drop.item);
       if (dropItem === null || !collectItem(inventory, dropItem, drop.amount)) return;
       setBlock(x, y, z, 0);
+      deathStats.mined += 1;
+      spawnParticles(x + 0.5, y + 0.5, z + 0.5, BLOCK_COLORS[removedBlock] ?? [1, 0, 1], 10, 2.5);
+      playToneNotes("break");
       if (isCropBlock(removedBlock)) {
         cropState = Crops.remove(cropState, BigInt(x), BigInt(y), BigInt(z));
         simulationState = Simulation.with_crops(simulationState, cropState);
@@ -1482,7 +1851,7 @@ try {
           activeFurnace = null;
         }
       }
-      useTool(inventory, selectedSlot);
+      if (!isCreative()) useTool(inventory, selectedSlot);
     } else if (button === 2 && target.place) {
       const [px, py, pz] = target.place;
       const item = selectedItem(inventory, selectedSlot);
@@ -1493,6 +1862,9 @@ try {
         return;
       }
       if (!placeBlockAt(px, py, pz, item)) return;
+      deathStats.placed += 1;
+      spawnParticles(px + 0.5, py + 0.5, pz + 0.5, BLOCK_COLORS[blockForItem(item)] ?? [1, 1, 1], 6, 1.5);
+      playToneNotes("place");
     } else {
       return;
     }
@@ -1505,9 +1877,44 @@ try {
     const item = selectedItem(inventory, selectedSlot);
     const name = itemName(item);
     const count = item === null ? 0 : item.count;
+    coordsEl.style.display = options.showCoords ? "" : "none";
     coordsEl.textContent = `x ${player.x.toFixed(1)} · y ${player.y.toFixed(1)} · z ${player.z.toFixed(1)}`;
-    seedEl.textContent = `seed: ${seedLabel(SEED)}`;
+    seedEl.textContent = `seed: ${seedLabel(SEED)} · ${MODE_NAMES[worldMeta.mode]} · ${DIFFICULTY_NAMES[worldMeta.difficulty]} · Day ${dayCount(skyElapsed)}${isDay(skyTime) ? "" : " 🌙"}`;
     selectedEl.textContent = `selected: ${name} · ${count} · hp ${Math.ceil(player.health)} · hunger ${Math.ceil(player.hunger)}`;
+    renderVitals();
+  }
+
+  function renderVitals() {
+    renderHearts(heartsEl, Math.ceil(player.health), isHardcore());
+    const showHunger = worldMeta.mode !== GAME_MODES.CREATIVE;
+    hungerEl.style.display = showHunger ? "" : "none";
+    if (showHunger) renderHungerRow(hungerEl, Math.ceil(player.hunger));
+    const low = player.health <= 6 && player.health > 0;
+    vignetteEl.style.opacity = low ? String(1 - player.health / 8) : "0";
+  }
+
+  function renderHearts(container, value, hardcore) {
+    void hardcore;
+    let html = "";
+    for (let heart = 0; heart < 10; heart += 1) {
+      const points = Math.max(0, Math.min(2, value - heart * 2));
+      const glyph = points >= 2 ? "❤" : points >= 1 ? "💔" : "♡";
+      const cls = points >= 2 ? "" : points >= 1 ? "half" : "empty";
+      html += `<span class="${cls}">${glyph}</span>`;
+    }
+    vitalsEl.classList.toggle("hardcore", isHardcore());
+    container.innerHTML = html;
+  }
+
+  function renderHungerRow(container, value) {
+    let html = "";
+    for (let cell = 0; cell < 10; cell += 1) {
+      const points = Math.max(0, Math.min(2, value - cell * 2));
+      const glyph = points >= 2 ? "🍗" : points >= 1 ? "🍖" : "·";
+      const cls = points >= 2 ? "" : points >= 1 ? "half" : "empty";
+      html += `<span class="${cls}">${glyph}</span>`;
+    }
+    container.innerHTML = html;
   }
 
   function saveGame() {
@@ -1525,28 +1932,70 @@ try {
         villagers: villagerDomainState,
         villagerTick: BigInt(villagerTick),
       }));
+      upsertWorldMeta();
     } catch {
       // Saving is best-effort when storage is disabled or full.
     }
   }
 
+  function appendSkyCube(positions, colors, uvs, body) {
+    for (let faceIndex = 0; faceIndex < FACES.length; faceIndex += 1) {
+      for (const cornerIndex of [0, 1, 2, 0, 2, 3]) {
+        const corner = FACES[faceIndex].corners[cornerIndex];
+        positions.push(
+          body.center[0] + (corner[0] - 0.5) * body.size,
+          body.center[1] + (corner[1] - 0.5) * body.size,
+          body.center[2] + (corner[2] - 0.5) * body.size,
+        );
+        colors.push(body.color[0], body.color[1], body.color[2]);
+        appendUV(uvs, 0, cornerIndex);
+      }
+    }
+  }
+
+  function rebuildSkyMesh(eye) {
+    const positions = [];
+    const colors = [];
+    const uvs = [];
+    for (const body of skyBodies(eye, skyTime)) {
+      appendSkyCube(positions, colors, uvs, body);
+    }
+    skyVertexCount = positions.length / 3;
+    gl.bindBuffer(gl.ARRAY_BUFFER, skyPositionBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, skyColorBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, skyUvBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(uvs), gl.DYNAMIC_DRAW);
+  }
+
   function render() {
     resizeCanvas();
-    const sky = [
-      0.08 + 0.36 * daylight,
-      0.12 + 0.54 * daylight,
-      0.2 + 0.62 * daylight,
-    ];
+    const sky = skyColor(skyTime);
     gl.clearColor(sky[0], sky[1], sky[2], 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.enable(gl.DEPTH_TEST);
     gl.useProgram(program);
 
-    const eye = [player.x, player.y + EYE_HEIGHT, player.z];
-    const direction = cameraDirection(player);
+    const inMenu = screen === "title" || screen === "worlds" || screen === "create" || screen === "options" || screen === "help";
+    let eye;
+    let direction;
+    if (inMenu) {
+      const cx = spawnCell[0] + 0.5;
+      const cz = spawnCell[1] + 0.5;
+      eye = [cx + Math.cos(orbitAngle) * 22, spawnHeight + 9, cz + Math.sin(orbitAngle) * 22];
+      const target = [cx, spawnHeight + 2, cz];
+      const length = Math.hypot(target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]) || 1;
+      direction = [(target[0] - eye[0]) / length, (target[1] - eye[1]) / length, (target[2] - eye[2]) / length];
+    } else {
+      eye = [player.x, player.y + EYE_HEIGHT, player.z];
+      direction = cameraDirection(player);
+    }
     const center = [eye[0] + direction[0], eye[1] + direction[1], eye[2] + direction[2]];
     const view = lookAt(eye, center, [0, 1, 0]);
-    const projection = perspective(Math.PI / 2.6, canvas.width / canvas.height, 0.05, 120);
+    const sprintKick = !inMenu && isSprinting(held) && options.fovKick ? 8 : 0;
+    currentFov += ((options.fov + sprintKick) - currentFov) * 0.12;
+    const projection = perspective((currentFov * Math.PI) / 180, canvas.width / canvas.height, 0.05, 120);
     gl.uniformMatrix4fv(viewProjectionLocation, false, multiply4(projection, view));
     gl.uniform3f(cameraLocation, eye[0], eye[1], eye[2]);
     gl.uniform3f(skyColorLocation, sky[0], sky[1], sky[2]);
@@ -1568,6 +2017,17 @@ try {
     gl.bindBuffer(gl.ARRAY_BUFFER, dynamicUvBuffer);
     gl.vertexAttribPointer(uvLocation, 2, gl.FLOAT, false, 0, 0);
     gl.drawArrays(gl.TRIANGLES, 0, dynamicVertexCount);
+    rebuildSkyMesh(eye);
+    gl.bindBuffer(gl.ARRAY_BUFFER, skyPositionBuffer);
+    gl.enableVertexAttribArray(positionLocation);
+    gl.vertexAttribPointer(positionLocation, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, skyColorBuffer);
+    gl.enableVertexAttribArray(colorLocation);
+    gl.vertexAttribPointer(colorLocation, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, skyUvBuffer);
+    gl.enableVertexAttribArray(uvLocation);
+    gl.vertexAttribPointer(uvLocation, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, skyVertexCount);
   }
 
   function updateLockHint() {
@@ -1637,13 +2097,21 @@ try {
   document.addEventListener("pointerlockchange", () => {
     pointerLock.handleChange();
     updateLockHint();
+    if (document.pointerLockElement !== canvas && screen === "playing" && !paused) {
+      openPause();
+    }
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && screen === "playing") openPause();
   });
   document.addEventListener("mousemove", (event) => {
     if (document.pointerLockElement !== canvas) return;
-    player.yaw += event.movementX * 0.0022;
-    player.pitch = Math.max(-1.45, Math.min(1.45, player.pitch - event.movementY * 0.0022));
+    const scale = 0.0022 * options.sensitivity;
+    player.yaw += event.movementX * scale;
+    player.pitch = Math.max(-1.45, Math.min(1.45, player.pitch - event.movementY * scale));
   });
   window.addEventListener("keydown", (event) => {
+    if (screen !== "playing") return;
     if (event.code === "KeyE") {
       event.preventDefault();
       toggleInventory();
@@ -1681,12 +2149,19 @@ try {
       return;
     }
     if (inventoryOpen || furnaceOpen) return;
-    if (["KeyW", "KeyA", "KeyS", "KeyD", "Space"].includes(event.code)) {
+    if (["KeyW", "KeyA", "KeyS", "KeyD", "Space", "ShiftLeft", "ShiftRight"].includes(event.code)) {
       event.preventDefault();
+      if (event.code === "KeyW" && !event.repeat) {
+        if (performance.now() - (keydownLastWtap || 0) < 280) held.add("Sprint");
+        keydownLastWtap = performance.now();
+      }
       held.add(event.code);
     }
   });
-  window.addEventListener("keyup", (event) => held.delete(event.code));
+  window.addEventListener("keyup", (event) => {
+    held.delete(event.code);
+    if (event.code === "KeyW") held.delete("Sprint");
+  });
   window.addEventListener("resize", resizeCanvas);
   window.addEventListener("beforeunload", saveGame);
 
@@ -1697,6 +2172,253 @@ try {
   setFurnaceOpen(false);
   updateLockHint();
   updateHud();
+
+  const hudSectionEl = document.getElementById("hud");
+  const hotbarSectionEl = document.getElementById("hotbar");
+  const helpSectionEl = document.getElementById("help");
+
+  function setInGameUI(visible) {
+    hudSectionEl.hidden = !visible;
+    hotbarSectionEl.hidden = !visible;
+    heldItemViewEl.hidden = !visible;
+    inventoryToggleEl.hidden = !visible;
+    furnaceToggleEl.hidden = !visible;
+    helpSectionEl.hidden = !visible;
+    vitalsEl.hidden = !visible;
+  }
+
+  function enterPlaying() {
+    paused = false;
+    setInGameUI(true);
+    showScreen("playing");
+    pointerLock.request();
+  }
+
+  function openPause() {
+    if (screen !== "playing") return;
+    saveGame();
+    pauseInfoEl.textContent =
+      `${worldMeta.name} · ${MODE_NAMES[worldMeta.mode]} · ${DIFFICULTY_NAMES[worldMeta.difficulty]} · seed ${seedString}`;
+    paused = true;
+    setInGameUI(true);
+    showScreen("pause");
+  }
+
+  function openTitle() {
+    saveGame();
+    paused = true;
+    setInGameUI(false);
+    renderWorldList(seedString);
+    showScreen("title");
+  }
+
+  function playSelectedWorld() {
+    const saved = selectedWorldId ? findWorld(selectedWorldId) : null;
+    if (!saved) {
+      toast("Select a world first, or create a new one.");
+      return;
+    }
+    if (saved.seed === seedString) {
+      playToneNotes("click");
+      enterPlaying();
+      return;
+    }
+    window.location.search = `?seed=${encodeURIComponent(saved.seedText ?? saved.seed)}`;
+  }
+
+  function confirmCreateWorld() {
+    const name = worldNameInput.value.trim() || "New World";
+    const seedText = seedInput.value.trim() || randomSeedText();
+    const config = createWorldConfig({
+      name,
+      seedText,
+      mode: draftConfig.mode,
+      difficulty: draftConfig.difficulty,
+    });
+    const errors = validateWorldConfig(config);
+    if (errors.length > 0) {
+      createErrorEl.textContent = errors.join(" ");
+      createErrorEl.hidden = false;
+      return;
+    }
+    createErrorEl.hidden = true;
+    playToneNotes("click");
+    try {
+      window.localStorage.setItem(PENDING_KEY, JSON.stringify({
+        name: config.name,
+        seedText: config.seedText,
+        mode: config.mode,
+        difficulty: config.difficulty,
+      }));
+    } catch { /* best effort */ }
+    window.location.search = `?seed=${encodeURIComponent(config.seedText)}`;
+  }
+
+  function handleAction(action) {
+    playToneNotes("click");
+    switch (action) {
+      case "singleplayer":
+        renderWorldList(seedString);
+        setInGameUI(false);
+        showScreen("worlds");
+        break;
+      case "options":
+        optionsReturn = screen === "pause" ? "pause" : "title";
+        renderOptionsMenu();
+        showScreen("options");
+        break;
+      case "help":
+        showScreen("help");
+        break;
+      case "help-done":
+        showScreen("title");
+        break;
+      case "back-title":
+        showScreen("title");
+        break;
+      case "back-worlds":
+        renderWorldList(seedString);
+        showScreen("worlds");
+        break;
+      case "create":
+        draftConfig = createWorldConfig({ mode: GAME_MODES.SURVIVAL, difficulty: DIFFICULTIES.NORMAL });
+        worldNameInput.value = "";
+        renderCreateMenu();
+        showScreen("create");
+        break;
+      case "random-seed":
+        seedInput.value = randomSeedText();
+        break;
+      case "cycle-mode": {
+        const keepSeed = seedInput.value;
+        const keepName = worldNameInput.value;
+        draftConfig = createWorldConfig({
+          name: keepName,
+          seedText: keepSeed,
+          mode: cycleMode(draftConfig.mode),
+          difficulty: draftConfig.difficulty,
+        });
+        renderCreateMenu();
+        break;
+      }
+      case "cycle-difficulty":
+        draftConfig = createWorldConfig({
+          name: worldNameInput.value,
+          seedText: seedInput.value,
+          mode: draftConfig.mode,
+          difficulty: cycleDifficulty(draftConfig.difficulty),
+        });
+        renderCreateMenu();
+        break;
+      case "confirm-create":
+        confirmCreateWorld();
+        break;
+      case "play":
+        playSelectedWorld();
+        break;
+      case "delete": {
+        if (!selectedWorldId) {
+          toast("Nothing to delete.");
+          break;
+        }
+        const victim = findWorld(selectedWorldId);
+        if (victim && victim.seed !== seedString) {
+          try { window.localStorage.removeItem(`bend2craft-save-${victim.seed}`); } catch { /* best effort */ }
+        }
+        persistWorlds(loadWorlds().filter((world) => world.id !== selectedWorldId));
+        selectedWorldId = null;
+        renderWorldList(seedString);
+        toast("World deleted.");
+        break;
+      }
+      case "toggle-coords":
+        options.showCoords = !options.showCoords;
+        saveOptions();
+        updateHud();
+        break;
+      case "toggle-sound":
+        options.sound = !options.sound;
+        saveOptions();
+        break;
+      case "toggle-fovkick":
+        options.fovKick = !options.fovKick;
+        saveOptions();
+        break;
+      case "reset-options":
+        options = createDefaultOptions();
+        saveOptions();
+        break;
+      case "options-done":
+        saveOptions();
+        showScreen(optionsReturn === "pause" ? "pause" : "title");
+        break;
+      case "resume":
+        enterPlaying();
+        break;
+      case "pause-options":
+        optionsReturn = "pause";
+        renderOptionsMenu();
+        showScreen("options");
+        break;
+      case "respawn":
+        enterPlaying();
+        toast("Respawned. Watch your step.");
+        break;
+      case "quit-title":
+        openTitle();
+        break;
+      case "death-title":
+        openTitle();
+        break;
+      default:
+        break;
+    }
+  }
+
+  document.querySelectorAll("[data-action]").forEach((button) => {
+    button.addEventListener("click", () => handleAction(button.dataset.action));
+  });
+  worldListEl.addEventListener("click", (event) => {
+    const item = event.target.closest("[data-world]");
+    if (!item) return;
+    selectedWorldId = item.dataset.world;
+    renderWorldList(seedString);
+  });
+  worldListEl.addEventListener("dblclick", () => playSelectedWorld());
+  fovInput.addEventListener("input", () => {
+    options.fov = Number(fovInput.value);
+    fovValue.textContent = fovInput.value;
+  });
+  fovInput.addEventListener("change", saveOptions);
+  sensitivityInput.addEventListener("input", () => {
+    options.sensitivity = Number(sensitivityInput.value);
+    sensitivityValue.textContent = Number(sensitivityInput.value).toFixed(1);
+  });
+  sensitivityInput.addEventListener("change", saveOptions);
+
+  try {
+    const hardcoreName = window.sessionStorage.getItem(HARDCORE_DEATH_KEY);
+    if (hardcoreName !== null) {
+      window.sessionStorage.removeItem(HARDCORE_DEATH_KEY);
+      deathTitleEl.textContent = "Game Over!";
+      deathTitleEl.classList.add("dead-hardcore");
+      deathDetailEl.textContent = `Hardcore ${hardcoreName} ended — the world was deleted.`;
+      deathStatsEl.textContent = "Create a new world to try again.";
+      screens.death.querySelector('[data-action="respawn"]').style.display = "none";
+      setInGameUI(true);
+      showScreen("death");
+    } else {
+      renderWorldList(seedString);
+      renderCreateMenu();
+      renderOptionsMenu();
+      setInGameUI(false);
+      showScreen("title");
+    }
+  } catch {
+    setInGameUI(false);
+    showScreen("title");
+  }
+
   window.__bend2craft = {
     world: {
       seed: seedLabel(SEED),
@@ -1737,6 +2459,9 @@ try {
     getCrops: cropViews,
     getFarmland: farmlandViews,
     getPlayer: () => ({ ...player }),
+    getMode: () => worldMeta.mode,
+    getDifficulty: () => worldMeta.difficulty,
+    getSkyTime: () => ({ time: skyTime, elapsed: skyElapsed }),
     getInputState: () => ({
       held: [...held],
       pointerLocked: document.pointerLockElement === canvas,
@@ -1836,13 +2561,41 @@ try {
 
   let villagerSimulationSteps = 0;
   const playerTicker = createFixedTicker(1 / 60, (dt) => {
-    if (world.activeChunkCount() <= 0) {
+    if (paused || world.activeChunkCount() <= 0) {
       moveFrameActive = false;
       return;
     }
     moveFrameCalls += 1;
     moveFrameActive = true;
+    const wasGrounded = player.grounded;
+    if (wasGrounded) peakY = player.y;
+    else if (peakY === null || player.y > peakY) peakY = player.y;
     movePlayer(world, player, held, dt, spawnCell, spawnHeight, Number(World.width()), Number(World.depth()));
+    if (!wasGrounded && player.grounded && peakY !== null) {
+      const fall = peakY - player.y;
+      peakY = player.y;
+      if (fall > 3 && !isCreative()) {
+        lastDamageCause = "fall";
+        const health = applyDamage(player, Math.floor(fall) - 3);
+        flashDamage();
+        playToneNotes("hurt");
+        spawnParticles(player.x, player.y + 0.1, player.z, [0.6, 0.57, 0.5], 8, 1.8);
+        if (health <= 0) onDeath("fall");
+      } else if (fall > 1) {
+        spawnParticles(player.x, player.y + 0.1, player.z, [0.6, 0.57, 0.5], 6, 1.5);
+        playToneNotes("land");
+      }
+    }
+    if (player.grounded) {
+      stepAcc += Math.hypot(player.x - (playerTicker.lastX ?? player.x), player.z - (playerTicker.lastZ ?? player.z));
+      const sprinting = isSprinting(held);
+      if (stepAcc >= (sprinting ? 3 : 2.2)) {
+        stepAcc = 0;
+        playToneNotes("step");
+      }
+    }
+    playerTicker.lastX = player.x;
+    playerTicker.lastZ = player.z;
     if (world.loadAround(player.x, player.z).changed) playerStreamingDirty = true;
   });
   let previousPlayerTime = performance.now();
@@ -1854,6 +2607,7 @@ try {
   }, 16);
 
   const simulationTicker = createFixedTicker(0.2, (dt) => {
+    if (paused) return;
     updateMobs(dt);
     stepDrops(dt);
     simulationDynamicDirty = true;
@@ -1874,14 +2628,55 @@ try {
     simulationTicker.advance(elapsed);
   }, 50);
 
+  const DEATH_CAUSES = {
+    fall: "took fatal fall damage",
+    mob: "was slain by a zombie",
+    starve: "starved to death",
+    unknown: "died",
+  };
+
+  function onDeath(cause) {
+    if (screen === "death") return;
+    saveGame();
+    playToneNotes("death");
+    lastDamageCause = "unknown";
+    if (isHardcore()) {
+      try {
+        window.localStorage.removeItem(SAVE_KEY);
+        persistWorlds(loadWorlds().filter((world) => world.seed !== seedString));
+        window.sessionStorage.setItem(HARDCORE_DEATH_KEY, worldMeta.name);
+      } catch { /* best effort */ }
+      window.location.reload();
+      return;
+    }
+    deathTitleEl.textContent = "You died!";
+    deathTitleEl.classList.remove("dead-hardcore");
+    deathDetailEl.textContent = `${worldMeta.name} ${DEATH_CAUSES[cause] ?? DEATH_CAUSES.unknown}. Your blocks are still here.`;
+    deathStatsEl.textContent =
+      `Survived ${formatTime(deathStats.time)} · mined ${deathStats.mined} · placed ${deathStats.placed} · ${deathStats.kills} mobs slain`;
+    showScreen("death");
+    paused = true;
+  }
+
+  function formatTime(seconds) {
+    const total = Math.floor(seconds);
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+  }
+
   let previousTime = performance.now();
   function frame(now) {
     const dt = Math.min((now - previousTime) / 1000, 0.05);
     previousTime = now;
-    worldTime += dt;
-    daylight = 0.28 + 0.72 * (0.5 + 0.5 * Math.sin(worldTime * 0.08));
+    if (!paused) {
+      worldTime += dt;
+      daylight = 0.28 + 0.72 * (0.5 + 0.5 * Math.sin(worldTime * 0.08));
+      skyTime = (skyTime + dt / 600) % 1;
+      skyElapsed += dt;
+      deathStats.time += dt;
+      updateParticles(dt);
+    }
     if (playerStreamingDirty) playerStreamingDirty = false;
-    if (world.loadAround(player.x, player.z).changed) {
+    if (!paused && world.loadAround(player.x, player.z).changed) {
       rebuildHorizon();
       rebuildMesh(false);
     }
@@ -1893,7 +2688,13 @@ try {
       simulationDynamicDirty = false;
       rebuildDynamicMesh();
     }
+    if (prevFrame !== null && !paused) {
+      const jumped = Math.hypot(player.x - prevFrame.x, player.y - prevFrame.y, player.z - prevFrame.z) > 8;
+      if (jumped && prevFrame.hp > 0 && prevFrame.hp <= 5) onDeath(lastDamageCause);
+    }
+    prevFrame = { x: player.x, y: player.y, z: player.z, hp: player.health };
     updateHud();
+    if (screen === "title" || screen === "worlds" || screen === "create") orbitAngle += dt * 0.045;
     render();
     requestAnimationFrame(frame);
   }

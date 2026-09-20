@@ -7,7 +7,19 @@ export const BLOCK_INFO = Object.freeze({
   3: Object.freeze({ name: "grass", color: "#58ad42" }),
   4: Object.freeze({ name: "leaves", color: "#2e8c43" }),
   5: Object.freeze({ name: "wood", color: "#a66a3f" }),
+  6: Object.freeze({ name: "apple", color: "#d63b2f" }),
+  7: Object.freeze({ name: "porkchop", color: "#f0a0a8" }),
+  8: Object.freeze({ name: "rotten flesh", color: "#6b5b3e" }),
 });
+
+// Hunger restored by eating one item. Apples drop from leaves,
+// pork from pigs and flesh from zombies.
+export const FOOD_VALUES = Object.freeze({ 6: 4, 7: 3, 8: 2 });
+
+// Food is eaten, never placed as a block.
+export function isPlaceable(block) {
+  return block !== 0 && !(block in FOOD_VALUES);
+}
 
 const INITIAL_SLOTS = [
   { block: 1, count: 32 },

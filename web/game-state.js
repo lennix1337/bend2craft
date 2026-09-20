@@ -2,8 +2,20 @@ export const PLAYER_RADIUS = 0.3;
 export const PLAYER_HEIGHT = 1.8;
 export const EYE_HEIGHT = 1.62;
 export const MOVE_SPEED = 4.5;
+export const SPRINT_MULTIPLIER = 1.5;
+export const SPRINT_SPEED = MOVE_SPEED * SPRINT_MULTIPLIER;
+export const FLY_SPEED = 7.0;
 export const JUMP_SPEED = 7.0;
 export const GRAVITY = 20.0;
+
+const SPRINT_KEYS = ["ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight", "Sprint"];
+
+export function isSprinting(held) {
+  for (const key of SPRINT_KEYS) {
+    if (held.has(key)) return true;
+  }
+  return false;
+}
 
 export function createWorldState(width, depth, maxY) {
   const blocks = new Uint8Array(width * depth * maxY);
@@ -26,6 +38,9 @@ export function createPlayer(spawnCell, spawnHeight) {
     pitch: -0.18,
     velocityY: 0,
     grounded: false,
+    flying: false,
+    peakY: spawnHeight + 0.05,
+    lastFall: 0,
   };
 }
 
@@ -84,37 +99,81 @@ export function raycast(world, player, maxDistance = 8, step = 0.05) {
   return null;
 }
 
-export function movePlayer(world, player, held, dt, spawnCell, spawnHeight) {
+export function movePlayer(world, player, held, dt, spawnCell, spawnHeight, options = {}) {
   const forward = (held.has("KeyW") ? 1 : 0) - (held.has("KeyS") ? 1 : 0);
   const strafe = (held.has("KeyD") ? 1 : 0) - (held.has("KeyA") ? 1 : 0);
+  const moving = forward !== 0 || strafe !== 0;
+  const sprintIntent = options.sprint ?? isSprinting(held);
+  const sprinting = sprintIntent && moving && !player.flying;
+  const speed = options.speed ?? (player.flying ? FLY_SPEED : sprinting ? SPRINT_SPEED : MOVE_SPEED);
   const length = Math.hypot(forward, strafe) || 1;
   const f = forward / length;
   const s = strafe / length;
-  const dx = (Math.sin(player.yaw) * f + Math.cos(player.yaw) * s) * MOVE_SPEED * dt;
-  const dz = (-Math.cos(player.yaw) * f + Math.sin(player.yaw) * s) * MOVE_SPEED * dt;
+  const dx = (Math.sin(player.yaw) * f + Math.cos(player.yaw) * s) * speed * dt;
+  const dz = (-Math.cos(player.yaw) * f + Math.sin(player.yaw) * s) * speed * dt;
 
+  const startX = player.x;
+  const startZ = player.z;
   if (!collidesAt(world, player, player.x + dx, player.y, player.z)) player.x += dx;
   if (!collidesAt(world, player, player.x, player.y, player.z + dz)) player.z += dz;
+  const moved = Math.hypot(player.x - startX, player.z - startZ);
 
-  player.velocityY -= GRAVITY * dt;
-  const dy = player.velocityY * dt;
-  const nextY = player.y + dy;
-  if (!collidesAt(world, player, player.x, nextY, player.z)) {
-    player.y = nextY;
+  if (player.peakY === undefined) player.peakY = player.y;
+  if (player.lastFall === undefined) player.lastFall = 0;
+  const wasGrounded = player.grounded;
+  let landed = false;
+  let fallDistance = 0;
+
+  if (player.flying) {
+    const up = held.has("Space") ? 1 : 0;
+    const down = held.has("ShiftLeft") || held.has("ShiftRight") ? 1 : 0;
+    const dy = (up - down) * FLY_SPEED * dt;
+    const nextY = player.y + dy;
+    if (!collidesAt(world, player, player.x, nextY, player.z)) {
+      player.y = nextY;
+    }
+    player.velocityY = 0;
     player.grounded = false;
-  } else if (dy < 0) {
-    player.y = Math.floor(nextY) + 1;
-    player.velocityY = 0;
-    player.grounded = true;
-  } else {
-    player.y = Math.floor(nextY + PLAYER_HEIGHT) - PLAYER_HEIGHT;
-    player.velocityY = 0;
+    player.peakY = player.y;
+  } else if (wasGrounded && player.velocityY === 0 && player.y > player.peakY) {
+    player.peakY = player.y;
   }
 
-  if (player.y < -10) {
-    player.x = spawnCell[0] + 0.5;
-    player.y = spawnHeight + 0.05;
-    player.z = spawnCell[1] + 0.5;
-    player.velocityY = 0;
+  if (!player.flying) {
+    player.velocityY -= GRAVITY * dt;
+    const dy = player.velocityY * dt;
+    const nextY = player.y + dy;
+    if (!collidesAt(world, player, player.x, nextY, player.z)) {
+      if (player.grounded) player.peakY = player.y;
+      player.y = nextY;
+      player.grounded = false;
+      if (player.y > player.peakY) player.peakY = player.y;
+    } else if (dy < 0) {
+      player.y = Math.floor(nextY) + 1;
+      player.velocityY = 0;
+      player.grounded = true;
+      fallDistance = Math.max(0, player.peakY - player.y);
+      player.lastFall = fallDistance;
+      player.peakY = player.y;
+      landed = true;
+    } else {
+      player.y = Math.floor(nextY + PLAYER_HEIGHT) - PLAYER_HEIGHT;
+      player.velocityY = 0;
+    }
   }
+
+  let voidFell = false;
+  if (player.y < -10) {
+    voidFell = true;
+    if (options.voidRespawn ?? true) {
+      player.x = spawnCell[0] + 0.5;
+      player.y = spawnHeight + 0.05;
+      player.z = spawnCell[1] + 0.5;
+      player.velocityY = 0;
+      player.peakY = player.y;
+      player.lastFall = 0;
+    }
+  }
+
+  return { moved, sprinting, landed, fallDistance, voidFell };
 }

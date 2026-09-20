@@ -3,29 +3,169 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#87b8d8">
+  <meta name="theme-color" content="#1a2b1f">
   <title>Bend2Craft</title>
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
   <main id="game-shell">
     <canvas id="game" aria-label="Voxel world"></canvas>
+    <div id="vignette" aria-hidden="true"></div>
+    <div id="damage-flash" aria-hidden="true"></div>
     <div id="crosshair" aria-hidden="true"></div>
-    <section id="hud" aria-live="polite">
-      <div class="brand">BEND2CRAFT <span>inventory slice</span></div>
+
+    <section id="hud" aria-live="polite" hidden>
+      <div class="brand">BEND2CRAFT <span id="mode-badge">survival</span></div>
       <div id="seed">seed: —</div>
       <div id="coords">loading world…</div>
       <div id="selected">selected: —</div>
       <div id="stats">— blocks visible</div>
     </section>
-    <section id="hotbar" aria-label="Inventory">
+
+    <section id="vitals" aria-live="polite" hidden>
+      <div id="hearts" aria-label="Health"></div>
+      <div id="hunger" aria-label="Hunger"></div>
+    </section>
+
+    <section id="hotbar" aria-label="Inventory" hidden>
       <div id="hotbar-slots"></div>
     </section>
-    <section id="help">
+
+    <section id="help" hidden>
       <strong id="lock-hint">Click to capture the mouse</strong>
-      <span>WASD move · mouse look · Space jump</span>
-      <span>1–9 hotbar · left click remove · right click place</span>
+      <span>WASD move · Shift sprint · Space jump · 1–9 hotbar</span>
+      <span>Left click break · Right click place/eat · E eat · Esc menu</span>
     </section>
+
+    <div id="toast" role="status" hidden></div>
+
+    <section id="screen-title" class="screen">
+      <div class="menu-panel">
+        <h1 class="logo">BEND2CRAFT</h1>
+        <p class="splash">Punch trees, eat apples, mind the fall!</p>
+        <div class="menu-buttons">
+          <button class="mc-button" type="button" data-action="singleplayer">Singleplayer</button>
+          <button class="mc-button" type="button" data-action="options">Options...</button>
+          <button class="mc-button" type="button" data-action="help">How to Play...</button>
+        </div>
+        <p class="menu-foot">Bend 2 engine core · Survival, Creative and Hardcore</p>
+      </div>
+    </section>
+
+    <section id="screen-worlds" class="screen" hidden>
+      <div class="menu-panel">
+        <h2>Select World</h2>
+        <div id="world-list" class="world-list"></div>
+        <div class="menu-buttons">
+          <button class="mc-button" type="button" data-action="play">Play Selected World</button>
+          <button class="mc-button" type="button" data-action="create">Create New World</button>
+          <div class="menu-row">
+            <button class="mc-button small" type="button" data-action="delete">Delete</button>
+            <button class="mc-button small" type="button" data-action="back-title">Back</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="screen-create" class="screen" hidden>
+      <div class="menu-panel">
+        <h2>Create New World</h2>
+        <label class="field">
+          <span>World Name</span>
+          <input id="input-world-name" type="text" maxlength="32" placeholder="New World" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>Seed (number or words, empty is random)</span>
+          <span class="field-row">
+            <input id="input-seed" type="text" maxlength="64" placeholder="e.g. forest" autocomplete="off">
+            <button class="mc-button small" type="button" data-action="random-seed">Random</button>
+          </span>
+        </label>
+        <button class="mc-button" type="button" data-action="cycle-mode">Game Mode: Survival</button>
+        <p id="mode-description" class="field-hint">Gather blocks, eat food and survive falls, hunger and the void.</p>
+        <button class="mc-button" type="button" data-action="cycle-difficulty">Difficulty: Normal</button>
+        <p id="create-error" class="form-error" hidden></p>
+        <div class="menu-buttons">
+          <button class="mc-button primary" type="button" data-action="confirm-create">Create New World</button>
+          <button class="mc-button" type="button" data-action="back-worlds">Cancel</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="screen-options" class="screen" hidden>
+      <div class="menu-panel">
+        <h2>Options</h2>
+        <label class="field">
+          <span>Field of View: <output id="fov-value">75</output></span>
+          <input id="input-fov" type="range" min="60" max="110" step="1" value="75">
+        </label>
+        <label class="field">
+          <span>Mouse Sensitivity: <output id="sensitivity-value">1.0</output></span>
+          <input id="input-sensitivity" type="range" min="0.5" max="3" step="0.1" value="1">
+        </label>
+        <div class="menu-buttons">
+          <button class="mc-button small" type="button" data-action="toggle-coords">Coordinates: ON</button>
+          <button class="mc-button small" type="button" data-action="toggle-sound">Sound: ON</button>
+          <button class="mc-button small" type="button" data-action="toggle-fovkick">Sprint FOV: ON</button>
+          <button class="mc-button small" type="button" data-action="reset-options">Reset Defaults</button>
+          <button class="mc-button primary" type="button" data-action="options-done">Done</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="screen-help" class="screen" hidden>
+      <div class="menu-panel">
+        <h2>How to Play</h2>
+        <ul class="help-list">
+          <li><strong>WASD</strong> move · <strong>Mouse</strong> look · <strong>Space</strong> jump</li>
+          <li><strong>Shift</strong> or double-tap <strong>W</strong> to sprint (drains hunger)</li>
+          <li><strong>Left click</strong> break · <strong>Right click</strong> place or eat</li>
+          <li><strong>E</strong> eat selected food · <strong>1–9</strong> hotbar · <strong>Esc</strong> menu</li>
+          <li>Leaves sometimes drop <strong>apples</strong> that restore hunger</li>
+          <li>Falls beyond 3 blocks hurt · empty hunger starves you</li>
+          <li><strong>Pigs</strong> drop pork · <strong>zombies</strong> hunt at night and burn by day</li>
+          <li>Left click a mob to fight it · watch the Day counter up top</li>
+          <li><strong>Creative</strong>: unlimited blocks, double-tap Space to fly</li>
+          <li><strong>Hardcore</strong>: Hard difficulty, death deletes the world</li>
+        </ul>
+        <div class="menu-buttons">
+          <button class="mc-button primary" type="button" data-action="help-done">Done</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="screen-loading" class="screen" hidden>
+      <div class="menu-panel narrow">
+        <h2>Generating world...</h2>
+        <p id="loading-detail" class="field-hint">Shaping terrain with Bend 2.</p>
+      </div>
+    </section>
+
+    <section id="screen-pause" class="screen" hidden>
+      <div class="menu-panel">
+        <h2>Game Menu</h2>
+        <p id="pause-info" class="field-hint">—</p>
+        <div class="menu-buttons">
+          <button class="mc-button primary" type="button" data-action="resume">Back to Game</button>
+          <button class="mc-button" type="button" data-action="pause-options">Options...</button>
+          <button class="mc-button" type="button" data-action="respawn-pause">Respawn</button>
+          <button class="mc-button" type="button" data-action="quit-title">Save &amp; Quit to Title</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="screen-death" class="screen" hidden>
+      <div class="menu-panel">
+        <h2 id="death-title">You died!</h2>
+        <p id="death-detail" class="field-hint">—</p>
+        <p id="death-stats" class="field-hint">—</p>
+        <div class="menu-buttons">
+          <button class="mc-button primary" type="button" data-action="respawn">Respawn</button>
+          <button class="mc-button" type="button" data-action="death-title">Title Screen</button>
+        </div>
+      </div>
+    </section>
+
     <div id="error" role="alert" hidden></div>
   </main>
   <script type="module" src="./main.js"></script>

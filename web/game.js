@@ -27,6 +27,7 @@ import {
   consume,
   createInventory,
   craft,
+  craftGrid,
   emptyBucket,
   emptyLavaBucket,
   fillBucket,
@@ -41,6 +42,7 @@ import {
   placeInteraction,
   moveItem,
   selectedItem,
+  shapedRecipePattern,
   tradeInventory,
   handDamage,
   useTool,
@@ -156,6 +158,9 @@ const chestPanelEl = document.getElementById("chest-panel");
 const inventorySlotsEl = document.getElementById("inventory-slots");
 const chestSlotsEl = document.getElementById("chest-slots");
 const recipeListEl = document.getElementById("recipe-list");
+const shapedRecipeEl = document.getElementById("shaped-recipe");
+const craftingGridEl = document.getElementById("crafting-grid");
+const shapedStatusEl = document.getElementById("shaped-status");
 const inventoryMessageEl = document.getElementById("inventory-message");
 const furnaceStatusEl = document.getElementById("furnace-status");
 const chestStatusEl = document.getElementById("chest-status");
@@ -1313,6 +1318,7 @@ try {
   let selectedSlot = 0;
   let inventoryCursor = null;
   let inventoryCursorAmount = null;
+  let craftingGrid = Array.from({ length: 9 }, () => ({ block: 0, count: 0 }));
   let inventoryOpen = false;
   let furnaceWorldState = Furnaces.empty();
   let activeFurnace = null;
@@ -2223,10 +2229,91 @@ try {
       .join("");
   }
 
+  function emptyCraftingGrid() {
+    return Array.from({ length: 9 }, () => ({ block: 0, count: 0 }));
+  }
+
+  function renderCraftingGrid() {
+    if (craftingGridEl === null) return;
+    craftingGridEl.innerHTML = craftingGrid.map((item, slot) => {
+      const empty = itemId(item) === null;
+      const name = itemName(item);
+      return `<button class="inventory-slot${empty ? " empty" : ""}" type="button" data-crafting-slot="${slot}"
+        aria-label="Crafting slot ${slot + 1}: ${name}, ${item?.count ?? 0}">
+        <span class="slot-swatch" data-item="${empty ? "" : name}" style="--slot-color: ${itemColor(item)}"></span>
+        <span class="slot-count">${item?.count || ""}</span>
+      </button>`;
+    }).join("");
+    paintSlotIcons();
+  }
+
+  function returnCraftingGrid() {
+    if (!craftingGrid.some((item) => itemId(item) !== null && Number(item.count) > 0)) return true;
+    const trial = inventory.map((slot) => ({ ...slot }));
+    for (const item of craftingGrid) {
+      const name = itemId(item);
+      const count = Number(item.count ?? 0);
+      if (name === null || count <= 0) continue;
+      if (!collectItem(trial, name, count)) {
+        if (shapedStatusEl !== null) shapedStatusEl.textContent = "Make room before returning the crafting grid.";
+        return false;
+      }
+    }
+    inventory.splice(0, inventory.length, ...trial);
+    craftingGrid = emptyCraftingGrid();
+    return true;
+  }
+
+  function loadShapedRecipe(recipeId = shapedRecipeEl?.value ?? RECIPES[0]?.id) {
+    if (recipeId === undefined) return false;
+    if (!returnCraftingGrid()) return false;
+    const pattern = shapedRecipePattern(recipeId);
+    if (pattern === null) return false;
+    const trial = inventory.map((slot) => ({ ...slot }));
+    const nextGrid = emptyCraftingGrid();
+    for (let index = 0; index < pattern.length; index += 1) {
+      const itemNumber = pattern[index];
+      if (itemNumber === 0) continue;
+      const name = itemNameFromId(itemNumber);
+      const sourceIndex = trial.findIndex((slot) => itemId(slot) === name && Number(slot.count) > 0);
+      if (sourceIndex === -1 || !consume(trial, sourceIndex, 1)) {
+        if (shapedStatusEl !== null) shapedStatusEl.textContent = `Missing ${name} for this pattern.`;
+        return false;
+      }
+      const source = inventory.find((slot) => itemId(slot) === name);
+      nextGrid[index] = source?.block !== undefined
+        ? { block: source.block, count: 1 }
+        : { item: name, count: 1 };
+    }
+    inventory.splice(0, inventory.length, ...trial);
+    craftingGrid = nextGrid;
+    if (shapedStatusEl !== null) shapedStatusEl.textContent = "Pattern loaded. Craft or return the ingredients.";
+    refreshInventoryUi();
+    return true;
+  }
+
+  function craftShapedRecipe(recipeId = shapedRecipeEl?.value ?? RECIPES[0]?.id) {
+    if (recipeId === undefined) return false;
+    const result = craftGrid(inventory, craftingGrid, recipeId);
+    if (!result.ok) {
+      if (shapedStatusEl !== null) shapedStatusEl.textContent = "The 3×3 pattern is not valid or the inventory is full.";
+      return false;
+    }
+    craftingGrid = result.grid;
+    const outputName = itemNameFromId(result.output) ?? "item";
+    if (shapedStatusEl !== null) shapedStatusEl.textContent = `Crafted ${result.amount} ${outputName}.`;
+    refreshInventoryUi();
+    return true;
+  }
+
   function renderInventoryPanel() {
     inventorySlotsEl.innerHTML = inventory
       .map((item, slot) => slotMarkup(item, slot, "inventory-slot"))
       .join("");
+    if (shapedRecipeEl !== null && shapedRecipeEl.options.length === 0) {
+      shapedRecipeEl.innerHTML = RECIPES.map((recipe) => `<option value="${recipe.id}">${recipe.name}</option>`).join("");
+    }
+    renderCraftingGrid();
     recipeListEl.innerHTML = RECIPES.map((recipe) => {
       const ingredients = recipe.ingredients
         .map(({ item, count }) => `${count} ${itemName(item)}`)
@@ -2274,6 +2361,7 @@ try {
   function setInventoryOpen(open) {
     if (open && furnaceOpen) setFurnaceOpen(false);
     if (open && chestOpen) setChestOpen(false);
+    if (!open && !returnCraftingGrid()) return;
     inventoryOpen = open;
     inventoryCursor = null;
     inventoryCursorAmount = null;
@@ -3064,6 +3152,7 @@ try {
 
   function saveGame() {
     try {
+      returnCraftingGrid();
       saveTransactional(window.localStorage, SAVE_KEY, {
         version: 1,
         edits: world.getEdits(),
@@ -3318,6 +3407,15 @@ try {
   });
   inventoryPanelEl.addEventListener("click", (event) => {
     if (event.target.closest("[data-close-inventory]") !== null) toggleInventory();
+    const action = event.target.closest("[data-shaped-action]")?.dataset.shapedAction;
+    if (action === "load") loadShapedRecipe();
+    else if (action === "craft") craftShapedRecipe();
+    else if (action === "return") {
+      if (returnCraftingGrid()) {
+        if (shapedStatusEl !== null) shapedStatusEl.textContent = "Ingredients returned.";
+        refreshInventoryUi();
+      }
+    }
   });
   furnacePanelEl.addEventListener("click", (event) => {
     if (event.target.closest("[data-close-furnace]") !== null) {

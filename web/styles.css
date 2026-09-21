@@ -403,6 +403,14 @@ body { background: #7caec4; }
 .recipe-name { font-weight: 700; }
 .recipe-cost, .recipe-output { color: var(--muted); font-size: 10px; }
 .recipe-output { color: #ffe17b; }
+.shaped-crafting { display: grid; gap: 8px; margin-bottom: 12px; padding: 10px; border: 1px solid rgb(255 255 255 / 0.14); border-radius: 4px; background: rgb(0 0 0 / 0.14); }
+.shaped-crafting .field { margin: 0; }
+.crafting-grid { display: grid; grid-template-columns: repeat(3, minmax(40px, 1fr)); gap: 4px; width: min(210px, 100%); }
+.crafting-grid .inventory-slot { height: 54px; }
+.shaped-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.shaped-actions button { padding: 6px 8px; border: 2px solid var(--bevel-dark); border-top-color: var(--bevel-light); border-radius: 3px; background: rgb(33 36 37 / 0.9); color: var(--text); cursor: pointer; font: 11px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.shaped-actions button:hover, .shaped-actions button:focus-visible { border-color: #ffe17b; outline: none; }
+#shaped-status { min-height: 2em; margin: 0; color: var(--muted); font-size: 11px; }
 #inventory-message { min-height: 2.6em; margin: 10px 0 0; color: var(--muted); font-size: 11px; }
 
 #crosshair {

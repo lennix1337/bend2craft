@@ -55,6 +55,19 @@
         </section>
         <section class="crafting-section" aria-labelledby="recipes-title">
           <h3 id="recipes-title">Recipes</h3>
+          <div class="shaped-crafting" aria-label="Shaped 3 by 3 crafting">
+            <label class="field">
+              <span>3×3 shaped recipe</span>
+              <select id="shaped-recipe"></select>
+            </label>
+            <div id="crafting-grid" class="crafting-grid" aria-label="3 by 3 crafting grid"></div>
+            <div class="shaped-actions">
+              <button type="button" data-shaped-action="load">Load ingredients</button>
+              <button type="button" data-shaped-action="craft">Craft output</button>
+              <button type="button" data-shaped-action="return">Return ingredients</button>
+            </div>
+            <p id="shaped-status" role="status" aria-live="polite">Load a recipe pattern to begin.</p>
+          </div>
           <div id="recipe-list" class="recipe-list"></div>
           <p id="inventory-message" role="status" aria-live="polite">Select a recipe when you have its ingredients.</p>
         </section>

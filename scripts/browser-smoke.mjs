@@ -370,6 +370,21 @@ try {
   assert.ok(inventoryIconProbe.painted > 0, "open inventory slots must use the item atlas icons");
   assert.equal(inventoryIconProbe.namesHidden, true);
   assert.ok(inventoryIconProbe.draggable > 0, "inventory slots must support drag transfer");
+  await page.locator("#shaped-recipe").selectOption("planks");
+  await page.locator('[data-shaped-action="load"]').click();
+  const shapedLoaded = await page.evaluate(() => ({
+    occupied: document.querySelectorAll("#crafting-grid .inventory-slot:not(.empty)").length,
+    status: document.getElementById("shaped-status")?.textContent,
+  }));
+  assert.equal(shapedLoaded.occupied, 1);
+  assert.match(shapedLoaded.status ?? "", /Pattern loaded/);
+  await page.locator('[data-shaped-action="craft"]').click();
+  const shapedCrafted = await page.evaluate(() => ({
+    occupied: document.querySelectorAll("#crafting-grid .inventory-slot:not(.empty)").length,
+    inventory: window.__bend2craft.getInventory(),
+  }));
+  assert.equal(shapedCrafted.occupied, 0);
+  assert.ok(shapedCrafted.inventory.some((item) => item.item === "planks"));
   await page.locator("[data-close-inventory]").click();
   await page.waitForFunction(() => document.getElementById("inventory-panel")?.hidden === true);
 
@@ -432,7 +447,7 @@ try {
 
   assert.deepEqual(consoleErrors, []);
   assert.deepEqual(pageErrors, []);
-  console.log(JSON.stringify({ ...state, textureProbe, animatedSurfaceProbe, atlasProbe, interactionResult, mobProbe, collectedInventory, damageProbe, persistenceBefore, persistenceAfter, entityPersistenceBefore, entityPersistenceAfter, negativeState, streamingSwap, inventoryToggle: "ok", chestProbe, dropProbe, consoleErrors, pageErrors }));
+  console.log(JSON.stringify({ ...state, textureProbe, animatedSurfaceProbe, atlasProbe, interactionResult, mobProbe, collectedInventory, damageProbe, persistenceBefore, persistenceAfter, entityPersistenceBefore, entityPersistenceAfter, negativeState, streamingSwap, inventoryToggle: "ok", shapedLoaded, shapedCrafted, chestProbe, dropProbe, consoleErrors, pageErrors }));
 } finally {
   await browser.close();
 }

@@ -243,13 +243,13 @@ function slotView(item, count, durability, previous, durabilityByItem) {
   return view;
 }
 
-function viewFromDomain(list, previous = [], durabilityByItem = null) {
+function viewFromDomain(list, previous = [], durabilityByItem = null, expectedLength = INVENTORY_SIZE) {
   const view = [];
   for (let node = list; node?.$ === "Con"; node = node.tail) {
     const slot = node.head;
     view.push(slotView(Number(slot.item), Number(slot.count), Number(slot.durability), previous[view.length], durabilityByItem));
   }
-  if (view.length !== INVENTORY_SIZE) throw new TypeError("Bend inventory returned an invalid slot count");
+  if (view.length !== expectedLength) throw new TypeError("Bend inventory returned an invalid slot count");
   return view;
 }
 
@@ -506,6 +506,31 @@ export function getRecipe(recipeId) {
 function recipeIndex(recipeId) {
   const recipe = getRecipe(recipeId);
   return recipe === null ? -1 : RECIPES.indexOf(recipe);
+}
+
+export function shapedRecipePattern(recipeId) {
+  const index = recipeIndex(recipeId);
+  if (index === -1) return null;
+  return valuesFromList(InventoryDomain.shape_pattern(BigInt(index)));
+}
+
+export function craftGrid(inventory, grid, recipeId) {
+  const index = recipeIndex(recipeId);
+  if (index === -1 || !Array.isArray(grid) || grid.length !== 9) {
+    return { ok: false, grid: Array.isArray(grid) ? grid : [] };
+  }
+  const result = InventoryDomain.craft_grid(
+    stateFor(inventory),
+    domainFromView(grid),
+    BigInt(index),
+  );
+  applyResult(inventory, result);
+  return {
+    ok: Boolean(result.ok),
+    grid: viewFromDomain(result.grid, grid, null, 9),
+    output: Number(result.output),
+    amount: Number(result.amount),
+  };
 }
 
 export function canCraft(inventory, recipeId) {

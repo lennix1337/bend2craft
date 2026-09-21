@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   createInventory,
   selectedItem,
+  shapedRecipePattern,
   collect,
   consume,
   HOTBAR_SIZE,
@@ -15,6 +16,7 @@ import {
   collectItem,
   countItem,
   craft,
+  craftGrid,
   foodValue,
   handDamage,
   isPlaceable,
@@ -139,6 +141,15 @@ assert.deepEqual(RECIPES[11].ingredients, [{ item: "planks", count: 2 }, { item:
 assert.deepEqual(RECIPES[11].output, { item: "wooden_hoe", count: 1 });
 assert.deepEqual(RECIPES[12].ingredients, [{ item: "iron_ingot", count: 3 }]);
 assert.deepEqual(RECIPES[12].output, { item: "empty_bucket", count: 1 });
+assert.deepEqual(shapedRecipePattern("planks"), [5, 0, 0, 0, 0, 0, 0, 0, 0]);
+const shapedInventory = createInventory();
+const shapedGrid = shapedRecipePattern("planks").map((item) => item === 5
+  ? { block: 5, count: 1 }
+  : { block: 0, count: 0 });
+const shapedCraft = craftGrid(shapedInventory, shapedGrid, "planks");
+assert.equal(shapedCraft.ok, true);
+assert.equal(countItem(shapedInventory, "planks"), 4);
+assert.equal(shapedCraft.grid[0].count, 0);
 
 const planks = createInventory();
 assert.equal(canCraft(planks, "planks"), true);

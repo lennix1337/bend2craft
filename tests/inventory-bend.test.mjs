@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import Inventory from "../world/inventory.bend";
 
-function slotsFromList(list) {
+function slotsFromList(list, expected = 36) {
   const slots = [];
   for (let node = list; node?.$ === "Con"; node = node.tail) slots.push(node.head);
-  assert.equal(list?.$ === "Nil" || slots.length === 36, true);
+  assert.equal(list?.$ === "Nil" || slots.length === expected, true);
   return slots;
 }
 
@@ -12,6 +12,12 @@ function valuesFromList(list) {
   const values = [];
   for (let node = list; node?.$ === "Con"; node = node.tail) values.push(Number(node.head));
   return values;
+}
+
+function listFrom(values) {
+  let list = { $: "Nil" };
+  for (let index = values.length - 1; index >= 0; index -= 1) list = { $: "Con", head: values[index], tail: list };
+  return list;
 }
 
 const slots = slotsFromList(Inventory.create());
@@ -135,4 +141,19 @@ const toolIndex = slotsFromList(toolInventory.slots).findIndex((slot) => Number(
 const damagedTool = Inventory.use_tool_at(toolInventory.slots, BigInt(toolIndex));
 assert.equal(damagedTool.ok, true);
 assert.equal(Number(slotsFromList(damagedTool.slots)[toolIndex].durability), 58);
+
+const shapedGrid = listFrom([
+  Inventory.make_slot(5, 1, 0),
+  ...Array.from({ length: 8 }, () => Inventory.make_slot(0, 0, 0)),
+]);
+const shaped = Inventory.craft_grid(Inventory.create(), shapedGrid, 0n);
+assert.equal(shaped.ok, true);
+assert.equal(Number(slotsFromList(Inventory.grid_result_grid(shaped), 9)[0].item), 0);
+assert.equal(Number(slotsFromList(Inventory.grid_result_slots(shaped)).find((slot) => Number(slot.item) === 8).count), 4);
+const wrongShape = Inventory.craft_grid(Inventory.create(), listFrom([
+  Inventory.make_slot(5, 1, 0),
+  Inventory.make_slot(5, 1, 0),
+  ...Array.from({ length: 7 }, () => Inventory.make_slot(0, 0, 0)),
+]), 0n);
+assert.equal(wrongShape.ok, false);
 console.log("bend inventory ok");

@@ -20,6 +20,9 @@ type Slot is Data:
 type InventoryResult is Data:
   InventoryResult{slots: List<&2, Slot>, ok: Bool}
 
+type GridCraftResult is Data:
+  GridCraftResult{slots: List<&2, Slot>, grid: List<&2, Slot>, output: U32, amount: U32, ok: Bool}
+
 type TradeResult is Data:
   TradeResult{slots: List<&2, Slot>, ok: Bool}
 
@@ -445,6 +448,154 @@ def recipe_data() -> List<U32>:
   9 <> 1 <> 14 <> 1 <> 39 <> 4 <> 0 <> 0 <>
   8 <> 6 <> 20 <> 1 <> 38 <> 1 <> 0 <> 0 <>
   26 <> 3 <> 0 <> 0 <> 41 <> 1 <> 0 <> 0 <> Nil{}
+
+def grid_result_slots(state: GridCraftResult) -> List<&2, Slot>:
+  GridCraftResult{+slots, grid, output, amount, ok} = state
+  slots
+
+def grid_result_grid(state: GridCraftResult) -> List<&2, Slot>:
+  GridCraftResult{slots, +grid, output, amount, ok} = state
+  grid
+
+def grid_result_output(state: GridCraftResult) -> U32:
+  GridCraftResult{slots, grid, +output, amount, ok} = state
+  output
+
+def grid_result_amount(state: GridCraftResult) -> U32:
+  GridCraftResult{slots, grid, output, +amount, ok} = state
+  amount
+
+def grid_result_ok(state: GridCraftResult) -> Bool:
+  GridCraftResult{slots, grid, output, amount, +ok} = state
+  ok
+
+def empty_grid() -> List<&2, Slot>:
+  empty_slots(9n)
+
+def shape_pattern(+index: Nat) -> List<&2, U32>:
+  match index:
+    case 0n:
+      5 <> 0 <> 0 <> 0 <> 0 <> 0 <> 0 <> 0 <> 0 <> Nil{}
+    case 1n:
+      8 <> 0 <> 0 <> 0 <> 8 <> 0 <> 0 <> 0 <> 0 <> Nil{}
+    case 2n:
+      8 <> 8 <> 8 <> 8 <> 8 <> 8 <> 8 <> 8 <> 8 <> Nil{}
+    case 3n:
+      8 <> 8 <> 8 <> 0 <> 9 <> 0 <> 0 <> 9 <> 0 <> Nil{}
+    case 4n:
+      1 <> 1 <> 1 <> 0 <> 9 <> 0 <> 0 <> 9 <> 0 <> Nil{}
+    case 5n:
+      20 <> 20 <> 20 <> 0 <> 9 <> 0 <> 0 <> 9 <> 0 <> Nil{}
+    case 6n:
+      16 <> 16 <> 16 <> 0 <> 9 <> 0 <> 0 <> 9 <> 0 <> Nil{}
+    case 7n:
+      1 <> 1 <> 1 <> 1 <> 0 <> 1 <> 1 <> 1 <> 1 <> Nil{}
+    case 8n:
+      0 <> 14 <> 0 <> 0 <> 9 <> 0 <> 0 <> 0 <> 0 <> Nil{}
+    case 9n:
+      12 <> 12 <> 12 <> 8 <> 8 <> 8 <> 0 <> 0 <> 0 <> Nil{}
+    case 10n:
+      8 <> 8 <> 0 <> 8 <> 8 <> 0 <> 0 <> 0 <> 0 <> Nil{}
+    case 11n:
+      8 <> 8 <> 0 <> 0 <> 9 <> 0 <> 0 <> 9 <> 0 <> Nil{}
+    case 12n:
+      20 <> 0 <> 20 <> 0 <> 20 <> 0 <> 0 <> 0 <> 0 <> Nil{}
+    case 13n:
+      0 <> 8 <> 0 <> 0 <> 8 <> 0 <> 0 <> 9 <> 0 <> Nil{}
+    case 14n:
+      0 <> 1 <> 0 <> 0 <> 1 <> 0 <> 0 <> 9 <> 0 <> Nil{}
+    case 15n:
+      0 <> 20 <> 0 <> 0 <> 20 <> 0 <> 0 <> 9 <> 0 <> Nil{}
+    case 16n:
+      0 <> 16 <> 0 <> 0 <> 16 <> 0 <> 0 <> 9 <> 0 <> Nil{}
+    case 17n:
+      0 <> 9 <> 12 <> 9 <> 0 <> 12 <> 9 <> 0 <> 12 <> Nil{}
+    case 18n:
+      14 <> 0 <> 0 <> 9 <> 0 <> 0 <> 0 <> 0 <> 0 <> Nil{}
+    case 19n:
+      9 <> 20 <> 9 <> 20 <> 20 <> 20 <> 0 <> 20 <> 0 <> Nil{}
+    case 20n:
+      26 <> 26 <> 26 <> 0 <> 0 <> 0 <> 0 <> 0 <> 0 <> Nil{}
+    case 21n+p:
+      0 <> 0 <> 0 <> 0 <> 0 <> 0 <> 0 <> 0 <> 0 <> Nil{}
+
+def grid_matches(
+  grid: List<&2, Slot>, pattern: List<&2, U32>
+) -> Bool:
+  match grid:
+    case Nil{}:
+      match pattern:
+        case Nil{}:
+          True{}
+        case Con{head, tail}:
+          False{}
+    case Con{+head, +rest_grid}:
+      match pattern:
+        case Nil{}:
+          False{}
+        case Con{+expected, +rest_pattern}:
+          +actual = Bool.pick(U32, U32.is_eq(slot_count_value(head), 0), 0, slot_item(head))
+          Bool.and(U32.is_eq(actual, expected), grid_matches(rest_grid, rest_pattern))
+
+def consume_grid(grid: List<&2, Slot>) -> List<&2, Slot>:
+  match grid:
+    case Nil{}:
+      Nil{}
+    case Con{+head, +tail}:
+      +count = slot_count_value(head)
+      +next_count = Bool.pick(U32, U32.is_gt(count, 1), U32.sub(count, 1), 0)
+      +next_item = Bool.pick(U32, U32.is_eq(next_count, 0), 0, slot_item(head))
+      Con{make_slot(next_item, next_count, slot_durability(head)), consume_grid(tail)}
+
+def recipe_output(spec: Recipe) -> U32:
+  Recipe{item_a, count_a, item_b, count_b, +output, output_count} = spec
+  output
+
+def recipe_amount(spec: Recipe) -> U32:
+  Recipe{item_a, count_a, item_b, count_b, output, +output_count} = spec
+  output_count
+
+def craft_grid.commit(
+  original: List<&2, Slot>, original_grid: List<&2, Slot>, updated: List<&2, Slot>,
+  output: U32, amount: U32, room: Bool
+) -> GridCraftResult:
+  match room:
+    case True{}:
+      GridCraftResult{updated, consume_grid(original_grid), output, amount, True{}}
+    case False{}:
+      GridCraftResult{original, original_grid, output, amount, False{}}
+
+def craft_grid.after(
+  +original: List<&2, Slot>, grid: List<&2, Slot>, +output: U32, +amount: U32,
+  matched: Bool
+) -> GridCraftResult:
+  match matched:
+    case False{}:
+      GridCraftResult{original, grid, output, amount, False{}}
+    case True{}:
+      +added = add_items(original, output, amount)
+      craft_grid.commit(original, grid, add_slots(added), output, amount, U32.is_eq(add_remaining(added), 0))
+
+def craft_grid.spec(
+  original: List<&2, Slot>, +grid: List<&2, Slot>, +spec: Recipe,
+  pattern: List<&2, U32>
+) -> GridCraftResult:
+  +matched = grid_matches(grid, pattern)
+  craft_grid.after(original, grid, recipe_output(spec), recipe_amount(spec), matched)
+
+def craft_grid.if(
+  slots: List<&2, Slot>, grid: List<&2, Slot>, +index: Nat, valid: Bool
+) -> GridCraftResult:
+  match valid:
+    case False{}:
+      GridCraftResult{slots, grid, 0, 0, False{}}
+    case True{}:
+      craft_grid.spec(slots, grid, recipe(index), shape_pattern(index))
+
+def craft_grid(
+  slots: List<&2, Slot>, grid: List<&2, Slot>, +index: Nat
+) -> GridCraftResult:
+  craft_grid.if(slots, grid, index, Nat.is_lt(index, 21n))
 
 def craft.finalize.if(
   original: List<&2, Slot>, slots: List<&2, Slot>, remaining: U32, valid: Bool

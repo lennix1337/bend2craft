@@ -383,7 +383,7 @@ try {
     occupied: document.querySelectorAll("#crafting-grid .inventory-slot:not(.empty)").length,
     inventory: window.__bend2craft.getInventory(),
   }));
-  assert.equal(shapedCrafted.occupied, 0);
+  assert.equal(shapedCrafted.occupied, 0, JSON.stringify(shapedCrafted));
   assert.ok(shapedCrafted.inventory.some((item) => item.item === "planks"));
   await page.locator("[data-close-inventory]").click();
   await page.waitForFunction(() => document.getElementById("inventory-panel")?.hidden === true);

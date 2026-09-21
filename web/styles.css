@@ -436,6 +436,24 @@ body { background: #7caec4; }
 #crosshair::before { top: 8px; left: 0; width: 18px; height: 2px; }
 #crosshair::after { top: 0; left: 8px; width: 2px; height: 18px; }
 
+#block-highlight {
+  position: absolute;
+  z-index: 3;
+  top: calc(50% + 18px);
+  left: 50%;
+  max-width: min(360px, calc(100vw - 28px));
+  padding: 3px 7px;
+  border: 1px solid rgb(255 255 255 / 0.2);
+  border-radius: 3px;
+  background: rgb(13 17 18 / 0.7);
+  color: var(--muted);
+  font: 10px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace;
+  pointer-events: none;
+  text-align: center;
+  transform: translateX(-50%);
+}
+#block-highlight[hidden] { display: none; }
+
 #error {
   top: 50%;
   left: 50%;

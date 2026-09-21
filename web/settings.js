@@ -16,6 +16,18 @@ export const MIN_RENDER_DISTANCE = 2;
 export const MAX_RENDER_DISTANCE = 6;
 export const DEFAULT_RENDER_DISTANCE = 2;
 export const DEFAULT_RENDERER = RENDERER_MODES.AUTO;
+export const DEFAULT_CONTROLS = Object.freeze({
+  sneak: "ShiftLeft",
+  sprint: "ControlLeft",
+  inventory: "KeyE",
+  furnace: "KeyR",
+  chest: "KeyC",
+  eat: "KeyG",
+  drop: "KeyQ",
+  attack: "KeyF",
+  trade: "KeyT",
+  sleep: "KeyN",
+});
 export const DEFAULT_WORLD_NAME = "New World";
 export const WORLD_MODES = Object.freeze({
   SURVIVAL: "survival",
@@ -38,6 +50,7 @@ export function createDefaultOptions() {
     showCoords: true,
     renderDistance: DEFAULT_RENDER_DISTANCE,
     renderer: DEFAULT_RENDERER,
+    controls: { ...DEFAULT_CONTROLS },
   };
 }
 
@@ -55,12 +68,21 @@ function clampInteger(value, min, max, fallback) {
 
 export function sanitizeOptions(raw = {}) {
   const fallback = createDefaultOptions();
+  const controls = { ...DEFAULT_CONTROLS };
+  if (raw.controls !== null && typeof raw.controls === "object") {
+    for (const key of Object.keys(DEFAULT_CONTROLS)) {
+      if (typeof raw.controls[key] === "string" && raw.controls[key].trim().length > 0) {
+        controls[key] = raw.controls[key].trim();
+      }
+    }
+  }
   return {
     fov: clampNumber(raw.fov, MIN_FOV, MAX_FOV, fallback.fov),
     sensitivity: clampNumber(raw.sensitivity, MIN_SENSITIVITY, MAX_SENSITIVITY, fallback.sensitivity),
     showCoords: raw.showCoords === undefined ? fallback.showCoords : Boolean(raw.showCoords),
     renderDistance: clampInteger(raw.renderDistance, MIN_RENDER_DISTANCE, MAX_RENDER_DISTANCE, fallback.renderDistance),
     renderer: normalizeRendererMode(raw.renderer),
+    controls,
   };
 }
 

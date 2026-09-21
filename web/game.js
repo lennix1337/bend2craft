@@ -63,6 +63,7 @@ import {
   isHeadUnderwater,
   isInWater,
   isSneaking,
+  isSprinting,
   mobRegion,
   movePlayer,
   lavaContact,
@@ -88,6 +89,7 @@ import {
 import { drawItemTexture, itemTexture } from "./item-atlas.js";
 import { characterRenderDescriptor, heldItemPose } from "./character-view.js";
 import { cameraMotion } from "./visual-motion.js";
+import { cameraFov } from "./camera.js";
 import { createFrameMetrics, framePercentiles, formatDebugText, sampleFrame } from "./frame-metrics.js";
 import { entityShadow } from "./entity-shadow.js";
 import { firstPersonHandParts } from "./first-person-hand.js";
@@ -141,6 +143,8 @@ const heartsEl = document.getElementById("hearts");
 const hungerEl = document.getElementById("hunger");
 const airEl = document.getElementById("air");
 const damageFlashEl = document.getElementById("damage-flash");
+const blockHighlightEl = document.getElementById("block-highlight");
+const toastEl = document.getElementById("toast");
 const pauseEl = document.getElementById("pause");
 const pauseSubtitleEl = document.getElementById("pause-subtitle");
 const deathEl = document.getElementById("death");
@@ -971,7 +975,7 @@ try {
       appendShadow(shadowPositions, shadowColors, shadowUvs, drop);
       for (const part of dropBoxes(drop, time)) appendBox(positions, colors, uvs, tiles, part);
     }
-    const eye = [player.x, player.y + (isSneaking(held) ? SNEAK_EYE_HEIGHT : EYE_HEIGHT), player.z];
+    const eye = [player.x, player.y + (isSneaking(held, options.controls) ? SNEAK_EYE_HEIGHT : EYE_HEIGHT), player.z];
     const direction = cameraDirection(player);
     const right = normalize(cross(direction, [0, 1, 0]));
     const up = normalize(cross(right, direction));
@@ -2173,8 +2177,22 @@ try {
     return true;
   }
 
+  let toastTimer = null;
+
+  function showToast(message) {
+    if (toastEl === null) return;
+    toastEl.textContent = message;
+    toastEl.hidden = false;
+    if (toastTimer !== null) window.clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(() => {
+      toastEl.hidden = true;
+      toastTimer = null;
+    }, 2200);
+  }
+
   function setInventoryMessage(message) {
     inventoryMessageEl.textContent = message;
+    showToast(message);
   }
 
   const slotIconUrls = new Map();
@@ -3046,6 +3064,22 @@ try {
     });
   }
 
+  function updateTargetHighlight() {
+    if (blockHighlightEl === null) return;
+    const target = raycast(world, player);
+    if (target === null) {
+      blockHighlightEl.hidden = true;
+      return;
+    }
+    const block = Number(blockAt(...target.hit));
+    if (block === 0) {
+      blockHighlightEl.hidden = true;
+      return;
+    }
+    blockHighlightEl.textContent = `${itemName({ block })} · ${target.hit.join(", ")}`;
+    blockHighlightEl.hidden = false;
+  }
+
   function updateHud() {
     const item = selectedItem(inventory, selectedSlot);
     const name = itemName(item);
@@ -3202,11 +3236,16 @@ try {
     heldItemViewEl?.style.setProperty("--held-sway", `${(motion.sway * 180).toFixed(2)}px`);
     heldItemViewEl?.style.setProperty("--held-bob", `${(-motion.bob * 180).toFixed(2)}px`);
     heldItemViewEl?.style.setProperty("--held-roll", `${(motion.roll * 140).toFixed(2)}deg`);
-    const eye = [player.x + motion.sway * 0.5, player.y + (isSneaking(held) ? SNEAK_EYE_HEIGHT : EYE_HEIGHT) + motion.bob, player.z];
+    const eye = [player.x + motion.sway * 0.5, player.y + (isSneaking(held, options.controls) ? SNEAK_EYE_HEIGHT : EYE_HEIGHT) + motion.bob, player.z];
     const direction = cameraDirection(player);
     const center = [eye[0] + direction[0], eye[1] + direction[1], eye[2] + direction[2]];
     const view = lookAt(eye, center, [0, 1, 0]);
-    const projection = perspective(options.fov * Math.PI / 180, canvas.width / canvas.height, 0.05, RENDER_FAR);
+    const fov = cameraFov(options.fov, {
+      sprinting: isSprinting(held, options.controls),
+      damage: 20 - Number(player.health),
+      underwater: isHeadUnderwater(world, player),
+    });
+    const projection = perspective(fov * Math.PI / 180, canvas.width / canvas.height, 0.05, RENDER_FAR);
     if (gpuRenderer !== null) {
       gpuRenderer.render({
         viewProjection: multiply4(projection, view),
@@ -3565,22 +3604,22 @@ try {
       return;
     }
     if (paused) return;
-    if (event.code === "KeyE") {
+    if (event.code === (options.controls.inventory ?? "KeyE")) {
       event.preventDefault();
       toggleInventory();
       return;
     }
-    if (event.code === "KeyR") {
+    if (event.code === (options.controls.furnace ?? "KeyR")) {
       event.preventDefault();
       toggleFurnace();
       return;
     }
-    if (event.code === "KeyC") {
+    if (event.code === (options.controls.chest ?? "KeyC")) {
       event.preventDefault();
       toggleChest();
       return;
     }
-    if (event.code === "KeyG") {
+    if (event.code === (options.controls.eat ?? "KeyG")) {
       event.preventDefault();
       eatSelected();
       return;
@@ -3591,28 +3630,33 @@ try {
       selectSlot(slot);
       return;
     }
-    if (event.code === "KeyF") {
+    if (event.code === (options.controls.attack ?? "KeyF")) {
       event.preventDefault();
       attackNearestMob();
       return;
     }
-    if (event.code === "KeyT") {
+    if (event.code === (options.controls.trade ?? "KeyT")) {
       event.preventDefault();
       tradeNearestVillager();
       return;
     }
-    if (event.code === "KeyN") {
+    if (event.code === (options.controls.sleep ?? "KeyN")) {
       event.preventDefault();
       sleepAtBed();
       return;
     }
-    if (event.code === "KeyQ") {
+    if (event.code === (options.controls.drop ?? "KeyQ")) {
       event.preventDefault();
       if (!event.repeat) dropInventoryItem(selectedSlot, event.shiftKey);
       return;
     }
     if (inventoryOpen || furnaceOpen || chestOpen) return;
-    if (["KeyW", "KeyA", "KeyS", "KeyD", "Space", "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight"].includes(event.code)) {
+    const movementCodes = new Set([
+      "KeyW", "KeyA", "KeyS", "KeyD", "Space", "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight",
+      options.controls.sneak,
+      options.controls.sprint,
+    ]);
+    if (movementCodes.has(event.code)) {
       event.preventDefault();
       held.add(event.code);
     }
@@ -3933,7 +3977,7 @@ try {
     }
     moveFrameCalls += 1;
     moveFrameActive = true;
-    movePlayer(world, player, held, dt, spawnCell, spawnHeight, Number(World.width()), Number(World.depth()));
+    movePlayer(world, player, held, dt, spawnCell, spawnHeight, Number(World.width()), Number(World.depth()), options.controls);
     if (isInWater(world, player)) {
       const [pushX, pushZ] = waterCurrentPush(Fluids.take(64n, Fluids.state_flows(fluidState)), player.x, player.y, player.z);
       if (pushX !== 0 || pushZ !== 0) {
@@ -4027,6 +4071,7 @@ try {
   window.setInterval(saveGame, 5000);
 
   let previousTime = performance.now();
+  let highlightFrame = 0;
   function frame(now) {
     const frameElapsedMs = Math.max(now - previousTime, 0.1);
     const dt = Math.min(frameElapsedMs / 1000, 0.05);
@@ -4050,6 +4095,8 @@ try {
       }
       rebuildDynamicMesh(worldTime);
       updateHud();
+      highlightFrame = (highlightFrame + 1) % 6;
+      if (highlightFrame === 0) updateTargetHighlight();
       if (!deadShown && Number(player.health) <= 0) showDeath();
     }
     updateDebugOverlay();

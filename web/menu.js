@@ -59,6 +59,7 @@ export function runMenu() {
     "vitals",
     "inventory-toggle",
     "furnace-toggle",
+    "chest-toggle",
     "inventory-panel",
     "furnace-panel",
   ]) {
@@ -186,6 +187,10 @@ export function runMenu() {
     renderDistance.value = String(fresh.renderDistance ?? DEFAULT_RENDER_DISTANCE);
     element("render-distance-value").textContent = String(fresh.renderDistance ?? DEFAULT_RENDER_DISTANCE);
     element("input-renderer").value = fresh.renderer;
+    for (const key of ["sneak", "sprint", "inventory", "drop", "attack"]) {
+      const input = document.getElementById(`input-control-${key}`);
+      if (input !== null) input.value = fresh.controls[key];
+    }
     const coords = menu.querySelector('[data-action="toggle-coords"]');
     if (coords !== null) coords.textContent = `Coordinates: ${fresh.showCoords ? "ON" : "OFF"}`;
   }
@@ -321,6 +326,12 @@ export function runMenu() {
       saveOptions(window.localStorage, { ...loadOptions(window.localStorage), renderDistance: value });
     } else if (event.target.id === "input-renderer") {
       saveOptions(window.localStorage, { ...loadOptions(window.localStorage), renderer: event.target.value });
+    } else if (event.target.id?.startsWith("input-control-")) {
+      const key = event.target.id.replace("input-control-", "");
+      saveOptions(window.localStorage, {
+        ...loadOptions(window.localStorage),
+        controls: { ...loadOptions(window.localStorage).controls, [key]: event.target.value },
+      });
     }
   });
 

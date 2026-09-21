@@ -14,15 +14,17 @@ export const GRAVITY = 20.0;
 const SPRINT_KEYS = ["ControlLeft", "ControlRight", "Sprint"];
 const SNEAK_KEYS = ["ShiftLeft", "ShiftRight", "Shift"];
 
-export function isSprinting(held) {
-  for (const key of SPRINT_KEYS) {
+export function isSprinting(held, controls = {}) {
+  const keys = controls.sprint === undefined ? SPRINT_KEYS : [controls.sprint, ...SPRINT_KEYS];
+  for (const key of keys) {
     if (held.has(key)) return true;
   }
   return false;
 }
 
-export function isSneaking(held) {
-  for (const key of SNEAK_KEYS) {
+export function isSneaking(held, controls = {}) {
+  const keys = controls.sneak === undefined ? SNEAK_KEYS : [controls.sneak, ...SNEAK_KEYS];
+  for (const key of keys) {
     if (held.has(key)) return true;
   }
   return false;
@@ -299,7 +301,7 @@ export function respawnPlayer(player, spawnCell, spawnHeight) {
   PLAYER_STATES.set(player, respawned);
 }
 
-export function movePlayer(world, player, held, dt, spawnCell, spawnHeight, width = 48, depth = 48) {
+export function movePlayer(world, player, held, dt, spawnCell, spawnHeight, width = 48, depth = 48, controls = {}) {
   if (Number(player.health) <= 0) {
     return;
   }
@@ -309,8 +311,8 @@ export function movePlayer(world, player, held, dt, spawnCell, spawnHeight, widt
   if (held.has("KeyS")) keys |= 4;
   if (held.has("KeyD")) keys |= 8;
   if (held.has("Space")) keys |= 16;
-  if (isSprinting(held)) keys |= 32;
-  if (isSneaking(held)) keys |= 64;
+  if (isSprinting(held, controls)) keys |= 32;
+  if (isSneaking(held, controls)) keys |= 64;
 
   const region = collisionRegion(world, player.x, player.y, player.z);
   const raw = PlayerDomain.step(

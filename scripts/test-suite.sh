@@ -30,6 +30,8 @@ TESTS=(
   tests/mesh-worker.test.mjs
   tests/terrain-vertex-builder.test.mjs
   tests/vertex-buffer-compose.test.mjs
+  tests/webgpu-capabilities.test.mjs
+  tests/webgpu-chunk-buffers.test.mjs
   tests/surface-materials.test.mjs
   tests/mob-models.test.mjs
   tests/visual-motion.test.mjs

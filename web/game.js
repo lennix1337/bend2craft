@@ -62,11 +62,17 @@ import { createAsyncChunkMeshCache } from "./mesh-cache.js";
 import { createMeshRebuildScheduler } from "./mesh-rebuild-scheduler.js";
 import { sampleSignedSurfaceGrid } from "./horizon-grid.js";
 import { readAtlasTilePixels } from "./atlas-probe.js";
-import { atlasSourceCanvas, atlasUV, blockFaceTileAt, createTextureAtlas } from "./texture-atlas.js";
+import {
+  atlasSourceCanvas,
+  atlasUV,
+  blockFaceTileAt,
+  createAtlasCanvas,
+  createTextureAtlas,
+} from "./texture-atlas.js";
 import { drawItemTexture, itemTexture } from "./item-atlas.js";
 import { characterRenderDescriptor, heldItemPose } from "./character-view.js";
 import { cameraMotion } from "./visual-motion.js";
-import { createFrameMetrics, formatDebugText, sampleFrame } from "./frame-metrics.js";
+import { createFrameMetrics, framePercentiles, formatDebugText, sampleFrame } from "./frame-metrics.js";
 import { entityShadow } from "./entity-shadow.js";
 import { firstPersonHandParts } from "./first-person-hand.js";
 import { furnaceControlHidden } from "./hud-visibility.js";
@@ -102,6 +108,8 @@ import {
 } from "./profiles.js";
 import { loadOptions, normalizeWorldMode, worldModeLabel } from "./settings.js";
 import { createWorkerScheduler } from "./worker-scheduler.js";
+import { chooseRenderer, probeWebGpu } from "./webgpu-capabilities.js";
+import { createWebGpuTerrainRenderer } from "./webgpu-terrain-renderer.js";
 
 const canvas = document.getElementById("game");
 const crosshairEl = document.getElementById("crosshair");
@@ -231,7 +239,8 @@ function showError(error) {
   throw error;
 }
 
-let gl;
+async function bootGame() {
+let gl = null;
 let program;
 let positionBuffer;
 let colorBuffer;
@@ -279,15 +288,29 @@ let worldTime = 0;
 let skyCssTick = -1;
 let frameMetrics = createFrameMetrics();
 let debugVisible = false;
+let rendererKind = "webgl";
+let webgpuProbe = { supported: false, adapterName: null, reason: "not probed" };
+let gpuRenderer = null;
+let timeLocation;
+let daylightLocation;
+let surfacePassLocation;
+let atlasTexture = null;
 
 try {
-  // Keep the last frame readable for browser compositors and visual smoke tests.
-  gl = canvas.getContext("webgl", {
-    antialias: false,
-    alpha: true,
-    preserveDrawingBuffer: true,
-  });
-  if (!gl) throw new Error("WebGL is not available in this browser.");
+  const requestedRenderer = sessionParams.get("renderer") ?? options.renderer ?? "auto";
+  webgpuProbe = requestedRenderer === "webgl"
+    ? { supported: false, adapterName: null, reason: "renderer=webgl" }
+    : await probeWebGpu(globalThis.navigator, canvas);
+  rendererKind = chooseRenderer({ requested: requestedRenderer, webgpu: webgpuProbe });
+  if (rendererKind === "webgl") {
+    // Keep the last frame readable for browser compositors and visual smoke tests.
+    gl = canvas.getContext("webgl", {
+      antialias: false,
+      alpha: true,
+      preserveDrawingBuffer: true,
+    });
+    if (!gl) throw new Error("WebGL is not available in this browser.");
+  }
 
   let savedGame = null;
   try {
@@ -350,6 +373,27 @@ try {
     const local = value - chunk * CHUNK_SIZE;
     return (GENERATION_CHUNK_OFFSET + (-chunk)) * CHUNK_SIZE + local;
   };
+  if (rendererKind === "webgpu") {
+    try {
+      gpuRenderer = await createWebGpuTerrainRenderer({
+        canvas,
+        atlasCanvas: createAtlasCanvas(BLOCK_COLORS),
+      });
+    } catch (error) {
+      if (requestedRenderer !== "auto") throw error;
+      rendererKind = "webgl";
+      webgpuProbe = {
+        ...webgpuProbe,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+      gl = canvas.getContext("webgl", {
+        antialias: false,
+        alpha: true,
+        preserveDrawingBuffer: true,
+      });
+      if (!gl) throw new Error("WebGPU presentation failed and WebGL is unavailable.");
+    }
+  }
   let world;
   let terrainMeshCache;
   let streamingMeshScheduler = null;
@@ -552,6 +596,7 @@ try {
 
   let blockCount = 0;
 
+  if (rendererKind === "webgl") {
   const vertexSource = `
     precision mediump float;
     attribute vec3 aPosition;
@@ -692,18 +737,19 @@ try {
   tileLocation = gl.getAttribLocation(program, "aTileRect");
   viewProjectionLocation = gl.getUniformLocation(program, "uViewProjection");
   cameraLocation = gl.getUniformLocation(program, "uCamera");
-  const timeLocation = gl.getUniformLocation(program, "uTime");
-  const daylightLocation = gl.getUniformLocation(program, "uDaylight");
-  const surfacePassLocation = gl.getUniformLocation(program, "uSurfacePass");
+  timeLocation = gl.getUniformLocation(program, "uTime");
+  daylightLocation = gl.getUniformLocation(program, "uDaylight");
+  surfacePassLocation = gl.getUniformLocation(program, "uSurfacePass");
   shadowPassLocation = gl.getUniformLocation(program, "uShadowPass");
   miningProgressLocation = gl.getUniformLocation(program, "uMiningProgress");
   skyColorLocation = gl.getUniformLocation(program, "uSkyColor");
   atlasLocation = gl.getUniformLocation(program, "uAtlas");
-  const atlasTexture = createTextureAtlas(gl, BLOCK_COLORS);
+  atlasTexture = createTextureAtlas(gl, BLOCK_COLORS);
   gl.useProgram(program);
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, atlasTexture);
   gl.uniform1i(atlasLocation, 0);
+  }
 
   function blockColor(block, faceIndex, x, z, light = 15) {
     // Neutral shading only: the texture atlas carries each block's hue.
@@ -926,20 +972,37 @@ try {
     shadowQuadCount = shadowVertexCount / 6;
     dynamicVertexCount = positions.length / 3;
     dynamicQuadCount = dynamicVertexCount / 6;
-    gl.bindBuffer(gl.ARRAY_BUFFER, dynamicPositionBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, dynamicColorBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, dynamicUvBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(uvs), gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, dynamicTileBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(tiles), gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, shadowPositionBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shadowPositions), gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, shadowColorBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shadowColors), gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, shadowUvBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shadowUvs), gl.DYNAMIC_DRAW);
+    if (gpuRenderer !== null) {
+      gpuRenderer.uploadDynamic({
+        dynamic: {
+          positions: new Float32Array(positions),
+          colors: new Float32Array(colors),
+          uvs: new Float32Array(uvs),
+          tiles: new Float32Array(tiles),
+        },
+        shadow: {
+          positions: new Float32Array(shadowPositions),
+          colors: new Float32Array(shadowColors),
+          uvs: new Float32Array(shadowUvs),
+          tiles: new Float32Array((shadowPositions.length / 3) * 4),
+        },
+      });
+    } else {
+      gl.bindBuffer(gl.ARRAY_BUFFER, dynamicPositionBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, dynamicColorBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, dynamicUvBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(uvs), gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, dynamicTileBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(tiles), gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, shadowPositionBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shadowPositions), gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, shadowColorBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shadowColors), gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, shadowUvBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shadowUvs), gl.DYNAMIC_DRAW);
+    }
     visibleFaceCount = terrainQuadCount + waterQuadCount + dynamicQuadCount;
     const statsTick = Math.floor(time * 4);
     if (statsTick !== dynamicStatsTick) {
@@ -986,6 +1049,7 @@ try {
   }
 
   function patchHiddenTerrainGpu(terrain) {
+    if (gpuRenderer !== null) return false;
     if (hiddenTerrainBlocks.size === 0 || terrain.vertexData === null) return false;
     const hidden = [...hiddenTerrainBlocks].map((key) => key.split(",").map(Number));
     let opaqueVertex = 0;
@@ -1025,6 +1089,24 @@ try {
     const terrain = terrainMeshCache.snapshot(merge);
     if (!terrainMeshCache.pending && hiddenTerrainBlocks.size > 0) hiddenTerrainBlocks.clear();
     blockCount = terrain.blockCount;
+    if (gpuRenderer !== null) {
+      const chunks = [
+        ...(terrain.chunks ?? []),
+        { key: "horizon", vertexData: horizonMesh },
+      ];
+      gpuRenderer.uploadTerrain(chunks);
+      terrainQuadCount = chunks.reduce((sum, chunk) => sum + (chunk.vertexData?.opaque?.quadCount ?? 0), 0);
+      waterQuadCount = chunks.reduce((sum, chunk) => sum + (chunk.vertexData?.water?.quadCount ?? 0), 0);
+      terrainVertexCount = chunks.reduce(
+        (sum, chunk) => sum + ((chunk.vertexData?.opaque?.positions?.length ?? 0) / 3),
+        0,
+      );
+      waterVertexCount = chunks.reduce(
+        (sum, chunk) => sum + ((chunk.vertexData?.water?.positions?.length ?? 0) / 3),
+        0,
+      );
+      return;
+    }
     let positions;
     let colors;
     let uvs;
@@ -1190,7 +1272,7 @@ try {
       canvas.width = width;
       canvas.height = height;
     }
-    gl.viewport(0, 0, canvas.width, canvas.height);
+    if (gl !== null) gl.viewport(0, 0, canvas.width, canvas.height);
   }
 
   const spawnContract = World.spawn_cell(SEED);
@@ -2608,8 +2690,12 @@ try {
   }
 
   function frameDiagnostics() {
+    const { frameTimes, ...publicFrameMetrics } = frameMetrics;
     return {
-      ...frameMetrics,
+      ...publicFrameMetrics,
+      ...framePercentiles(frameMetrics),
+      renderer: rendererKind,
+      webgpu: { ...webgpuProbe },
       player: { ...player },
       playerSpawnReady,
       activeChunks: world.activeChunkCount(),
@@ -2700,11 +2786,6 @@ try {
       canvas.style.setProperty("--sky-horizon", palette.cssHorizon);
       canvas.style.setProperty("--sun-alpha", String(Math.max(0, ((daylight - 0.28) / 0.72) * 0.24)));
     }
-    gl.clearColor(sky[0], sky[1], sky[2], 0);
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    gl.enable(gl.DEPTH_TEST);
-    gl.useProgram(program);
-
     const motion = cameraMotion(worldTime, {
       speed: visualSpeed,
       grounded: player.grounded,
@@ -2717,6 +2798,23 @@ try {
     const center = [eye[0] + direction[0], eye[1] + direction[1], eye[2] + direction[2]];
     const view = lookAt(eye, center, [0, 1, 0]);
     const projection = perspective(options.fov * Math.PI / 180, canvas.width / canvas.height, 0.05, RENDER_FAR);
+    if (gpuRenderer !== null) {
+      gpuRenderer.render({
+        viewProjection: multiply4(projection, view),
+        camera: eye,
+        skyColor: sky,
+        daylight,
+        time: worldTime,
+        miningProgress: miningProgress(miningState, performance.now()),
+        fogDistance: FOG_DISTANCE,
+      });
+      return;
+    }
+    gl.clearColor(sky[0], sky[1], sky[2], 0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST);
+    gl.useProgram(program);
+
     gl.uniformMatrix4fv(viewProjectionLocation, false, multiply4(projection, view));
     gl.uniform3f(cameraLocation, eye[0], eye[1], eye[2]);
     gl.uniform1f(timeLocation, worldTime);
@@ -3129,6 +3227,7 @@ try {
     getFrameDiagnostics: () => ({ ...frameDiagnostics(), debugVisible }),
     getAtlasTexelProbe: (tile = 1) => atlasTexelDiagnostics(Math.trunc(tile)),
     readFramePixels: (x, y, width, height) => {
+      if (gpuRenderer !== null) throw new Error("WebGPU frame readback is not enabled in this diagnostic path.");
       const left = Math.trunc(x);
       const bottom = Math.trunc(y);
       const pixelWidth = Math.trunc(width);
@@ -3144,6 +3243,7 @@ try {
     toggleDebug: toggleDebugOverlay,
     hurt: (amount) => applyDamage(player, amount),
     glBufferSizes: () => {
+      if (gpuRenderer !== null) return gpuRenderer.getStats();
       const sizes = {};
       for (const [name, buffer] of [
         ["position", positionBuffer],
@@ -3375,3 +3475,6 @@ try {
 } catch (error) {
   showError(error);
 }
+}
+
+await bootGame();

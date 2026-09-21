@@ -16,14 +16,24 @@ try {
   await page.locator('[data-action="goto-options"]').click();
   const renderDistanceOptions = await page.evaluate(() => {
     const input = document.getElementById("input-render-distance");
+    const renderer = document.getElementById("input-renderer");
     return {
       min: Number(input?.min),
       max: Number(input?.max),
       value: Number(input?.value),
       output: document.getElementById("render-distance-value")?.textContent,
+      rendererValue: renderer?.value,
+      rendererOptions: [...(renderer?.options ?? [])].map((option) => option.value),
     };
   });
-  assert.deepEqual(renderDistanceOptions, { min: 2, max: 6, value: 2, output: "2" });
+  assert.deepEqual(renderDistanceOptions, {
+    min: 2,
+    max: 6,
+    value: 2,
+    output: "2",
+    rendererValue: "auto",
+    rendererOptions: ["auto", "webgpu", "webgl"],
+  });
   await page.locator("#input-render-distance").evaluate((input) => {
     input.value = "4";
     input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -32,9 +42,14 @@ try {
     window.localStorage.getItem("bend2craft-options"),
   ).renderDistance);
   assert.equal(savedRenderDistance, 4);
+  await page.locator("#input-renderer").selectOption("webgl");
+  const savedRenderer = await page.evaluate(() => JSON.parse(
+    window.localStorage.getItem("bend2craft-options"),
+  ).renderer);
+  assert.equal(savedRenderer, "webgl");
   await page.evaluate(() => window.localStorage.setItem(
     "bend2craft-options",
-    JSON.stringify({ fov: 75, sensitivity: 1, showCoords: true, renderDistance: 2 }),
+    JSON.stringify({ fov: 75, sensitivity: 1, showCoords: true, renderDistance: 2, renderer: "auto" }),
   ));
 
   await page.goto(`${baseUrl}/?play=1&seed=1337`, { waitUntil: "networkidle", timeout: 30000 });
@@ -91,7 +106,11 @@ try {
   });
   assert.ok(initialTarget?.target?.hit, "the first-person raycast must find a target block");
 
-  const textureProbe = await page.evaluate(async () => {
+  let textureProbe = null;
+  let animatedSurfaceProbe = null;
+  let atlasProbe = null;
+  if (state.frame?.renderer === "webgl") {
+  textureProbe = await page.evaluate(async () => {
     const region = [300, 210, 64, 64];
     const first = window.__bend2craft.readFramePixels(...region);
     // Read twice in the same rendered frame so intentional day/night changes
@@ -109,7 +128,7 @@ try {
   assert.ok(textureProbe.pixels > 0);
   assert.ok(textureProbe.changedPixels <= 64, "static terrain pixels should not flicker between frames");
 
-  const animatedSurfaceProbe = await page.evaluate(async () => {
+  animatedSurfaceProbe = await page.evaluate(async () => {
     const region = [100, 210, 64, 64];
     const first = window.__bend2craft.readFramePixels(...region);
     await new Promise((resolve) => requestAnimationFrame(() => resolve()));
@@ -126,7 +145,7 @@ try {
   assert.ok(animatedSurfaceProbe.changedPixels > 0, "animated surface should update over time");
   assert.ok(animatedSurfaceProbe.changedPixels < animatedSurfaceProbe.pixels, "animated surface must not flash the whole frame");
 
-  const atlasProbe = await page.evaluate(() => {
+  atlasProbe = await page.evaluate(() => {
     const probes = Array.from({ length: 50 }, (_, tile) => window.__bend2craft.getAtlasTexelProbe(tile));
     return {
       tiles: probes.length,
@@ -137,6 +156,7 @@ try {
   });
   assert.equal(atlasProbe.tiles, 50);
   assert.equal(atlasProbe.totalMismatches, 0, "WebGL atlas texels must match all source tiles");
+  }
 
   const interactionProbe = await page.evaluate(async ({ targetInfo }) => {
     const beforeInventory = window.__bend2craft.getInventory();

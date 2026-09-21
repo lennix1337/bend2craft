@@ -185,6 +185,7 @@ export function runMenu() {
     renderDistance.max = String(MAX_RENDER_DISTANCE);
     renderDistance.value = String(fresh.renderDistance ?? DEFAULT_RENDER_DISTANCE);
     element("render-distance-value").textContent = String(fresh.renderDistance ?? DEFAULT_RENDER_DISTANCE);
+    element("input-renderer").value = fresh.renderer;
     const coords = menu.querySelector('[data-action="toggle-coords"]');
     if (coords !== null) coords.textContent = `Coordinates: ${fresh.showCoords ? "ON" : "OFF"}`;
   }
@@ -318,6 +319,8 @@ export function runMenu() {
       const value = Number(event.target.value);
       element("render-distance-value").textContent = String(value);
       saveOptions(window.localStorage, { ...loadOptions(window.localStorage), renderDistance: value });
+    } else if (event.target.id === "input-renderer") {
+      saveOptions(window.localStorage, { ...loadOptions(window.localStorage), renderer: event.target.value });
     }
   });
 

@@ -374,14 +374,24 @@ export function createAsyncChunkMeshCache(world, requestBuild, onReady = null) {
   function snapshot(merge = true) {
     const quads = [];
     let blockCount = 0;
+    const active = activeKeys();
+    const chunks = [];
     for (const mesh of meshes.values()) {
+      if (!active.has(mesh.key)) continue;
       blockCount += mesh.blockCount;
       quads.push(...mesh.quads);
+      chunks.push({
+        key: mesh.key,
+        chunkX: mesh.chunkX,
+        chunkZ: mesh.chunkZ,
+        vertexData: mesh.vertexData ?? buildTerrainVertexArrays(mesh.quads),
+      });
     }
     return {
       blockCount: hasMergedSnapshot ? mergedBlockCount : blockCount,
       quads: hasMergedSnapshot ? mergedQuads : [],
       vertexData: hasMergedSnapshot ? mergedVertexData : null,
+      chunks,
       rebuildCount,
       dirtyChunks: dirty.size + (mergeDirty ? 1 : 0) + (pendingJobId === null ? 0 : 1),
     };

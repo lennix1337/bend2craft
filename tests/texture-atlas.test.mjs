@@ -12,6 +12,7 @@ import {
   TEXTURE_PASS,
   blockTexture,
   blockFaceTileAt,
+  createAtlasCanvas,
   createTextureAtlas,
 } from "../web/texture-atlas.js";
 
@@ -34,6 +35,7 @@ assert.equal(blockTexture(1), BLOCK_TEXTURES[1]);
 assert.equal(blockTexture({ id: 1 }), BLOCK_TEXTURES[1]);
 assert.equal(blockTexture("stone"), BLOCK_TEXTURES[1]);
 assert.equal(blockTexture("unknown"), null);
+assert.equal(typeof createAtlasCanvas, "function");
 assert.ok(Object.isFrozen(BLOCK_TEXTURES[1]));
 assert.ok(Object.isFrozen(BLOCK_TEXTURES[1].palette));
 assert.ok(Object.isFrozen(BLOCK_TEXTURES[1].pattern));

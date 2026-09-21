@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check:bend": "bash scripts/check-bend.sh world/structures.bend && bash scripts/check-bend.sh world/village_path.bend && bash scripts/check-bend.sh world/horizon.bend && bash scripts/check-bend.sh world/simulation.bend && bash scripts/check-bend.sh world/crops.bend && bash scripts/check-bend.sh world/farmland.bend && bash scripts/check-bend.sh world/fluids.bend && bash scripts/check-bend.sh world/fire.bend && bash scripts/check-bend.sh world/world.bend && bash scripts/check-bend.sh world/world_state.bend && bash scripts/check-bend.sh world/inventory.bend && bash scripts/check-bend.sh world/villagers.bend && bash scripts/check-bend.sh world/furnace.bend && bash scripts/check-bend.sh world/furnaces.bend && bash scripts/check-bend.sh world/light.bend && bash scripts/check-bend.sh world/lightflood.bend && bash scripts/check-bend.sh world/light-dirty.bend && bash scripts/check-bend.sh world/light-flood.bend && bash scripts/check-bend.sh world/player.bend && bash scripts/check-bend.sh world/entities.bend",
+    "check:bend": "bash scripts/check-bend.sh world/structures.bend && bash scripts/check-bend.sh world/village_path.bend && bash scripts/check-bend.sh world/horizon.bend && bash scripts/check-bend.sh world/simulation.bend && bash scripts/check-bend.sh world/crops.bend && bash scripts/check-bend.sh world/farmland.bend && bash scripts/check-bend.sh world/fluids.bend && bash scripts/check-bend.sh world/fire.bend && bash scripts/check-bend.sh world/world.bend && bash scripts/check-bend.sh world/world_state.bend && bash scripts/check-bend.sh world/inventory.bend && bash scripts/check-bend.sh world/villagers.bend && bash scripts/check-bend.sh world/furnace.bend && bash scripts/check-bend.sh world/furnaces.bend && bash scripts/check-bend.sh world/light.bend && bash scripts/check-bend.sh world/lightflood.bend && bash scripts/check-bend.sh world/light-dirty.bend && bash scripts/check-bend.sh world/light-flood.bend && bash scripts/check-bend.sh world/player.bend && bash scripts/check-bend.sh world/entities.bend && bash scripts/check-bend.sh benchmarks/bend-native-parallel.bend",
     "proof": "bash scripts/check-bend.sh world/PROOF.bend",
     "test": "bash scripts/test-suite.sh",
     "verify": "npm run check:bend && npm run proof && npm run test && npm run build && git diff --check HEAD",
@@ -19,12 +19,15 @@
     "bench:horizon": "bash scripts/run-bun.sh benchmarks/horizon-grid.mjs",
     "bench:horizon:signed": "bash scripts/run-bun.sh benchmarks/horizon-signed-grid.mjs",
     "bench:mesh": "bash scripts/run-bun.sh benchmarks/mesh-worker.mjs",
+    "bench:bend-native": "bash scripts/bench-bend-native.sh",
+    "bench:renderer-browser": "bash scripts/dev-smoke.sh --renderer-benchmark",
     "bench:villagers": "bash scripts/run-bun.sh benchmarks/village-path.mjs",
     "dev": "bash scripts/run-bun.sh scripts/dev-server.ts",
     "smoke:dev": "bash scripts/dev-smoke.sh",
     "browser:smoke": "bash scripts/dev-smoke.sh --browser",
     "browser:lighting-smoke": "bash scripts/dev-smoke.sh --lighting",
     "browser:streaming-smoke": "bash scripts/dev-smoke.sh --streaming",
+    "browser:webgpu-smoke": "bash scripts/dev-smoke.sh --webgpu",
     "build": "BEND_NO_TELEMETRY=1 bash scripts/run-bun.sh vendor/bend/bend2/main.ts web/index.html -o dist && bash scripts/run-bun.sh scripts/build-worker.ts dist"
   }
 }

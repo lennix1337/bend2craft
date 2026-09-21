@@ -47,6 +47,9 @@ assert.equal(cache.applyBuild(first.id, firstMeshes), true);
 assert.equal(cache.pending, false);
 assert.equal(readyCalls, 1);
 assert.equal(cache.snapshot(false).blockCount, 1);
+assert.equal(cache.snapshot(false).chunks.length, 1);
+assert.equal(cache.snapshot(false).chunks[0].key, "0,0");
+assert.equal(cache.snapshot(false).chunks[0].vertexData.opaque.positions.length / 3, 36);
 assert.equal(cache.rebuildCount, 1);
 
 cache.invalidateChunk(0, 0);

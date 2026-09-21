@@ -1061,7 +1061,7 @@ function drawTexture(context, x, y, texture, opacity = 1) {
   context.globalAlpha = previousAlpha;
 }
 
-export function createTextureAtlas(gl, blockColors) {
+export function createAtlasCanvas(blockColors) {
   const canvas = document.createElement("canvas");
   canvas.width = ATLAS_COLUMNS * ATLAS_TILE_SIZE;
   canvas.height = ATLAS_ROWS * ATLAS_TILE_SIZE;
@@ -1102,6 +1102,11 @@ export function createTextureAtlas(gl, blockColors) {
   context.globalAlpha = 1;
   context.globalCompositeOperation = "source-over";
 
+  return canvas;
+}
+
+export function createTextureAtlas(gl, blockColors) {
+  const canvas = createAtlasCanvas(blockColors);
   const texture = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, texture);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);

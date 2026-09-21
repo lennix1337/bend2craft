@@ -16,6 +16,10 @@ run_followup() {
     bash "$ROOT/scripts/run-bun.sh" "$ROOT/scripts/lighting-smoke.mjs" "$BASE_URL"
   elif [[ "${1:-}" == "--streaming" ]]; then
     bash "$ROOT/scripts/run-bun.sh" "$ROOT/scripts/streaming-smoke.mjs" "$BASE_URL" 6
+  elif [[ "${1:-}" == "--webgpu" ]]; then
+    bash "$ROOT/scripts/run-bun.sh" "$ROOT/scripts/webgpu-smoke.mjs" "$BASE_URL"
+  elif [[ "${1:-}" == "--renderer-benchmark" ]]; then
+    bash "$ROOT/scripts/run-bun.sh" "$ROOT/scripts/renderer-benchmark.mjs" "$BASE_URL"
   fi
 }
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   createFrameMetrics,
+  framePercentiles,
   formatDebugText,
   sampleFrame,
 } from "../web/frame-metrics.js";
@@ -19,6 +20,10 @@ assert.ok(metrics.frameMs > 30);
 assert.ok(metrics.fps < 60 && metrics.fps > 30);
 assert.ok(metrics.minFps <= metrics.fps);
 assert.ok(metrics.maxFps >= metrics.fps);
+const percentiles = framePercentiles(metrics);
+assert.ok(percentiles.p50FrameMs >= 16 && percentiles.p50FrameMs <= 34);
+assert.ok(percentiles.p95FrameMs >= percentiles.p50FrameMs);
+assert.ok(percentiles.p99FrameMs >= percentiles.p95FrameMs);
 
 const text = formatDebugText({
   ...metrics,
@@ -38,6 +43,7 @@ const text = formatDebugText({
   drops: 1,
 });
 assert.match(text, /FPS/);
+assert.match(formatDebugText({ ...metrics, ...percentiles }), /p95/);
 assert.match(text, /XYZ 1\.25 8\.00 -2\.50/);
 assert.match(text, /chunks 25 active · 2 pending · 1 pinned/);
 assert.match(text, /mesh 1,200 blocks · 300 terrain quads · 40 water quads · 12 dynamic quads/);

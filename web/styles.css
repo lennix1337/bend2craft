@@ -460,6 +460,13 @@ body { background: #7caec4; }
 }
 #block-highlight[hidden] { display: none; }
 
+#particles { position: absolute; z-index: 4; inset: 0; overflow: hidden; pointer-events: none; }
+.particle { position: absolute; top: 50%; left: 50%; width: 5px; height: 5px; border-radius: 1px; background: var(--particle-color, #d8cfc0); box-shadow: 0 0 5px rgb(255 255 255 / 0.2); animation: particle-burst 420ms ease-out forwards; }
+@keyframes particle-burst {
+  from { opacity: 0.95; transform: translate(-50%, -50%) scale(1); }
+  to { opacity: 0; transform: translate(calc(-50% + var(--particle-x)), calc(-50% + var(--particle-y))) rotate(180deg) scale(0.35); }
+}
+
 #error {
   top: 50%;
   left: 50%;

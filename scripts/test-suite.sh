@@ -68,6 +68,7 @@ TESTS=(
   tests/inventory-ux.test.mjs
   tests/game-state.test.mjs
   tests/camera.test.mjs
+  tests/audio.test.mjs
   tests/pointer-lock.test.mjs
   tests/seed-input.test.mjs
   tests/seed-world.test.mjs

@@ -15,6 +15,7 @@ export const TONES = Object.freeze({
   groan: Object.freeze([[85, 0.28, "sawtooth", 0.08]]),
   pop: Object.freeze([[500, 0.06, "sine", 0.07]]),
   burn: Object.freeze([[200, 0.12, "sawtooth", 0.05]]),
+  ambient: Object.freeze([[196, 1.2, "sine", 0.012], [247, 1.4, "sine", 0.008]]),
 });
 
 export function toneSchedule(kind) {

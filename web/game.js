@@ -91,6 +91,7 @@ import { drawItemTexture, itemTexture } from "./item-atlas.js";
 import { characterRenderDescriptor, heldItemPose } from "./character-view.js";
 import { cameraMotion } from "./visual-motion.js";
 import { cameraFov } from "./camera.js";
+import { createAudioMixer } from "./audio.js";
 import { createFrameMetrics, framePercentiles, formatDebugText, sampleFrame } from "./frame-metrics.js";
 import { entityShadow } from "./entity-shadow.js";
 import { firstPersonHandParts } from "./first-person-hand.js";
@@ -146,6 +147,7 @@ const airEl = document.getElementById("air");
 const damageFlashEl = document.getElementById("damage-flash");
 const blockHighlightEl = document.getElementById("block-highlight");
 const toastEl = document.getElementById("toast");
+const particlesEl = document.getElementById("particles");
 const pauseEl = document.getElementById("pause");
 const pauseSubtitleEl = document.getElementById("pause-subtitle");
 const deathEl = document.getElementById("death");
@@ -341,6 +343,7 @@ try {
     });
     if (!gl) throw new Error("WebGL is not available in this browser.");
   }
+  const audio = createAudioMixer();
 
   let savedGame = null;
   try {
@@ -1946,6 +1949,7 @@ try {
       const blocking = Equipment.blocks_damage(equipmentState)
         || itemId(selectedItem(inventory, selectedSlot)) === "shield";
       applyDamage(player, threat * (blocking ? 0.34 : 1) * dt);
+      audio.play("hurt");
     }
     collectNearbyDrops();
     return true;
@@ -2054,6 +2058,8 @@ try {
       : handDamage();
     const result = Entities.attack(mobDomainState, BigInt(nearest.id), damage, player.x, player.z, dropDomainState);
     if (!result.hit) return false;
+    audio.play("pop");
+    spawnParticles("#f2c65d", 6);
     if (["wooden_sword", "stone_sword", "iron_sword", "diamond_sword"].includes(selectedId)) {
       useTool(inventory, selectedSlot);
     }
@@ -2194,6 +2200,19 @@ try {
       toastEl.hidden = true;
       toastTimer = null;
     }, 2200);
+  }
+
+  function spawnParticles(color = "#d8cfc0", count = 8) {
+    if (particlesEl === null) return;
+    for (let index = 0; index < count; index += 1) {
+      const particle = document.createElement("span");
+      particle.className = "particle";
+      particle.style.setProperty("--particle-color", color);
+      particle.style.setProperty("--particle-x", `${(Math.random() - 0.5) * 130}px`);
+      particle.style.setProperty("--particle-y", `${(Math.random() - 0.5) * 100}px`);
+      particlesEl.append(particle);
+      window.setTimeout(() => particle.remove(), 500);
+    }
   }
 
   function setInventoryMessage(message) {
@@ -2759,6 +2778,8 @@ try {
     }
     if (!consume(inventory, selectedSlot)) return false;
     eatFood(player, nutrition);
+    audio.play("eat");
+    spawnParticles("#d59b45", 5);
     if (itemId(item) === "rotten_flesh") {
       applyPoison(player, 10.0);
       setInventoryMessage("Rotten flesh eaten (you feel sick).");
@@ -2812,6 +2833,8 @@ try {
       simulationState = Simulation.pin(simulationState, BigInt(chunkX), BigInt(chunkZ));
     }
     setBlock(x, y, z, Number(placement.edit.block));
+    audio.play("place");
+    spawnParticles(itemColor(item), 8);
     invalidateVillagerPath(x, y, z);
     terrainMeshCache.invalidateBlock(x, z);
     if (block === 11) {
@@ -2970,6 +2993,8 @@ try {
       return false;
     }
     setBlock(x, y, z, Number(mining.edit.block));
+    audio.play("break");
+    spawnParticles(itemColor({ block: removedBlock }), 10);
     if (isCropBlock(removedBlock)) {
       cropState = Crops.remove(cropState, BigInt(x), BigInt(y), BigInt(z));
       simulationState = Simulation.with_crops(simulationState, cropState);
@@ -3550,10 +3575,12 @@ try {
     if (action !== undefined) chestAction(action);
   });
   canvas.addEventListener("click", () => {
+    audio.ensure();
     if (!inventoryOpen && !furnaceOpen && !chestOpen) pointerLock.request();
   });
   canvas.addEventListener("mousedown", (event) => {
     event.preventDefault();
+    audio.ensure();
     if (inventoryOpen || furnaceOpen || chestOpen) return;
     if (document.pointerLockElement !== canvas) {
       pointerLock.request();
@@ -3570,6 +3597,9 @@ try {
   let hasLockedOnce = false;
   let deadShown = false;
   let killCount = 0;
+  window.setInterval(() => {
+    if (!paused && document.pointerLockElement === canvas) audio.play("ambient");
+  }, 5000);
   // One daylight cycle (sin(worldTime * 0.08)) lasts 2*PI/0.08 seconds.
   const DAY_SECONDS = 78.54;
   function scatterDeathDrops() {
@@ -3599,6 +3629,8 @@ try {
   function showDeath() {
     deadShown = true;
     held.clear();
+    audio.play("death");
+    spawnParticles("#d03030", 14);
     scatterDeathDrops();
     saveGame();
     if (document.pointerLockElement === canvas && typeof document.exitPointerLock === "function") {
@@ -3672,6 +3704,7 @@ try {
     player.pitch = Math.max(-1.45, Math.min(1.45, player.pitch - event.movementY * sensitivity));
   });
   window.addEventListener("keydown", (event) => {
+    audio.ensure();
     if (event.code === "F3") {
       event.preventDefault();
       toggleDebugOverlay();
@@ -4034,6 +4067,7 @@ try {
   };
 
   let villagerSimulationSteps = 0;
+  let footstepTimer = 0;
   const playerTicker = createFixedTicker(1 / 60, (dt) => {
     if (!playerSpawnReady) {
       const cellX = Math.floor(player.x);
@@ -4053,6 +4087,15 @@ try {
     moveFrameCalls += 1;
     moveFrameActive = true;
     movePlayer(world, player, held, dt, spawnCell, spawnHeight, Number(World.width()), Number(World.depth()), options.controls);
+    if (player.grounded && visualSpeed > 0.65) {
+      footstepTimer += dt;
+      if (footstepTimer >= 0.38) {
+        footstepTimer = 0;
+        audio.play("step");
+      }
+    } else {
+      footstepTimer = 0;
+    }
     if (isInWater(world, player)) {
       const [pushX, pushZ] = waterCurrentPush(Fluids.take(64n, Fluids.state_flows(fluidState)), player.x, player.y, player.z);
       if (pushX !== 0 || pushZ !== 0) {

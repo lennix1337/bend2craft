@@ -44,6 +44,11 @@ TESTS=(
   tests/texture-atlas.test.mjs
   tests/item-atlas.test.mjs
   tests/character-view.test.mjs
+  tests/aim.test.mjs
+  tests/daynight.test.mjs
+  tests/mob-mesh.test.mjs
+  tests/sfx.test.mjs
+  tests/sky-mesh.test.mjs
   tests/light-bend.test.mjs
   tests/light-dirty-bend.test.mjs
   tests/light-flood-bend.test.mjs

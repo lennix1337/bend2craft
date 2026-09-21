@@ -44,6 +44,9 @@ def cons_drop(drop: Drop, tail: List<&2, Drop>) -> List<&2, Drop>:
 def empty_drops() -> List<&2, Drop>:
   Nil{}
 
+def wander_dir(+id: Nat, +tick: Nat) -> U32:
+  U32.from_nat(Nat.mod(Nat.add(Nat.mul(id, 7n), Nat.div(tick, 24n)), 8n))
+
 def combat_mobs(state: CombatResult) -> List<&2, Mob>:
   CombatResult{mobs, drops, hit} = state
   mobs

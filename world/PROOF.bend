@@ -33,3 +33,6 @@ def Laws.known_diamond_ore():
 
 def Laws.known_village_furnace():
   {==}
+
+def Laws.wander_dir_pins_heading():
+  {==}

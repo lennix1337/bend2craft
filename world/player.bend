@@ -209,9 +209,10 @@ def step.fallen(state: State) -> Bool:
   State{ x, y, z, yaw, pitch, velocity_y, grounded, health, hunger } = state
   F32.is_lt(y, F32.neg(10.0))
 
-def tick_survival(state: State, +dt: F32) -> State:
+def tick_survival(state: State, +dt: F32, +sprinting: Bool) -> State:
   State{+x, +y, +z, +yaw, +pitch, +velocity_y, grounded, +health, +hunger} = state
-  +hunger_loss = F32.mul(dt, fraction(1, 50))
+  +loss_rate = choose_f32(sprinting, fraction(1, 10), fraction(1, 50))
+  +hunger_loss = F32.mul(dt, loss_rate)
   +raw_hunger = F32.sub(hunger, hunger_loss)
   +starving = Bool.or(F32.is_lt(raw_hunger, 0.0), F32.is_eq(raw_hunger, 0.0))
   +next_hunger = clamp_f32(raw_hunger, 0.0, 20.0)
@@ -257,7 +258,9 @@ def step.values(
   +safe_length = choose_f32(F32.is_eq(length, 0.0), 1.0, length)
   +normal_forward = F32.div(forward, safe_length)
   +normal_strafe = F32.div(strafe, safe_length)
-  +speed = fraction(45, 10)
+  +moving = Bool.not(F32.is_eq(length, 0.0))
+  +sprinting = Bool.and(held(keys, 32), moving)
+  +speed = choose_f32(sprinting, fraction(135, 20), fraction(45, 10))
   +dx = F32.mul(
     F32.add(F32.mul(F32.sin(yaw), normal_forward), F32.mul(F32.cos(yaw), normal_strafe)),
     F32.mul(speed, dt)
@@ -279,7 +282,7 @@ def step.values(
   +next_y = F32.add(y, dy)
   +blocked_y = collides(State{x, y, z, yaw, pitch, velocity_y, grounded, health, hunger}, next_x, next_y, next_z, blocks, origin_x, origin_y, origin_z, width, height, depth)
   +resolved = step.vertical(next_x, y, next_z, yaw, pitch, next_velocity, next_y, F32.is_lt(dy, 0.0), blocked_y, health, hunger)
-  tick_survival(step.respawn(resolved, spawn_x, spawn_z, spawn_height, step.fallen(resolved)), dt)
+  tick_survival(step.respawn(resolved, spawn_x, spawn_z, spawn_height, step.fallen(resolved)), dt, sprinting)
 
 def step(
   state: State, keys: U32, dt: F32, blocks: List<&2, U32>,

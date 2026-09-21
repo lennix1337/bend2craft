@@ -4,8 +4,18 @@ export const PLAYER_RADIUS = 0.3;
 export const PLAYER_HEIGHT = 1.8;
 export const EYE_HEIGHT = 1.62;
 export const MOVE_SPEED = 4.5;
+export const SPRINT_SPEED = 6.75;
 export const JUMP_SPEED = 7.0;
 export const GRAVITY = 20.0;
+
+const SPRINT_KEYS = ["ShiftLeft", "ShiftRight", "Sprint"];
+
+export function isSprinting(held) {
+  for (const key of SPRINT_KEYS) {
+    if (held.has(key)) return true;
+  }
+  return false;
+}
 
 const PLAYER_STATES = new WeakMap();
 // Shifts possibly-negative world coordinates into Nat range for the Bend
@@ -248,6 +258,7 @@ export function movePlayer(world, player, held, dt, spawnCell, spawnHeight, widt
   if (held.has("KeyS")) keys |= 4;
   if (held.has("KeyD")) keys |= 8;
   if (held.has("Space")) keys |= 16;
+  if (isSprinting(held)) keys |= 32;
 
   const region = collisionRegion(world, player.x, player.y, player.z);
   const raw = PlayerDomain.step(

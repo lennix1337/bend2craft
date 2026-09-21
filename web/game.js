@@ -10,6 +10,7 @@ import Furnace from "../world/furnace.bend";
 import Furnaces from "../world/furnaces.bend";
 import ChestDomain from "../world/chest.bend";
 import Chests from "../world/chests.bend";
+import Equipment from "../world/equipment.bend";
 import Simulation from "../world/simulation.bend";
 import Experience from "../world/experience.bend";
 import Crops from "../world/crops.bend";
@@ -160,6 +161,7 @@ const inventoryPanelEl = document.getElementById("inventory-panel");
 const furnacePanelEl = document.getElementById("furnace-panel");
 const chestPanelEl = document.getElementById("chest-panel");
 const inventorySlotsEl = document.getElementById("inventory-slots");
+const equipmentSlotsEl = document.getElementById("equipment-slots");
 const chestSlotsEl = document.getElementById("chest-slots");
 const recipeListEl = document.getElementById("recipe-list");
 const shapedRecipeEl = document.getElementById("shaped-recipe");
@@ -1319,6 +1321,7 @@ try {
   if (Array.isArray(savedGame?.inventory) && savedGame.inventory.length === inventory.length) {
     inventory.splice(0, inventory.length, ...savedGame.inventory);
   }
+  let equipmentState = savedGame?.equipment?.$ === "Equipment" ? savedGame.equipment : Equipment.empty();
   let selectedSlot = 0;
   let inventoryCursor = null;
   let inventoryCursorAmount = null;
@@ -1938,7 +1941,8 @@ try {
     mobs = mobViews(mobDomainState);
     const threat = Number(Entities.threat_damage(mobDomainState, player.x, player.z));
     if (threat > 0) {
-      const blocking = itemId(selectedItem(inventory, selectedSlot)) === "shield";
+      const blocking = Equipment.blocks_damage(equipmentState)
+        || itemId(selectedItem(inventory, selectedSlot)) === "shield";
       applyDamage(player, threat * (blocking ? 0.34 : 1) * dt);
     }
     collectNearbyDrops();
@@ -2251,6 +2255,65 @@ try {
     return Array.from({ length: 9 }, () => ({ block: 0, count: 0 }));
   }
 
+  const equipmentSlots = [
+    [0, "offhand", "Offhand"],
+    [1, "helmet", "Helmet"],
+    [2, "chest", "Chest"],
+    [3, "legs", "Legs"],
+    [4, "boots", "Boots"],
+  ];
+
+  function equipmentItem(field) {
+    return Number(equipmentState[field] ?? 0);
+  }
+
+  function renderEquipment() {
+    if (equipmentSlotsEl === null) return;
+    equipmentSlotsEl.innerHTML = equipmentSlots.map(([slot, field, label]) => {
+      const itemNumber = equipmentItem(field);
+      const name = itemNumber === 0 ? label : (itemNameFromId(itemNumber) ?? label);
+      const empty = itemNumber === 0;
+      return `<button class="equipment-slot${empty ? " empty" : ""}" type="button" data-equipment-slot="${slot}"
+        aria-label="${label}: ${name}">
+        <span class="slot-swatch" data-item="${empty ? "" : name}" style="--slot-color: ${empty ? "transparent" : itemColor({ item: name })}"></span>
+        <span class="slot-name">${name}</span>
+      </button>`;
+    }).join("");
+    paintSlotIcons();
+  }
+
+  function equipInventorySlot(slot) {
+    const item = selectedItem(inventory, slot);
+    const id = itemId(item);
+    if (id === null || ITEM_IDS[id] === undefined) return false;
+    const result = Equipment.equip(equipmentState, ITEM_IDS[id]);
+    if (!result.ok) return false;
+    if (!consume(inventory, slot)) return false;
+    equipmentState = result.equipment;
+    setInventoryMessage(`${itemName(item)} equipped.`);
+    refreshInventoryUi();
+    saveGame();
+    return true;
+  }
+
+  function unequipEquipmentSlot(slot) {
+    const result = Equipment.take_slot(equipmentState, BigInt(slot));
+    if (!result.ok) return false;
+    const name = itemNameFromId(result.item);
+    if (name === null) return false;
+    const trial = inventory.map((item) => ({ ...item }));
+    if (!collectItem(trial, name, 1)) {
+      setInventoryMessage("Make room before removing equipment.");
+      return false;
+    }
+    inventory.splice(0, inventory.length, ...trial);
+    equipmentState = result.equipment;
+    setInventoryMessage(`${name} unequipped.`);
+    refreshInventoryUi();
+    saveGame();
+    return true;
+  }
+
   function renderCraftingGrid() {
     if (craftingGridEl === null) return;
     craftingGridEl.innerHTML = craftingGrid.map((item, slot) => {
@@ -2328,6 +2391,7 @@ try {
     inventorySlotsEl.innerHTML = inventory
       .map((item, slot) => slotMarkup(item, slot, "inventory-slot"))
       .join("");
+    renderEquipment();
     if (shapedRecipeEl !== null && shapedRecipeEl.options.length === 0) {
       shapedRecipeEl.innerHTML = RECIPES.map((recipe) => `<option value="${recipe.id}">${recipe.name}</option>`).join("");
     }
@@ -3192,6 +3256,7 @@ try {
         edits: world.getEdits(),
         player: { ...player },
         inventory: inventory.map((item) => ({ ...item })),
+        equipment: equipmentState,
         furnaces: furnaceWorldState,
         chests: chestWorldState,
         crops: cropState,
@@ -3395,6 +3460,11 @@ try {
     const button = event.target.closest("[data-slot]");
     if (button === null) return;
     const slot = Number(button.dataset.slot);
+    const slotItem = itemId(inventory[slot]);
+    if (inventoryCursor === null && slotItem !== null && ITEM_IDS[slotItem] !== undefined
+      && Number(Equipment.slot_for_item(ITEM_IDS[slotItem])) < 5) {
+      if (equipInventorySlot(slot)) return;
+    }
     if (event.shiftKey && inventoryCursor === null) {
       const target = findShiftTarget(inventory, slot, HOTBAR_SIZE, MAX_STACK);
       const source = inventory[slot];
@@ -3446,6 +3516,8 @@ try {
   });
   inventoryPanelEl.addEventListener("click", (event) => {
     if (event.target.closest("[data-close-inventory]") !== null) toggleInventory();
+    const equipmentSlot = event.target.closest("[data-equipment-slot]")?.dataset.equipmentSlot;
+    if (equipmentSlot !== undefined) unequipEquipmentSlot(Number(equipmentSlot));
     const action = event.target.closest("[data-shaped-action]")?.dataset.shapedAction;
     if (action === "load") loadShapedRecipe();
     else if (action === "craft") craftShapedRecipe();
@@ -3745,6 +3817,7 @@ try {
     getVillagers: () => villagers.map((villager) => ({ ...villager })),
     getDrops: () => drops.map((drop) => ({ ...drop })),
     getChest: () => chestSlotsView(activeChestState() ?? ChestDomain.empty()),
+    getEquipment: () => ({ ...equipmentState }),
     getDropGroundStats: () => dropGroundCache?.stats() ?? { hits: 0, misses: 0, size: 0 },
     getEntityBucketStats: () => ({ ...entityBucketStats }),
     getCrops: cropViews,

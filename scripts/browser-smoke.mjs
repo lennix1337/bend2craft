@@ -385,6 +385,19 @@ try {
   }));
   assert.equal(shapedCrafted.occupied, 0, JSON.stringify(shapedCrafted));
   assert.ok(shapedCrafted.inventory.some((item) => item.item === "planks"));
+  const shieldInventory = await page.evaluate(() => {
+    const collected = window.__bend2craft.collect("shield");
+    const inventory = window.__bend2craft.getInventory();
+    return { collected, slot: inventory.findIndex((item) => item.item === "shield") };
+  });
+  assert.equal(shieldInventory.collected, true);
+  assert.ok(shieldInventory.slot >= 0);
+  await page.locator(`#inventory-slots [data-slot="${shieldInventory.slot}"]`).click();
+  const equipped = await page.evaluate(() => window.__bend2craft.getEquipment());
+  assert.equal(Number(equipped.offhand), 38);
+  await page.locator('#equipment-slots [data-equipment-slot="0"]').click();
+  const unequipped = await page.evaluate(() => window.__bend2craft.getEquipment());
+  assert.equal(Number(unequipped.offhand), 0);
   await page.locator("[data-close-inventory]").click();
   await page.waitForFunction(() => document.getElementById("inventory-panel")?.hidden === true);
 
@@ -447,7 +460,7 @@ try {
 
   assert.deepEqual(consoleErrors, []);
   assert.deepEqual(pageErrors, []);
-  console.log(JSON.stringify({ ...state, textureProbe, animatedSurfaceProbe, atlasProbe, interactionResult, mobProbe, collectedInventory, damageProbe, persistenceBefore, persistenceAfter, entityPersistenceBefore, entityPersistenceAfter, negativeState, streamingSwap, inventoryToggle: "ok", shapedLoaded, shapedCrafted, chestProbe, dropProbe, consoleErrors, pageErrors }));
+  console.log(JSON.stringify({ ...state, textureProbe, animatedSurfaceProbe, atlasProbe, interactionResult, mobProbe, collectedInventory, damageProbe, persistenceBefore, persistenceAfter, entityPersistenceBefore, entityPersistenceAfter, negativeState, streamingSwap, inventoryToggle: "ok", shapedLoaded, shapedCrafted, shieldInventory, equipped, unequipped, chestProbe, dropProbe, consoleErrors, pageErrors }));
 } finally {
   await browser.close();
 }

@@ -57,6 +57,7 @@ TESTS=(
   tests/inventory-bend.test.mjs
   tests/chest-bend.test.mjs
   tests/chests-bend.test.mjs
+  tests/equipment-bend.test.mjs
   tests/experience-bend.test.mjs
   tests/interactions-bend.test.mjs
   tests/furnace-bend.test.mjs

@@ -5,6 +5,8 @@ const emptyWalls = Flood.empty_walls();
 const source = Flood.source(1n, 1n);
 const direct = Flood.run(Flood.sources(source), emptyWalls, 96n);
 assert.ok(Number(Flood.light_at(direct, 4n, 1n).light) > 0);
+const lava = Flood.run(Flood.sources(Flood.lava_source(1n, 1n)), emptyWalls, 96n);
+assert.equal(Number(Flood.light_at(lava, 1n, 1n).light), 15);
 
 const blocked = Flood.run(
   Flood.sources(source),

@@ -55,3 +55,30 @@ def surface_grid(
   +cells = Nat.mul(columns, rows)
   +depth = array_depth()
   surface_grid.fill(seed, cells, 0n, min_x, min_z, columns, step, Array.new(U32, depth, 0))
+
+type SurfacePoint is Data:
+  SurfacePoint{x: Nat, z: Nat}
+
+def surface_points.fill(
+  +seed: Nat, +remaining: Nat, +index: Nat,
+  points: List<&2, SurfacePoint>, blocks: Array<U32>
+) -> Array<U32>:
+  match remaining:
+    case 0n:
+      blocks
+    case 1n+p:
+      match points:
+        case Nil{}:
+          blocks
+        case Con{+head, +tail}:
+          SurfacePoint{+x, +z} = head
+          +height = World.column_height(seed, x, z)
+          +water = World.water_at(seed, x, World.sea_level(), z)
+          +surface = Bool.pick(U32, water, U32.add(U32.from_nat(World.sea_level()), 33), U32.from_nat(height))
+          updated = blocks[U32.from_nat(index)] <- surface
+          surface_points.fill(seed, p, Nat.add(index, 1n), tail, updated)
+
+def surface_points(
+  +seed: Nat, +count: Nat, points: List<&2, SurfacePoint>
+) -> Array<U32>:
+  surface_points.fill(seed, count, 0n, points, Array.new(U32, array_depth(), 0))

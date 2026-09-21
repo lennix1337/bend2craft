@@ -2,6 +2,13 @@ import assert from "node:assert/strict";
 import Simulation from "../world/simulation.bend";
 import Crops from "../world/crops.bend";
 import Farmland from "../world/farmland.bend";
+import Fluids from "../world/fluids.bend";
+
+function listLength(list) {
+  let count = 0;
+  for (let node = list; node?.$ === "Con"; node = node.tail) count += 1;
+  return count;
+}
 
 let state = Simulation.empty();
 assert.equal(state.$, "Simulation");
@@ -23,4 +30,27 @@ assert.equal(Number(Simulation.sim_crops(state).crops.head.stage), 19);
 state = Simulation.unpin(state, 2n, 3n);
 assert.equal(Number(Simulation.pinned_count(state)), 1);
 assert.equal(Number(Simulation.chunk_ticks(state, 2n, 3n)), 0);
+
+const fluidSamples = {
+  $: "Con",
+  head: Fluids.sample(2n, 2n, 2n, 1),
+  tail: {
+    $: "Con",
+    head: Fluids.sample(1n, 3n, 2n, 0),
+    tail: {
+      $: "Con",
+      head: Fluids.sample(3n, 3n, 2n, 0),
+      tail: {
+        $: "Con",
+        head: Fluids.sample(2n, 3n, 1n, 0),
+        tail: { $: "Con", head: Fluids.sample(2n, 3n, 3n, 0), tail: { $: "Nil" } },
+      },
+    },
+  },
+};
+const fluidState = Fluids.seed(Fluids.empty(), 2n, 3n, 2n, 3);
+const advanced = Simulation.tick_with_fluids(state, 1n, water, fluidState, fluidSamples);
+assert.equal(advanced.$, "Tick");
+assert.equal(Number(Simulation.tick_time(advanced)), Number(Simulation.time(state)) + 1);
+assert.equal(listLength(Fluids.state_flows(Simulation.tick_fluids(advanced))), 5);
 console.log("bend simulation ok");

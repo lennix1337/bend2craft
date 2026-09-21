@@ -13,6 +13,9 @@ export const BLOCK_INFO = Object.freeze({
   5: Object.freeze({ name: "wood", color: "#a66a3f" }),
   6: Object.freeze({ name: "sand", color: "#d9bd72" }),
   7: Object.freeze({ name: "water", color: "#4d9bd6" }),
+  21: Object.freeze({ name: "lava", color: "#e56b2f" }),
+  22: Object.freeze({ name: "cobblestone", color: "#777b7d" }),
+  23: Object.freeze({ name: "obsidian", color: "#29233f" }),
   8: Object.freeze({ name: "coal ore", color: "#3d4148" }),
   9: Object.freeze({ name: "iron ore", color: "#b27b63" }),
   10: Object.freeze({ name: "diamond ore", color: "#4fd6d2" }),
@@ -57,6 +60,11 @@ const ITEM_IDS = Object.freeze({
   wheat_seeds: 25,
   wheat: 26,
   wooden_hoe: 27,
+  empty_bucket: 28,
+  water_bucket: 29,
+  lava_bucket: 30,
+  cobblestone: 31,
+  obsidian: 32,
 });
 const ITEM_NAMES = Object.freeze(Object.fromEntries(
   Object.entries(ITEM_IDS).map(([name, id]) => [id, name]),
@@ -83,6 +91,8 @@ export const BLOCK_TO_ITEM = Object.freeze({
   18: "wheat_seeds",
   19: "wheat",
   20: "dirt",
+  22: "cobblestone",
+  23: "obsidian",
 });
 
 export const ITEM_TO_BLOCK = Object.freeze({
@@ -97,6 +107,8 @@ export const ITEM_TO_BLOCK = Object.freeze({
   torch: 12,
   bed: 13,
   door: 14,
+  cobblestone: 22,
+  obsidian: 23,
 });
 
 export const ITEM_INFO = Object.freeze({
@@ -127,6 +139,11 @@ export const ITEM_INFO = Object.freeze({
   wheat_seeds: Object.freeze({ name: "wheat seeds", color: "#d5b83f", block: null, placeable: false, collectible: true }),
   wheat: Object.freeze({ name: "wheat", color: "#f0c84b", block: null, placeable: false, collectible: true }),
   wooden_hoe: Object.freeze({ name: "wooden hoe", color: "#b77b48", block: null, placeable: false, collectible: true }),
+  empty_bucket: Object.freeze({ name: "empty bucket", color: "#b8c0c8", block: null, placeable: false, collectible: true }),
+  water_bucket: Object.freeze({ name: "water bucket", color: "#4d9bd6", block: null, placeable: false, collectible: true }),
+  lava_bucket: Object.freeze({ name: "lava bucket", color: "#e56b2f", block: null, placeable: false, collectible: true }),
+  cobblestone: Object.freeze({ name: "cobblestone", color: BLOCK_INFO[22].color, block: 22, placeable: true, collectible: true }),
+  obsidian: Object.freeze({ name: "obsidian", color: BLOCK_INFO[23].color, block: 23, placeable: true, collectible: true }),
 });
 
 function valuesFromList(list) {
@@ -150,6 +167,7 @@ const RECIPE_IDS = [
   "bed",
   "door",
   "wooden_hoe",
+  "empty_bucket",
 ];
 export const RECIPES = Object.freeze(RECIPE_IDS.map((id, recipeIndex) => {
   const offset = recipeIndex * 8;
@@ -313,6 +331,10 @@ export function canMine(item, block) {
   return InventoryDomain.can_mine(numericItem(item), block);
 }
 
+export function miningDuration(item, block) {
+  return Number(InventoryDomain.mining_duration(numericItem(item), Number(block)));
+}
+
 export function mineDrop(item, block, y = 1) {
   const id = itemId(item);
   if (id === null) return { item: 0, amount: 0, valid: false };
@@ -322,6 +344,73 @@ export function mineDrop(item, block, y = 1) {
     amount: Number(result.amount),
     valid: result.valid,
   };
+}
+
+export function mineAndCollect(inventory, item, block, y = 1) {
+  return applyResult(inventory, InventoryDomain.mine_collect(
+    stateFor(inventory),
+    numericItem(item),
+    Number(block),
+    BigInt(y),
+  ));
+}
+
+export function placeItem(inventory, slot, item, targetEmpty, inside, overlapsPlayer) {
+  return applyResult(inventory, InventoryDomain.place(
+    stateFor(inventory),
+    BigInt(slot),
+    numericItem(item),
+    Boolean(targetEmpty),
+    Boolean(inside),
+    Boolean(overlapsPlayer),
+  ));
+}
+
+export function fillBucket(inventory, slot) {
+  return applyResult(inventory, InventoryDomain.fill_bucket_at(stateFor(inventory), BigInt(slot)));
+}
+
+export function emptyBucket(inventory, slot) {
+  return applyResult(inventory, InventoryDomain.empty_bucket_at(stateFor(inventory), BigInt(slot)));
+}
+
+export function fillLavaBucket(inventory, slot) {
+  return applyResult(inventory, InventoryDomain.fill_lava_bucket_at(stateFor(inventory), BigInt(slot)));
+}
+
+export function emptyLavaBucket(inventory, slot) {
+  return applyResult(inventory, InventoryDomain.empty_lava_bucket_at(stateFor(inventory), BigInt(slot)));
+}
+
+export function mineInteraction(inventory, slot, item, block, x, y, z) {
+  const result = InventoryDomain.mine_interaction_at(
+    stateFor(inventory),
+    BigInt(slot),
+    numericItem(item),
+    Number(block),
+    BigInt(x),
+    BigInt(y),
+    BigInt(z),
+  );
+  applyResult(inventory, result);
+  return result;
+}
+
+export function placeInteraction(inventory, slot, item, block, x, y, z, targetEmpty, inside, overlapsPlayer) {
+  const result = InventoryDomain.place_interaction(
+    stateFor(inventory),
+    BigInt(slot),
+    numericItem(item),
+    Number(block),
+    BigInt(x),
+    BigInt(y),
+    BigInt(z),
+    Boolean(targetEmpty),
+    Boolean(inside),
+    Boolean(overlapsPlayer),
+  );
+  applyResult(inventory, result);
+  return result;
 }
 
 export function toolMaxDurability(item) {

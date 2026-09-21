@@ -17,6 +17,18 @@ def torches(edits: List<&2, Edit>) -> List<&2, Edit>:
       +is_torch = U32.is_eq(block, 12)
       Bool.pick(List<&2, Edit>, is_torch, Con{head, rest}, rest)
 
+def light_source(+block: U32) -> Bool:
+  Bool.or(U32.is_eq(block, 12), U32.is_eq(block, 21))
+
+def light_sources(edits: List<&2, Edit>) -> List<&2, Edit>:
+  match edits:
+    case Nil{}:
+      Nil{}
+    case Con{+head, +tail}:
+      Edit{+x, +y, +z, +block} = head
+      +rest = light_sources(tail)
+      Bool.pick(List<&2, Edit>, light_source(block), Con{head, rest}, rest)
+
 def edit_matches(edit: Edit, +x: Nat, +y: Nat, +z: Nat) -> Bool:
   Edit{ex, ey, ez, block} = edit
   Bool.and(Bool.and(Nat.is_eq(ex, x), Nat.is_eq(ey, y)), Nat.is_eq(ez, z))

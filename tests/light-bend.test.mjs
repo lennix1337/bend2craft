@@ -16,6 +16,10 @@ const source = Light.source(20n, 2n, 38n);
 const sources = { $: "Con", head: source, tail: { $: "Nil" } };
 assert.equal(Number(Light.block(sources, 1337n, 20n, 2n, 38n)), 14);
 assert.equal(Number(Light.block(sources, 1337n, 21n, 2n, 38n)), 0);
+const lavaSource = Light.lava_source(20n, 2n, 38n);
+const lavaSources = { $: "Con", head: lavaSource, tail: { $: "Nil" } };
+assert.equal(Number(Light.block(lavaSources, 1337n, 20n, 2n, 38n)), 15);
+assert.equal(Number(Light.block(lavaSources, 1337n, 21n, 2n, 38n)), 0);
 const crossChunkSource = { $: "Con", head: Light.source(20n, 15n, 38n), tail: { $: "Nil" } };
 const crossChunkFields = Light.source_fields(crossChunkSource, 1337n);
 assert.ok(Number(Light.field_light(crossChunkFields, 32n, 15n, 38n, 0)) > 0);
@@ -38,4 +42,22 @@ assert.equal(Number(cachedPatch.head.light), Number(patch.head.light));
 const mixedPatch = Light.patch(mixedSources, 1337n, dirtyCells);
 const mixedFull = Light.chunk(mixedSources, 1337n, 1n, 2n);
 assert.equal(Number(mixedPatch.head.light), Number(mixedFull[4 + 16 * (6 + 16 * 15)]));
+
+const surfaceRemoval = {
+  $: "Con",
+  head: { $: "Edit", x: 38n, y: 7n, z: 22n, block: 0 },
+  tail: { $: "Nil" },
+};
+const surfaceIndex = 6 + 16 * (6 + 16 * 7);
+const surfaceBefore = Light.chunk(emptySources, 1337n, 2n, 1n);
+const surfaceAfter = Light.chunk_with_edits(emptySources, surfaceRemoval, 1337n, 2n, 1n);
+assert.equal(Number(surfaceBefore[surfaceIndex]), 0);
+assert.equal(Number(surfaceAfter[surfaceIndex]), 15);
+const surfacePatch = Light.patch_fields_with_edits(
+  { $: "Nil" },
+  surfaceRemoval,
+  1337n,
+  { $: "Con", head: { $: "Cell", x: 38n, y: 7n, z: 22n }, tail: { $: "Nil" } },
+);
+assert.equal(Number(surfacePatch.head.light), 15);
 console.log("bend light ok");

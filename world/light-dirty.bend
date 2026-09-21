@@ -109,3 +109,15 @@ def cells_plane.radius(+x: Nat, +y: Nat, +z: Nat, +radius: Nat) -> List<&2, Cell
 
 def cells_plane(+x: Nat, +y: Nat, +z: Nat) -> List<&2, Cell>:
   cells_plane.radius(x, y, z, 14n)
+
+def cells_column.fill(
+  +remaining: Nat, +x: Nat, +y: Nat, +z: Nat, cells: List<&2, Cell>
+) -> List<&2, Cell>:
+  match remaining:
+    case 0n:
+      cells
+    case 1n+p:
+      cells_column.fill(p, x, Nat.add(y, 1n), z, Con{Cell{x, y, z}, cells})
+
+def cells_column(+x: Nat, +y: Nat, +z: Nat) -> List<&2, Cell>:
+  cells_column.fill(World.max_y(), x, 0n, z, Nil{})

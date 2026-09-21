@@ -8,7 +8,12 @@ export const JUMP_SPEED = 7.0;
 export const GRAVITY = 20.0;
 
 const PLAYER_STATES = new WeakMap();
-const DOMAIN_COORDINATE_OFFSET = 1048576;
+// Shifts possibly-negative world coordinates into Nat range for the Bend
+// domain. Keep it small: domain positions are F32, and at 2^20 the float
+// grid (0.125) is wider than a per-tick diagonal step (~0.053), which froze
+// diagonal movement while cardinals kept going. At 2^15 the grid is 0.0039
+// and still leaves +/-32768 blocks of negative reach.
+export const DOMAIN_COORDINATE_OFFSET = 32768;
 const COLLISION_WIDTH = 5;
 const COLLISION_HEIGHT = 6;
 const COLLISION_DEPTH = 5;
@@ -102,6 +107,35 @@ export function isSolid(block) {
   return PlayerDomain.solid(block);
 }
 
+export const MOB_REGION_WIDTH = 5;
+export const MOB_REGION_HEIGHT = 6;
+export const MOB_REGION_DEPTH = 5;
+
+// Small collision region around a mob, in the same offset frame the Bend
+// domain expects. Returned origins are BigInt Nats; blocks is a Bend list.
+export function mobRegion(world, x, y, z) {
+  const originX = Math.floor(x) - 2;
+  const originY = Math.max(0, Math.floor(y) - 2);
+  const originZ = Math.floor(z) - 2;
+  const values = [];
+  for (let localY = 0; localY < MOB_REGION_HEIGHT; localY += 1) {
+    for (let localZ = 0; localZ < MOB_REGION_DEPTH; localZ += 1) {
+      for (let localX = 0; localX < MOB_REGION_WIDTH; localX += 1) {
+        values.push(world.blockAt(originX + localX, originY + localY, originZ + localZ));
+      }
+    }
+  }
+  return {
+    blocks: blockList(values),
+    originX: BigInt(originX + DOMAIN_COORDINATE_OFFSET),
+    originY: BigInt(originY),
+    originZ: BigInt(originZ + DOMAIN_COORDINATE_OFFSET),
+    width: BigInt(MOB_REGION_WIDTH),
+    height: BigInt(MOB_REGION_HEIGHT),
+    depth: BigInt(MOB_REGION_DEPTH),
+  };
+}
+
 export function collidesAt(world, player, x, y, z) {
   const region = collisionRegion(world, x, y, z);
   return PlayerDomain.collides(
@@ -119,6 +153,11 @@ export function collidesAt(world, player, x, y, z) {
   );
 }
 
+export function lavaContact(world, player) {
+  const region = collisionRegion(world, player.x, player.y, player.z);
+  return PlayerDomain.lava_contact(region.blocks);
+}
+
 export function overlapsPlayer(player, x, y, z) {
   return PlayerDomain.overlaps(
     stateRaw(player),
@@ -130,6 +169,13 @@ export function overlapsPlayer(player, x, y, z) {
 
 export function applyDamage(player, amount) {
   const raw = PlayerDomain.damage(stateRaw(player), amount);
+  Object.assign(player, stateView(raw));
+  PLAYER_STATES.set(player, raw);
+  return player.health;
+}
+
+export function applyLavaDamage(player, dt) {
+  const raw = PlayerDomain.lava_damage(stateRaw(player), dt);
   Object.assign(player, stateView(raw));
   PLAYER_STATES.set(player, raw);
   return player.health;
@@ -182,15 +228,18 @@ export function raycast(world, player) {
   };
 }
 
+export function respawnPlayer(player, spawnCell, spawnHeight) {
+  const respawned = PlayerDomain.create(
+    BigInt(spawnCell[0]) + BigInt(DOMAIN_COORDINATE_OFFSET),
+    BigInt(spawnCell[1]) + BigInt(DOMAIN_COORDINATE_OFFSET),
+    BigInt(spawnHeight),
+  );
+  Object.assign(player, stateView(respawned));
+  PLAYER_STATES.set(player, respawned);
+}
+
 export function movePlayer(world, player, held, dt, spawnCell, spawnHeight, width = 48, depth = 48) {
   if (Number(player.health) <= 0) {
-    const respawned = PlayerDomain.create(
-      BigInt(spawnCell[0]) + BigInt(DOMAIN_COORDINATE_OFFSET),
-      BigInt(spawnCell[1]) + BigInt(DOMAIN_COORDINATE_OFFSET),
-      BigInt(spawnHeight),
-    );
-    Object.assign(player, stateView(respawned));
-    PLAYER_STATES.set(player, respawned);
     return;
   }
   let keys = 0;

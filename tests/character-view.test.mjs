@@ -25,7 +25,7 @@ assert.deepEqual(emptyCharacter.parts.map((part) => part.name), [
   "right_leg",
 ]);
 
-for (const [block, item] of [[1, "stone"], [5, "wood"], [7, "water"], [11, "furnace"]]) {
+for (const [block, item] of [[1, "stone"], [5, "wood"], [7, "water"], [11, "furnace"], [22, "cobblestone"], [23, "obsidian"]]) {
   const descriptor = heldItemPose({ block, count: 32 });
   assert.equal(descriptor.visible, true);
   assert.equal(descriptor.item, item);

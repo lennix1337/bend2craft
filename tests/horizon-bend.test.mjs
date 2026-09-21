@@ -27,4 +27,17 @@ for (let x = 0n; x < 48n && waterSample === null; x += 1n) {
 assert.ok(waterSample !== null);
 const surface = Horizon.surface_grid(1337n, waterSample[0], waterSample[1], 1n, 1n, 1n);
 assert.ok(Number(surface[0]) >= 32);
+const points = {
+  $: "Con",
+  head: { $: "SurfacePoint", x: waterSample[0], z: waterSample[1] },
+  tail: {
+    $: "Con",
+    head: { $: "SurfacePoint", x: 4n, z: 7n },
+    tail: { $: "Nil" },
+  },
+};
+const pointSurface = Horizon.surface_points(1337n, 2n, points);
+assert.equal(Number(pointSurface[0]), Number(surface[0]));
+const secondSurface = Horizon.surface_grid(1337n, 4n, 7n, 1n, 1n, 1n);
+assert.equal(Number(pointSurface[1]), Number(secondSurface[0]));
 console.log("horizon grid ok");

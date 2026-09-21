@@ -34,7 +34,7 @@ def clamp_world(state: State, +width: Nat, +depth: Nat) -> State:
 
 def solid(+block: U32) -> Bool:
   +crop = Bool.or(Bool.or(U32.is_eq(block, 16), U32.is_eq(block, 17)), Bool.or(U32.is_eq(block, 18), U32.is_eq(block, 19)))
-  Bool.and(Bool.and(Bool.and(U32.is_ne(block, 0), U32.is_ne(block, 7)), Bool.and(U32.is_ne(block, 12), U32.is_ne(block, 15))), Bool.not(crop))
+  Bool.and(Bool.and(Bool.and(U32.is_ne(block, 0), U32.is_ne(block, 7)), Bool.and(U32.is_ne(block, 12), Bool.and(U32.is_ne(block, 15), Bool.and(U32.is_ne(block, 21), U32.is_ne(block, 24))))), Bool.not(crop))
 
 def block_height(+block: U32) -> F32:
   Bool.pick(F32, U32.is_eq(block, 20), fraction(15, 16), 1.0)
@@ -224,6 +224,16 @@ def damage(state: State, +amount: F32) -> State:
   State{+x, +y, +z, +yaw, +pitch, +velocity_y, grounded, +health, +hunger} = state
   +next_health = clamp_f32(F32.sub(health, amount), 0.0, 20.0)
   State{x, y, z, yaw, pitch, velocity_y, grounded, next_health, hunger}
+
+def lava_contact(blocks: List<&2, U32>) -> Bool:
+  match blocks:
+    case Nil{}:
+      False{}
+    case Con{+head, +tail}:
+      Bool.or(U32.is_eq(head, 21), lava_contact(tail))
+
+def lava_damage(state: State, +dt: F32) -> State:
+  damage(state, F32.mul(dt, 4.0))
 
 def eat(state: State, +nutrition: F32) -> State:
   State{+x, +y, +z, +yaw, +pitch, +velocity_y, grounded, +health, +hunger} = state

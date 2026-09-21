@@ -27,6 +27,18 @@ if (!worker.success) {
   process.exit(1);
 }
 await Bun.write(path.join(outdir, "chunk-worker.js"), await worker.outputs[0].arrayBuffer());
+const meshWorker = await Bun.build({
+  entrypoints: [path.resolve("web/mesh-worker-entry.js")],
+  outdir,
+  target: "browser",
+  minify: false,
+  sourcemap: "none",
+});
+if (!meshWorker.success) {
+  console.error(meshWorker.logs);
+  process.exit(1);
+}
+await Bun.write(path.join(outdir, "mesh-worker.js"), await meshWorker.outputs[0].arrayBuffer());
 
 const server = Bun.serve({
   port: Number(process.env.PORT ?? 3000),

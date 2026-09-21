@@ -34,18 +34,30 @@ function measure(fn, repeats = 2) {
 
 const dirty = Dirty.cells_plane(24n, 2n, 24n);
 const dirtyCount = listLength(dirty);
+const columnDirty = Dirty.cells_column(24n, 2n, 24n);
+const columnDirtyCount = listLength(columnDirty);
+const editAware = {
+  $: "Con",
+  head: { $: "Edit", x: 24n, y: 2n, z: 24n, block: 0 },
+  tail: { $: "Nil" },
+};
 const rows = [];
 for (const count of [1, 4, 20]) {
   const current = sources(count);
   const fields = cachedFields(current);
   const patchMs = measure(() => Light.patch(current, 1337n, dirty), 2);
   const cachedPatchMs = measure(() => Light.patch_fields(fields, 1337n, dirty), 2);
+  const editAwarePatchMs = measure(() => Light.patch_fields_with_edits(fields, editAware, 1337n, dirty), 2);
+  const columnEditAwarePatchMs = measure(() => Light.patch_fields_with_edits(fields, editAware, 1337n, columnDirty), 2);
   const fullMs = measure(() => Light.chunk(current, 1337n, 1n, 1n), 2);
   rows.push({
     count,
     dirtyCount,
+    columnDirtyCount,
     patchMs,
     cachedPatchMs,
+    editAwarePatchMs,
+    columnEditAwarePatchMs,
     fullMs,
     cachedSpeedup: fullMs / cachedPatchMs,
   });

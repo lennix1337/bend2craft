@@ -25,6 +25,9 @@ def make_cell(x: Nat, z: Nat, light: U32) -> Cell:
 def source(+x: Nat, +z: Nat) -> Cell:
   make_cell(x, z, max_light())
 
+def lava_source(+x: Nat, +z: Nat) -> Cell:
+  make_cell(x, z, 15)
+
 def sources(cell: Cell) -> List<&2, Cell>:
   Con{cell, Nil{}}
 

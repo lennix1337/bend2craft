@@ -24,6 +24,8 @@ const saved = { entities: packEntityState(mobs, drops), villagers };
 const restoredEntities = restoreEntities(saved, { $: "Nil" }, { $: "Nil" });
 assert.equal(restoredEntities.mobs.head.id, 7n);
 assert.equal(restoredEntities.mobs.head.x, 12.5);
+assert.equal(restoredEntities.mobs.head.heading_x, 0);
+assert.equal(restoredEntities.mobs.head.heading_z, -1);
 assert.equal(restoredEntities.drops.head.id, 3n);
 assert.equal(restoreVillagers(saved, { $: "Nil" }).head.id, 2n);
 assert.equal(restoreVillagers({}, villagers), villagers);

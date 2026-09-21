@@ -3,7 +3,8 @@ import ./structures.bend as Structures
 
 # Block IDs: 0 air, 1 stone, 2 dirt, 3 grass, 4 leaves, 5 wood, 6 sand, 7 water,
 # 8 coal ore, 9 iron ore, 10 diamond ore, 11 furnace, 12 torch, 13 bed,
-# 14 closed door, 15 open door, 16-19 wheat growth stages, 20 farmland.
+# 14 closed door, 15 open door, 16-19 wheat growth stages, 20 farmland, 21 lava,
+# 22 cobblestone, 23 obsidian.
 
 def default_seed() -> Nat:
   1337n
@@ -112,41 +113,6 @@ def tree_at_height(+seed: Nat, +x: Nat, +z: Nat, +h: Nat) -> Bool:
 def tree_at(+seed: Nat, +x: Nat, +z: Nat) -> Bool:
   tree_at_height(seed, x, z, column_height(seed, x, z))
 
-type SpawnCell is Data:
-  SpawnCell{x: Nat, z: Nat, height: Nat}
-
-def spawn_clear(+seed: Nat, +x: Nat, +z: Nat) -> Bool:
-  +a = tree_at(seed, x, z)
-  +b = tree_at(seed, Nat.sub(x, 1n), z)
-  +c = tree_at(seed, Nat.add(x, 1n), z)
-  +d = tree_at(seed, x, Nat.sub(z, 1n))
-  +e = tree_at(seed, x, Nat.add(z, 1n))
-  +f = tree_at(seed, Nat.sub(x, 1n), Nat.sub(z, 1n))
-  +g = tree_at(seed, Nat.add(x, 1n), Nat.add(z, 1n))
-  +h = tree_at(seed, Nat.sub(x, 1n), Nat.add(z, 1n))
-  +i = tree_at(seed, Nat.add(x, 1n), Nat.sub(z, 1n))
-  +height = column_height(seed, x, z)
-  +village_height = column_height(seed, Structures.village_origin_x(seed), Structures.village_origin_z(seed))
-  +structure = Structures.block(seed, x, height, z, village_height)
-  +clear = Bool.and(Bool.not(a), Bool.and(Bool.not(b), Bool.and(Bool.not(c),
-    Bool.and(Bool.not(d), Bool.and(Bool.not(e), Bool.and(Bool.not(f),
-      Bool.and(Bool.not(g), Bool.and(Bool.not(h), Bool.not(i)))))))))
-  Bool.and(Bool.and(clear, Nat.is_gt(height, sea_level())), U32.is_eq(structure, 0))
-
-def spawn_search(+seed: Nat, +remaining: Nat, +index: Nat) -> SpawnCell:
-  match remaining:
-    case 0n:
-      SpawnCell{8n, 8n, column_height(seed, 8n, 8n)}
-    case 1n+p:
-      +x = Nat.mod(index, width())
-      +z = Nat.div(index, width())
-      +height = column_height(seed, x, z)
-      +valid = spawn_clear(seed, x, z)
-      Bool.pick(SpawnCell, valid, SpawnCell{x, z, height}, spawn_search(seed, p, Nat.add(index, 1n)))
-
-def spawn_cell(+seed: Nat) -> SpawnCell:
-  spawn_search(seed, Nat.mul(width(), depth()), Nat.add(Nat.mul(Nat.div(depth(), 2n), width()), Nat.div(width(), 2n)))
-
 def trunk_at_height(+seed: Nat, +x: Nat, +y: Nat, +z: Nat, +h: Nat) -> Bool:
   +trunk_y = same(y, h) || same(y, Nat.add(h, 1n))
     || same(y, Nat.add(h, 2n))
@@ -187,6 +153,13 @@ def water_at_height(+h: Nat, +y: Nat) -> Bool:
 
 def water_at(+seed: Nat, +x: Nat, +y: Nat, +z: Nat) -> Bool:
   water_at_height(column_height(seed, x, z), y)
+
+def lava_at(+seed: Nat, +x: Nat, +y: Nat, +z: Nat) -> Bool:
+  +height = column_height(seed, x, z)
+  +deep = Bool.and(Nat.is_gt(y, 1n), Nat.is_le(y, 3n))
+  +inside = Nat.is_lt(y, height)
+  +hash = Nat.mod(Nat.add(mix(seed, x, z), Nat.mul(y, 13n)), 29n)
+  Bool.and(Bool.and(deep, inside), Nat.is_eq(hash, 0n))
 
 def ore_block(+seed: Nat, +x: Nat, +y: Nat, +z: Nat) -> U32:
   +hash = Nat.mod(Nat.add(Nat.add(mix(seed, x, z), Nat.mul(y, 17n)), Nat.mod(seed, 89n)), 97n)
@@ -242,13 +215,85 @@ def block(+seed: Nat, +x: Nat, +y: Nat, +z: Nat) -> U32:
   +structure = Structures.block(seed, x, y, z, village_height)
   +wood = trunk_at(seed, x, y, z)
   +leaf = canopy(seed, x, y, z)
+  +lava = lava_at(seed, x, y, z)
   +cave = cave_at(seed, x, y, z)
   +water = water_at(seed, x, y, z)
   Bool.pick(U32, U32.is_ne(structure, 0), structure,
     Bool.pick(U32, wood, 5,
       Bool.pick(U32, leaf, 4,
-        Bool.pick(U32, cave, 0,
-          Bool.pick(U32, water, 7, terrain_block(seed, x, y, z))))))
+        Bool.pick(U32, lava, 21,
+          Bool.pick(U32, cave, 0,
+            Bool.pick(U32, water, 7, terrain_block(seed, x, y, z)))))))
+
+type SpawnCell is Data:
+  SpawnCell{x: Nat, z: Nat, height: Nat}
+
+def spawn_tree_free(+seed: Nat, +x: Nat, +z: Nat) -> Bool:
+  +a = tree_at(seed, x, z)
+  +b = tree_at(seed, Nat.sub(x, 1n), z)
+  +c = tree_at(seed, Nat.add(x, 1n), z)
+  +d = tree_at(seed, x, Nat.sub(z, 1n))
+  +e = tree_at(seed, x, Nat.add(z, 1n))
+  +f = tree_at(seed, Nat.sub(x, 1n), Nat.sub(z, 1n))
+  +g = tree_at(seed, Nat.add(x, 1n), Nat.add(z, 1n))
+  +h = tree_at(seed, Nat.sub(x, 1n), Nat.add(z, 1n))
+  +i = tree_at(seed, Nat.add(x, 1n), Nat.sub(z, 1n))
+  Bool.not(Bool.or(a, Bool.or(b, Bool.or(c,
+    Bool.or(d, Bool.or(e, Bool.or(f,
+      Bool.or(g, Bool.or(h, i)))))))))
+
+def spawn_structure_open(+seed: Nat, +x: Nat, +y: Nat, +z: Nat, +village_height: Nat) -> Bool:
+  U32.is_eq(Structures.block(seed, x, y, z, village_height), 0)
+
+def spawn_structures_free(+seed: Nat, +x: Nat, +y: Nat, +z: Nat, +village_height: Nat) -> Bool:
+  +xm = Nat.sub(x, 1n)
+  +xp = Nat.add(x, 1n)
+  +zm = Nat.sub(z, 1n)
+  +zp = Nat.add(z, 1n)
+  +row_north = Bool.and(spawn_structure_open(seed, xm, y, zm, village_height), Bool.and(spawn_structure_open(seed, x, y, zm, village_height), spawn_structure_open(seed, xp, y, zm, village_height)))
+  +row_middle = Bool.and(spawn_structure_open(seed, xm, y, z, village_height), Bool.and(spawn_structure_open(seed, x, y, z, village_height), spawn_structure_open(seed, xp, y, z, village_height)))
+  +row_south = Bool.and(spawn_structure_open(seed, xm, y, zp, village_height), Bool.and(spawn_structure_open(seed, x, y, zp, village_height), spawn_structure_open(seed, xp, y, zp, village_height)))
+  Bool.and(row_north, Bool.and(row_middle, row_south))
+
+def spawn_ground_level(+seed: Nat, +x: Nat, +z: Nat, +low: Nat, +high: Nat) -> Bool:
+  +h = column_height(seed, x, z)
+  Bool.and(Nat.is_ge(h, low), Nat.is_le(h, high))
+
+def spawn_ground_free(+seed: Nat, +x: Nat, +z: Nat, +height: Nat) -> Bool:
+  +xm = Nat.sub(x, 1n)
+  +xp = Nat.add(x, 1n)
+  +zm = Nat.sub(z, 1n)
+  +zp = Nat.add(z, 1n)
+  +low = Nat.sub(height, 1n)
+  +high = height
+  +row_north = Bool.and(spawn_ground_level(seed, xm, zm, low, high), Bool.and(spawn_ground_level(seed, x, zm, low, high), spawn_ground_level(seed, xp, zm, low, high)))
+  +row_middle = Bool.and(spawn_ground_level(seed, xm, z, low, high), Bool.and(spawn_ground_level(seed, x, z, low, high), spawn_ground_level(seed, xp, z, low, high)))
+  +row_south = Bool.and(spawn_ground_level(seed, xm, zp, low, high), Bool.and(spawn_ground_level(seed, x, zp, low, high), spawn_ground_level(seed, xp, zp, low, high)))
+  Bool.and(row_north, Bool.and(row_middle, row_south))
+
+def spawn_clear(+seed: Nat, +x: Nat, +z: Nat) -> Bool:
+  +height = column_height(seed, x, z)
+  +village_height = column_height(seed, Structures.village_origin_x(seed), Structures.village_origin_z(seed))
+  +trees = spawn_tree_free(seed, x, z)
+  +struct_feet = spawn_structures_free(seed, x, height, z, village_height)
+  +struct_head = spawn_structures_free(seed, x, Nat.add(height, 1n), z, village_height)
+  +ground = spawn_ground_free(seed, x, z, height)
+  +open = Bool.and(Bool.and(trees, struct_feet), Bool.and(struct_head, ground))
+  Bool.and(open, Nat.is_gt(height, sea_level()))
+
+def spawn_search(+seed: Nat, +remaining: Nat, +index: Nat) -> SpawnCell:
+  match remaining:
+    case 0n:
+      SpawnCell{8n, 8n, column_height(seed, 8n, 8n)}
+    case 1n+p:
+      +x = Nat.mod(index, width())
+      +z = Nat.div(index, width())
+      +height = column_height(seed, x, z)
+      +valid = spawn_clear(seed, x, z)
+      Bool.pick(SpawnCell, valid, SpawnCell{x, z, height}, spawn_search(seed, p, Nat.add(index, 1n)))
+
+def spawn_cell(+seed: Nat) -> SpawnCell:
+  spawn_search(seed, Nat.mul(width(), depth()), Nat.add(Nat.mul(Nat.div(depth(), 2n), width()), Nat.div(width(), 2n)))
 
 def chunk_wood.if(
   +seed: Nat, +x: Nat, +y: Nat, +z: Nat, +h: Nat, in_range: Bool
@@ -286,15 +331,52 @@ def chunk_cave(+seed: Nat, +x: Nat, +y: Nat, +z: Nat, +h: Nat) -> Bool:
   chunk_cave.if(seed, x, y, z, h,
     Nat.is_gt(y, 1n) && Nat.is_lt(Nat.add(y, 2n), h))
 
+def chunk_structure.if(
+  +seed: Nat, +x: Nat, +y: Nat, +z: Nat, +village_height: Nat, near: Bool
+) -> U32:
+  match near:
+    case True{}:
+      Structures.block(seed, x, y, z, village_height)
+    case False{}:
+      0
+
+def chunk_structure(
+  +seed: Nat, +x: Nat, +y: Nat, +z: Nat, +village_height: Nat
+) -> U32:
+  +origin_x = Structures.village_origin_x(seed)
+  +origin_z = Structures.village_origin_z(seed)
+  +near_x = Nat.is_ge(x, Nat.sub(origin_x, 8n))
+    && Nat.is_lt(x, Nat.add(origin_x, 14n))
+  +near_z = Nat.is_ge(z, Nat.sub(origin_z, 8n))
+    && Nat.is_lt(z, Nat.add(origin_z, 14n))
+  chunk_structure.if(
+    seed, x, y, z, village_height,
+    Structures.village_height_valid(village_height) && Bool.and(near_x, near_z)
+  )
+
+def chunk_terrain.if(
+  +seed: Nat, +x: Nat, +y: Nat, +z: Nat, +height: Nat, inside: Bool
+) -> U32:
+  match inside:
+    case True{}:
+      terrain_block_at(seed, x, y, z, height)
+    case False{}:
+      0
+
+def chunk_terrain(
+  +seed: Nat, +x: Nat, +y: Nat, +z: Nat, +height: Nat
+) -> U32:
+  chunk_terrain.if(seed, x, y, z, height, Nat.is_lt(y, height))
+
 def chunk_block.height(
   +seed: Nat, +x: Nat, +y: Nat, +z: Nat, +h: Nat, +village_height: Nat
 ) -> U32:
-  +structure = Structures.block(seed, x, y, z, village_height)
+  +structure = chunk_structure(seed, x, y, z, village_height)
   +wood = chunk_wood(seed, x, y, z, h)
   +leaf = chunk_leaf(seed, x, y, z)
   +cave = chunk_cave(seed, x, y, z, h)
   +water = water_at_height(h, y)
-  +terrain = terrain_block_at(seed, x, y, z, h)
+  +terrain = chunk_terrain(seed, x, y, z, h)
   Bool.pick(U32, U32.is_ne(structure, 0), structure,
     Bool.pick(U32, wood, 5,
       Bool.pick(U32, leaf, 4,

@@ -20,11 +20,23 @@ function normalizeDrops(list) {
   return { $: "Con", head: normalized, tail: normalizeDrops(list.tail) };
 }
 
+function normalizeMobs(list) {
+  if (list?.$ === "Nil") return list;
+  if (list?.$ !== "Con") return list;
+  const mob = list.head;
+  const normalized = mob?.$ === "Mob" && (mob.heading_x === undefined || mob.heading_z === undefined)
+    ? { ...mob, heading_x: 0, heading_z: -1 }
+    : mob;
+  return { $: "Con", head: normalized, tail: normalizeMobs(list.tail) };
+}
+
 export function restoreEntities(saved, fallbackMobs, fallbackDrops) {
   const entities = saved?.entities?.$ === "Entities" ? saved.entities : null;
+  const restoredMobs = restoreList(entities?.mobs, fallbackMobs);
+  const mobs = entities?.mobs === undefined ? restoredMobs : normalizeMobs(restoredMobs);
   const drops = normalizeDrops(restoreList(entities?.drops, fallbackDrops));
   return {
-    mobs: restoreList(entities?.mobs, fallbackMobs),
+    mobs,
     drops,
   };
 }

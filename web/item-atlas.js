@@ -6,7 +6,7 @@ export const ITEM_ATLAS_ROWS = 6;
 export const ITEM_ATLAS_TILE_SIZE = 16;
 export const ITEM_ATLAS_WIDTH = ITEM_ATLAS_COLUMNS * ITEM_ATLAS_TILE_SIZE;
 export const ITEM_ATLAS_HEIGHT = ITEM_ATLAS_ROWS * ITEM_ATLAS_TILE_SIZE;
-export const ITEM_TEXTURE_GRID_SIZE = TEXTURE_PASS.gridSize;
+export const ITEM_TEXTURE_GRID_SIZE = TEXTURE_PASS.itemGridSize;
 export const ITEM_TEXTURE_SIZE = 32;
 
 const GLYPH_COLORS = new Set(["b", "a", "s", "h"]);
@@ -194,14 +194,22 @@ const TEXTURE_SPECS = [
     kind: "tool",
     colors: { base: "#b77b48", accent: "#d9a369", shadow: "#63402a", highlight: "#f0c68a" },
     pattern: [
-      "..ssss..",
-      ".sssss..",
-      "ssbbba..",
-      ".sbbbb..",
-      "..b.....",
-      "...b....",
-      "...b....",
-      "...h....",
+      "..ssssss........",
+      ".sshhhhss.......",
+      "sshhhha.........",
+      ".shhhhha........",
+      "..bb............",
+      "...bb...........",
+      "....bb..........",
+      "....bb..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....h..........",
     ],
   },
   {
@@ -290,14 +298,22 @@ const TEXTURE_SPECS = [
     kind: "tool",
     colors: { base: "#92999f", accent: "#c5cbcd", shadow: "#4e585e", highlight: "#edf0ef" },
     pattern: [
-      "..ssss..",
-      ".sssss..",
-      "ssbbba..",
-      ".sbbbb..",
-      "..b.....",
-      "...b....",
-      "...b....",
-      "...h....",
+      "..ssssss........",
+      ".sshhhhss.......",
+      "sshhhha.........",
+      ".shhhhha........",
+      "..bb............",
+      "...bb...........",
+      "....bb..........",
+      "....bb..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....h..........",
     ],
   },
   {
@@ -306,14 +322,22 @@ const TEXTURE_SPECS = [
     kind: "tool",
     colors: { base: "#d5d9dc", accent: "#f2f4f4", shadow: "#7a838a", highlight: "#ffffff" },
     pattern: [
-      "..ssss..",
-      ".sssss..",
-      "ssbbba..",
-      ".sbbbb..",
-      "..b.....",
-      "...b....",
-      "...b....",
-      "...h....",
+      "..ssssss........",
+      ".sshhhhss.......",
+      "sshhhha.........",
+      ".shhhhha........",
+      "..bb............",
+      "...bb...........",
+      "....bb..........",
+      "....bb..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....h..........",
     ],
   },
   {
@@ -322,14 +346,22 @@ const TEXTURE_SPECS = [
     kind: "tool",
     colors: { base: "#5ee8e0", accent: "#b9ffff", shadow: "#249da8", highlight: "#efffff" },
     pattern: [
-      "..ssss..",
-      ".sssss..",
-      "ssbbba..",
-      ".sbbbb..",
-      "..b.....",
-      "...b....",
-      "...b....",
-      "...h....",
+      "..ssssss........",
+      ".sshhhhss.......",
+      "sshhhha.........",
+      ".shhhhha........",
+      "..bb............",
+      "...bb...........",
+      "....bb..........",
+      "....bb..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....h..........",
     ],
   },
   {
@@ -370,14 +402,22 @@ const TEXTURE_SPECS = [
     kind: "placeable",
     colors: { base: "#8c5a38", accent: "#f5b44c", shadow: "#4d3024", highlight: "#fff0a0" },
     pattern: [
-      "...hh...",
-      "..haah..",
-      "..aaaa..",
-      "...bb...",
-      "...bb...",
-      "...bb...",
-      "..sbb...",
-      "..ssss..",
+      ".......h........",
+      "......haa.......",
+      ".....haaaa......",
+      ".....aaaaa......",
+      "......aaa.......",
+      ".......a........",
+      ".......b........",
+      ".......b........",
+      "......bb........",
+      ".......b........",
+      ".......b........",
+      ".......b........",
+      "......sb........",
+      "......ss........",
+      "................",
+      "................",
     ],
   },
   {
@@ -386,14 +426,22 @@ const TEXTURE_SPECS = [
     kind: "placeable",
     colors: { base: "#c94f62", accent: "#f27b86", shadow: "#673844", highlight: "#ffb0a8" },
     pattern: [
-      "ssssssss",
-      "saaaaaas",
-      "sabbbbas",
-      "sabbbbas",
-      "sbbaabbs",
-      "bbbbbbbb",
-      "ssbssbbs",
-      "ssbssbbs",
+      "ssaaaaaaaaaaaass",
+      "saaaaaaaaaaaaaas",
+      "saaabbbbbbbbaaas",
+      "saaabbbbbbbbaaas",
+      "sbbbbbbbbbbbbbbs",
+      "bbbbbbbbbbbbbbbb",
+      "ssbbssssbbssbbbb",
+      "ssbbssssbbssbbbb",
+      "................",
+      "................",
+      "................",
+      "................",
+      "................",
+      "................",
+      "................",
+      "................",
     ],
   },
   {
@@ -402,14 +450,22 @@ const TEXTURE_SPECS = [
     kind: "placeable",
     colors: { base: "#8c5a38", accent: "#b47a4d", shadow: "#4d3024", highlight: "#d9a16b" },
     pattern: [
-      "ssssssss",
-      "sbbbbbbs",
-      "sbabbbbs",
-      "sbbbbhbs",
-      "sbbbbbbs",
-      "sbbbbbbs",
-      "sbbbbbbs",
-      "ssssssss",
+      "ssssssssssssssss",
+      "sbbbbbbbbbbbbbbs",
+      "sbbbbbbbbbbbbbbs",
+      "sbbbbbbbbbbbbbbs",
+      "sbbbbbbbbbbbbbbs",
+      "sbbbbbbbbbbbbbbs",
+      "sbbbbbbbbbbbbbbs",
+      "sbbbbbbbbbbbbbbs",
+      "sbbbbbbbbbbbbbbs",
+      "sbbbbbbbbbbbbbbs",
+      "sbbbbbbbbbbbbbbs",
+      "sbbbbbbbbbbbbbbs",
+      "sbbbbbbbbbbbbbbs",
+      "sbbbbbbbbbbbbbbs",
+      "sbbbbbbbbbbbbbbs",
+      "ssssssssssssssss",
     ],
   },
   {
@@ -450,25 +506,62 @@ const TEXTURE_SPECS = [
     kind: "tool",
     colors: { base: "#b77b48", accent: "#d9a16b", shadow: "#5d3927", highlight: "#f0c18b" },
     pattern: [
-      "...aa...",
-      "..aaaa..",
-      "....b...",
-      "....b...",
-      "...bb...",
-      "....b...",
-      "....b...",
-      "....b...",
+      "...aa...........",
+      "..aaaa..........",
+      "...aaa..........",
+      ".....b..........",
+      ".....b..........",
+      "....bb..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....b..........",
+      ".....h..........",
+      "................",
     ],
   },
 ];
 
-function freezePattern(pattern) {
-  if (!Array.isArray(pattern) || pattern.length !== ITEM_TEXTURE_GRID_SIZE) {
-    throw new TypeError("Item texture patterns must have eight rows.");
+function refinePattern(pattern) {
+  if (!Array.isArray(pattern)) return pattern;
+  if (pattern.length === ITEM_TEXTURE_GRID_SIZE) return pattern;
+  if (pattern.length !== 8 || pattern.some((row) => typeof row !== "string" || row.length !== 8)) {
+    throw new TypeError("Item texture patterns must have eight or sixteen cells per side.");
   }
-  for (const row of pattern) {
+  const refined = [];
+  for (let row = 0; row < pattern.length; row += 1) {
+    const source = pattern[row];
+    for (let subrow = 0; subrow < 2; subrow += 1) {
+      let refinedRow = "";
+      for (let column = 0; column < source.length; column += 1) {
+        const glyph = source[column];
+        if (glyph === ".") {
+          refinedRow += "..";
+          continue;
+        }
+        const detail = (row * 11 + column * 7 + subrow * 3) % 9;
+        const first = subrow === 0 && detail === 0 && glyph !== "h" ? "h" : glyph;
+        const second = subrow === 1 && detail === 3 && glyph !== "s" ? "s" : glyph;
+        refinedRow += `${first}${second}`;
+      }
+      refined.push(refinedRow);
+    }
+  }
+  return refined;
+}
+
+function freezePattern(pattern) {
+  const refined = refinePattern(pattern);
+  if (!Array.isArray(refined) || refined.length !== ITEM_TEXTURE_GRID_SIZE) {
+    throw new TypeError("Item texture patterns must have sixteen rows.");
+  }
+  for (const row of refined) {
     if (typeof row !== "string" || row.length !== ITEM_TEXTURE_GRID_SIZE) {
-      throw new TypeError("Item texture pattern rows must have eight cells.");
+      throw new TypeError("Item texture pattern rows must have sixteen cells.");
     }
     for (const glyph of row) {
       if (glyph !== "." && !GLYPH_COLORS.has(glyph)) {
@@ -476,7 +569,7 @@ function freezePattern(pattern) {
       }
     }
   }
-  return Object.freeze([...pattern]);
+  return Object.freeze([...refined]);
 }
 
 function freezeTexture(spec, id) {

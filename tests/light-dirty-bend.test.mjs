@@ -23,4 +23,11 @@ for (let node = Dirty.cells_radius(8n, 8n, 8n, 1n); node?.$ === "Con"; node = no
 }
 assert.equal(cells.length, 7);
 assert.ok(cells.some(([x, y, z]) => x === 8 && y === 8 && z === 8));
+const columnCells = [];
+for (let node = Dirty.cells_column(8n, 8n, 8n); node?.$ === "Con"; node = node.tail) {
+  columnCells.push([Number(node.head.x), Number(node.head.y), Number(node.head.z)]);
+}
+assert.equal(columnCells.length, 20);
+assert.deepEqual(columnCells[0], [8, 19, 8]);
+assert.deepEqual(columnCells.at(-1), [8, 0, 8]);
 console.log("bend light dirty chunks ok");

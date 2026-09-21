@@ -1,12 +1,17 @@
 import Base
 import ./crops.bend as Crops
 import ./farmland.bend as Farmland
+import ./fluids.bend as Fluids
+import ./fire.bend as Fire
 
 type Chunk is Data:
   Chunk{x: Nat, z: Nat, ticks: Nat}
 
 type Simulation is Data:
   Simulation{time: Nat, chunks: List<&2, Chunk>, crops: Crops.State, farmland: Farmland.State}
+
+type Tick is Data:
+  Tick{simulation: Simulation, fluids: Fluids.State, fire: Fire.State}
 
 def empty() -> Simulation:
   Simulation{0n, Nil{}, Crops.empty(), Farmland.empty()}
@@ -91,6 +96,40 @@ def tick_with_water(+state: Simulation, +steps: Nat, +waters: List<&2, Farmland.
 
 def tick(+state: Simulation, +steps: Nat) -> Simulation:
   tick_with_water(state, steps, Nil{})
+
+def tick_with_fluids(
+  +state: Simulation, +steps: Nat, waters: List<&2, Farmland.Water>,
+  +fluids: Fluids.State, +samples: List<&2, Fluids.Sample>
+) -> Tick:
+  Tick{tick_with_water(state, steps, waters), Fluids.tick(fluids, samples), Fire.empty()}
+
+def tick_with_fluids_and_fire(
+  +state: Simulation, +steps: Nat, waters: List<&2, Farmland.Water>,
+  +fluids: Fluids.State, +fluid_samples: List<&2, Fluids.Sample>,
+  +fire: Fire.State, +fire_samples: List<&2, Fire.Sample>
+) -> Tick:
+  +ignited = Fire.ignite_lava(fire, fire_samples)
+  Tick{
+    tick_with_water(state, steps, waters),
+    Fluids.tick(fluids, fluid_samples),
+    Fire.tick(ignited, fire_samples)
+  }
+
+def tick_time(result: Tick) -> Nat:
+  Tick{simulation, fluids, fire} = result
+  sim_time(simulation)
+
+def tick_simulation(result: Tick) -> Simulation:
+  Tick{simulation, fluids, fire} = result
+  simulation
+
+def tick_fluids(result: Tick) -> Fluids.State:
+  Tick{simulation, fluids, fire} = result
+  fluids
+
+def tick_fire(result: Tick) -> Fire.State:
+  Tick{simulation, fluids, fire} = result
+  fire
 
 def chunk_ticks.entries(chunks: List<&2, Chunk>, +x: Nat, +z: Nat) -> Nat:
   match chunks:

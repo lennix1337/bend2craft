@@ -22,6 +22,8 @@ import {
   itemName,
   moveItem,
   mineDrop,
+  miningDuration,
+  placeItem,
   toolMaxDurability,
   tradeInventory,
   useTool,
@@ -69,10 +71,16 @@ assert.deepEqual(selectedItem(moved, 9), { block: 5, count: 8 });
 
 assert.equal(BLOCK_INFO[6].name, "sand");
 assert.equal(BLOCK_INFO[7].name, "water");
+assert.equal(BLOCK_INFO[21].name, "lava");
+assert.equal(BLOCK_INFO[22].name, "cobblestone");
+assert.equal(BLOCK_INFO[23].name, "obsidian");
 assert.equal(BLOCK_INFO[8].name, "coal ore");
 assert.equal(BLOCK_INFO[10].name, "diamond ore");
 assert.equal(ITEM_INFO.water.placeable, false);
 assert.equal(ITEM_INFO.water.collectible, false);
+assert.equal(ITEM_INFO.lava_bucket.collectible, true);
+assert.equal(ITEM_INFO.cobblestone.placeable, true);
+assert.equal(ITEM_INFO.obsidian.placeable, true);
 assert.equal(foodValue("rotten_flesh"), 4);
 assert.equal(ITEM_INFO.iron_ingot.collectible, true);
 assert.equal(ITEM_INFO.furnace.placeable, true);
@@ -82,10 +90,20 @@ assert.equal(blockForItem("torch"), 12);
 assert.equal(ITEM_INFO.bed.placeable, true);
 assert.equal(blockForItem("bed"), 13);
 assert.equal(ITEM_INFO.door.placeable, true);
+assert.equal(itemId({ item: "lava_bucket", count: 1 }), "lava_bucket");
+assert.equal(blockForItem("cobblestone"), 22);
+assert.equal(blockForItem("obsidian"), 23);
 assert.equal(blockForItem("door"), 14);
 assert.equal(toolMaxDurability("stone_pickaxe"), 131);
+assert.ok(miningDuration("wooden_pickaxe", 1) > 0);
+assert.ok(miningDuration("diamond_pickaxe", 23) > miningDuration("wooden_pickaxe", 1));
+assert.equal(miningDuration(null, 23), 0);
 assert.deepEqual(mineDrop("wooden_pickaxe", 8), { item: 14, amount: 1, valid: true });
 assert.deepEqual(mineDrop("stone_pickaxe", 10), { item: 16, amount: 1, valid: false });
+const placeInventory = createInventory();
+assert.equal(placeItem(placeInventory, 0, selectedItem(placeInventory, 0), true, true, false), true);
+assert.equal(selectedItem(placeInventory, 0).count, 31);
+assert.equal(placeItem(placeInventory, 0, selectedItem(placeInventory, 0), true, true, true), false);
 
 const emptyInventory = () => {
   const result = createInventory();
@@ -100,7 +118,7 @@ const emptyInventory = () => {
 assert.deepEqual(RECIPES.map((recipe) => recipe.id), [
   "planks", "sticks", "crafting_table", "wooden_pickaxe",
   "stone_pickaxe", "iron_pickaxe", "diamond_pickaxe", "furnace",
-  "torch", "bed", "door", "wooden_hoe",
+  "torch", "bed", "door", "wooden_hoe", "empty_bucket",
 ]);
 assert.deepEqual(RECIPES[0].ingredients, [{ item: "wood", count: 1 }]);
 assert.deepEqual(RECIPES[0].output, { item: "planks", count: 4 });
@@ -110,6 +128,8 @@ assert.deepEqual(RECIPES[10].ingredients, [{ item: "planks", count: 6 }]);
 assert.deepEqual(RECIPES[10].output, { item: "door", count: 1 });
 assert.deepEqual(RECIPES[11].ingredients, [{ item: "planks", count: 2 }, { item: "sticks", count: 2 }]);
 assert.deepEqual(RECIPES[11].output, { item: "wooden_hoe", count: 1 });
+assert.deepEqual(RECIPES[12].ingredients, [{ item: "iron_ingot", count: 3 }]);
+assert.deepEqual(RECIPES[12].output, { item: "empty_bucket", count: 1 });
 
 const planks = createInventory();
 assert.equal(canCraft(planks, "planks"), true);

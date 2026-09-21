@@ -23,6 +23,12 @@ def max_light() -> U32:
 def source(+x: Nat, +y: Nat, +z: Nat) -> Edit:
   Edit{x, y, z, 12}
 
+def lava_source(+x: Nat, +y: Nat, +z: Nat) -> Edit:
+  Edit{x, y, z, 21}
+
+def is_light_source(+block: U32) -> Bool:
+  Bool.or(U32.is_eq(block, 12), U32.is_eq(block, 21))
+
 def cave_ambient(+y: Nat) -> U32:
   U32.from_nat(Nat.min(12n, Nat.add(3n, Nat.div(y, 2n))))
 
@@ -35,9 +41,11 @@ def opaque(+seed: Nat, point: Point) -> Bool:
   +terrain = World.terrain_block_at(seed, x, y, z, height)
   +cave = World.cave_at_height(seed, x, y, z, height)
   +water = World.water_at_height(height, y)
+  +lava = World.lava_at(seed, x, y, z)
   +open_door = U32.is_eq(terrain, 15)
   Bool.and(Nat.is_lt(y, height),
-    Bool.and(U32.is_ne(terrain, 0), Bool.not(Bool.or(Bool.or(cave, water), open_door))))
+    Bool.and(U32.is_ne(terrain, 0),
+      Bool.not(Bool.or(Bool.or(Bool.or(cave, water), open_door), lava))))
 
 def axis_coord(point: Point, +axis: U32) -> Nat:
   Point{+x, +y, +z} = point
@@ -139,15 +147,42 @@ def fields_from_cells(
       make_field(Nat.add(base_x, x), y, Nat.add(base_z, z), light)
         <> fields_from_cells(tail, base_x, y, base_z)
 
-def source_fields.one(source: Edit, +seed: Nat) -> List<&2, LightField>:
+def lava_fields.one(source: Edit) -> List<&2, LightField>:
+  Edit{+x, +y, +z, block} = source
+  Con{
+    Field{x, y, z, 15},
+    Con{
+      Field{Nat.add(x, 1n), y, z, 14},
+      Con{
+        Field{Nat.sub(x, 1n), y, z, 14},
+        Con{
+          Field{x, y, Nat.add(z, 1n), 14},
+          Con{Field{x, y, Nat.sub(z, 1n), 14}, Nil{}}
+        }
+      }
+    }
+  }
+
+def source_fields.one.if(
+  source: Edit, +seed: Nat, is_lava: Bool
+) -> List<&2, LightField>:
   Edit{+sx, +sy, +sz, +block} = source
-  +base_x = Nat.sub(sx, 14n)
-  +base_z = Nat.sub(sz, 14n)
-  +walls = window_walls(1024n, 0n, seed, sy, base_x, base_z, Nil{})
-  +local_x = Nat.sub(sx, base_x)
-  +local_z = Nat.sub(sz, base_z)
-  +cells = Flood.run(Flood.sources(Flood.source(local_x, local_z)), walls, 1024n)
-  fields_from_cells(cells, base_x, sy, base_z)
+  match is_lava:
+    case True{}:
+      lava_fields.one(source)
+    case False{}:
+      +base_x = Nat.sub(sx, 14n)
+      +base_z = Nat.sub(sz, 14n)
+      +walls = window_walls(1024n, 0n, seed, sy, base_x, base_z, Nil{})
+      +local_x = Nat.sub(sx, base_x)
+      +local_z = Nat.sub(sz, base_z)
+      +source_cell = Bool.pick(Flood.Cell, U32.is_eq(block, 21), Flood.lava_source(local_x, local_z), Flood.source(local_x, local_z))
+      +cells = Flood.run(Flood.sources(source_cell), walls, 1024n)
+      fields_from_cells(cells, base_x, sy, base_z)
+
+def source_fields.one(source: Edit, +seed: Nat) -> List<&2, LightField>:
+  Edit{x, y, z, +block} = source
+  source_fields.one.if(source, seed, U32.is_eq(block, 21))
 
 def source_fields_one(source: Edit, +seed: Nat) -> List<&2, LightField>:
   source_fields.one(source, seed)
@@ -168,7 +203,7 @@ def source_fields(sources: List<&2, Edit>, +seed: Nat) -> List<&2, LightField>:
     case Con{+head, +tail}:
       Edit{+x, +y, +z, +block} = head
       +rest = source_fields(tail, seed)
-      +own = Bool.pick(List<&2, LightField>, U32.is_eq(block, 12), source_fields.one(head, seed), Nil{})
+      +own = Bool.pick(List<&2, LightField>, is_light_source(block), source_fields.one(head, seed), Nil{})
       append_fields(own, rest)
 
 def source_relevant(source: Edit, +chunk_x: Nat, +chunk_z: Nat) -> Bool:
@@ -191,7 +226,7 @@ def source_fields.chunk(
     case Con{+head, +tail}:
       Edit{+x, +y, +z, +block} = head
       +rest = source_fields.chunk(tail, seed, chunk_x, chunk_z)
-      +relevant = Bool.and(U32.is_eq(block, 12), source_relevant(head, chunk_x, chunk_z))
+      +relevant = Bool.and(is_light_source(block), source_relevant(head, chunk_x, chunk_z))
       +own = Bool.pick(List<&2, LightField>, relevant, source_fields.one(head, seed), Nil{})
       append_fields(own, rest)
 
@@ -217,8 +252,10 @@ def base_light(+seed: Nat, +x: Nat, +y: Nat, +z: Nat) -> U32:
   +above_surface = Nat.is_ge(y, height)
   +cave = World.cave_at_height(seed, x, y, z, height)
   +water = World.water_at_height(height, y)
+  +lava = World.lava_at(seed, x, y, z)
   +transparent = Bool.or(cave, water)
-  Bool.pick(U32, above_surface, max_light(), Bool.pick(U32, transparent, cave_ambient(y), 0))
+  +sky = Bool.pick(U32, above_surface, max_light(), Bool.pick(U32, transparent, cave_ambient(y), 0))
+  Bool.pick(U32, lava, max_light(), sky)
 
 def static_with_fields(fields: List<&2, LightField>, +seed: Nat, +x: Nat, +y: Nat, +z: Nat) -> U32:
   U32.max(base_light(seed, x, y, z), field_light(fields, x, y, z, 0))
@@ -276,9 +313,10 @@ def source_light(sources: List<&2, Edit>, +seed: Nat, +x: Nat, +y: Nat, +z: Nat,
       Edit{+sx, +sy, +sz, +block} = head
       +distance = Nat.add(Nat.add(distance_component(sx, x), distance_component(sy, y)), distance_component(sz, z))
       +within = Nat.is_lt(distance, 15n)
-      +level = Nat.sub(14n, distance)
+      +emission = Bool.pick(Nat, U32.is_eq(block, 21), 15n, 14n)
+      +level = Nat.sub(emission, distance)
       +visible = Bool.pick(Bool, within, source_visible(seed, sx, sy, sz, x, y, z), False{})
-      +candidate = Bool.pick(U32, Bool.and(Bool.and(within, visible), U32.is_eq(block, 12)), U32.from_nat(level), 0)
+      +candidate = Bool.pick(U32, Bool.and(Bool.and(within, visible), is_light_source(block)), U32.from_nat(level), 0)
       source_light(tail, seed, x, y, z, U32.max(best, candidate))
 
 def block(sources: List<&2, Edit>, +seed: Nat, +x: Nat, +y: Nat, +z: Nat) -> U32:
@@ -318,3 +356,160 @@ def chunk(+sources: List<&2, Edit>, +seed: Nat, +chunk_x: Nat, +chunk_z: Nat) ->
     case Con{head, tail}:
       +fields = source_fields.chunk(sources, seed, chunk_x, chunk_z)
       chunk.fill.fields(fields, seed, chunk_x, chunk_z, chunk_cells(), 0n, Array.new(U32, 13n, 0))
+
+type EditOverride is Data:
+  EditFound{block: U32}
+  EditMissing{}
+
+def edit_matches(edit: Edit, +x: Nat, +y: Nat, +z: Nat) -> Bool:
+  Edit{+ex, +ey, +ez, block} = edit
+  Bool.and(Bool.and(Nat.is_eq(ex, x), Nat.is_eq(ey, y)), Nat.is_eq(ez, z))
+
+def edit_override(edits: List<&2, Edit>, +x: Nat, +y: Nat, +z: Nat) -> EditOverride:
+  match edits:
+    case Nil{}:
+      EditMissing{}
+    case Con{+head, +tail}:
+      Edit{+ex, +ey, +ez, +block} = head
+      +same = Bool.and(Bool.and(Nat.is_eq(ex, x), Nat.is_eq(ey, y)), Nat.is_eq(ez, z))
+      Bool.pick(EditOverride, same, EditFound{block}, edit_override(tail, x, y, z))
+
+def transparent_block(+block: U32) -> Bool:
+  Bool.or(
+    U32.is_eq(block, 0),
+    Bool.or(
+      U32.is_eq(block, 7),
+      Bool.or(
+        U32.is_eq(block, 12),
+        Bool.or(
+          U32.is_eq(block, 15),
+          Bool.or(U32.is_eq(block, 21), U32.is_eq(block, 24))
+        )
+      )
+    )
+  )
+
+def opaque_override(override: EditOverride, +seed: Nat, point: Point) -> Bool:
+  match override:
+    case EditMissing{}:
+      opaque(seed, point)
+    case EditFound{+block}:
+      Bool.not(transparent_block(block))
+
+def opaque_with_edits(edits: List<&2, Edit>, +seed: Nat, point: Point) -> Bool:
+  Point{+x, +y, +z} = point
+  opaque_override(edit_override(edits, x, y, z), seed, point)
+
+def transparent_override(override: EditOverride, +seed: Nat, point: Point) -> Bool:
+  match override:
+    case EditMissing{}:
+      Point{+x, +y, +z} = point
+      Bool.or(World.cave_at_height(seed, x, y, z, World.column_height(seed, x, z)),
+        World.water_at_height(World.column_height(seed, x, z), y))
+    case EditFound{+block}:
+      transparent_block(block)
+
+def transparent_at(edits: List<&2, Edit>, +seed: Nat, point: Point) -> Bool:
+  Point{+x, +y, +z} = point
+  transparent_override(edit_override(edits, x, y, z), seed, point)
+
+def lava_override(override: EditOverride, +seed: Nat, point: Point) -> Bool:
+  match override:
+    case EditMissing{}:
+      Point{+x, +y, +z} = point
+      World.lava_at(seed, x, y, z)
+    case EditFound{+block}:
+      U32.is_eq(block, 21)
+
+def lava_at(edits: List<&2, Edit>, +seed: Nat, point: Point) -> Bool:
+  Point{+x, +y, +z} = point
+  lava_override(edit_override(edits, x, y, z), seed, point)
+
+def sky_visible(
+  +edits: List<&2, Edit>, +seed: Nat, +remaining: Nat, +x: Nat, +y: Nat, +z: Nat
+) -> Bool:
+  match remaining:
+    case 0n:
+      True{}
+    case 1n+p:
+      +point = make_point(x, y, z)
+      Bool.and(
+        Bool.not(opaque_with_edits(edits, seed, point)),
+        sky_visible(edits, seed, p, x, Nat.add(y, 1n), z)
+      )
+
+def base_light_with_edits(
+  +edits: List<&2, Edit>, +seed: Nat, +x: Nat, +y: Nat, +z: Nat
+) -> U32:
+  +point = make_point(x, y, z)
+  +transparent = transparent_at(edits, seed, point)
+  +sky = Bool.pick(U32, sky_visible(edits, seed, Nat.sub(World.max_y(), y), x, y, z),
+    max_light(), Bool.pick(U32, transparent, cave_ambient(y), 0))
+  Bool.pick(U32, lava_at(edits, seed, point), max_light(), sky)
+
+def static_with_fields_with_edits(
+  fields: List<&2, LightField>, edits: List<&2, Edit>, +seed: Nat,
+  +x: Nat, +y: Nat, +z: Nat
+) -> U32:
+  U32.max(base_light_with_edits(edits, seed, x, y, z), field_light(fields, x, y, z, 0))
+
+def patch_cells_with_edits(
+  +fields: List<&2, LightField>, +edits: List<&2, Edit>, +seed: Nat,
+  +cells: List<&2, Cell>
+) -> List<&2, LightCell>:
+  match cells:
+    case Nil{}:
+      Nil{}
+    case Con{+head, +tail}:
+      Cell{+x, +y, +z} = head
+      make_light_cell(x, y, z, static_with_fields_with_edits(fields, edits, seed, x, y, z))
+        <> patch_cells_with_edits(fields, edits, seed, tail)
+
+def patch_fields_with_edits(
+  +fields: List<&2, LightField>, edits: List<&2, Edit>, +seed: Nat,
+  +cells: List<&2, Cell>
+) -> List<&2, LightCell>:
+  match edits:
+    case Nil{}:
+      patch_fields(fields, seed, cells)
+    case Con{head, tail}:
+      patch_cells_with_edits(fields, edits, seed, cells)
+
+def chunk.value.with_edits(
+  +fields: List<&2, LightField>, edits: List<&2, Edit>, +seed: Nat,
+  +chunk_x: Nat, +chunk_z: Nat, +index: Nat
+) -> U32:
+  +column = Nat.mul(World.chunk_size(), World.chunk_size())
+  +y = Nat.div(index, column)
+  +in_column = Nat.mod(index, column)
+  +z = Nat.div(in_column, World.chunk_size())
+  +x = Nat.mod(in_column, World.chunk_size())
+  +global_x = Nat.add(Nat.mul(chunk_x, World.chunk_size()), x)
+  +global_z = Nat.add(Nat.mul(chunk_z, World.chunk_size()), z)
+  static_with_fields_with_edits(fields, edits, seed, global_x, y, global_z)
+
+def chunk.fill.with_edits(
+  +fields: List<&2, LightField>, +edits: List<&2, Edit>, +seed: Nat,
+  +chunk_x: Nat, +chunk_z: Nat, +remaining: Nat, +index: Nat, blocks: Array<U32>
+) -> Array<U32>:
+  match remaining:
+    case 0n:
+      blocks
+    case 1n+p:
+      chunk.fill.with_edits(
+        fields, edits, seed, chunk_x, chunk_z, p, Nat.add(index, 1n),
+        blocks[U32.from_nat(index)] <- chunk.value.with_edits(fields, edits, seed, chunk_x, chunk_z, index)
+      )
+
+def chunk_with_edits(
+  sources: List<&2, Edit>, edits: List<&2, Edit>, +seed: Nat,
+  +chunk_x: Nat, +chunk_z: Nat
+) -> Array<U32>:
+  match edits:
+    case Nil{}:
+      chunk(sources, seed, chunk_x, chunk_z)
+    case Con{head, tail}:
+      +fields = source_fields.chunk(sources, seed, chunk_x, chunk_z)
+      chunk.fill.with_edits(
+        fields, edits, seed, chunk_x, chunk_z, chunk_cells(), 0n, Array.new(U32, 13n, 0)
+      )

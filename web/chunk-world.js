@@ -4,6 +4,11 @@ function validInteger(value) {
   return Number.isInteger(value);
 }
 
+function isLightOpaque(value) {
+  const block = Number(value);
+  return block !== 0 && block !== 7 && block !== 15 && block !== 21;
+}
+
 function materializeChunk(generated, cellCount) {
   const data = new Uint8Array(cellCount);
   if (Array.isArray(generated) || ArrayBuffer.isView(generated)) {
@@ -62,6 +67,7 @@ export function createChunkedWorld({
   generateLightCells = null,
   affectedLightChunks = null,
   affectedLightCells = null,
+  affectedLightColumnCells = null,
   invalidateLightFields = null,
   requestChunk = null,
   generateBlock,
@@ -188,17 +194,23 @@ export function createChunkedWorld({
       loaded += 1;
     }
     const readyKeys = new Set([...nextKeys].filter((key) => chunks.has(key)));
+    const centerReady = chunks.has(chunkKey(centerX, centerZ));
+    const retainedKeys = new Set([...activeKeys].filter((key) => chunks.has(key)));
+    // Keep the last complete render window until the destination center chunk
+    // is hydrated. Evicting it as soon as a request starts produces a blank
+    // frame (and also pauses fixed-step movement) during every async swap.
+    const nextActiveKeys = centerReady ? readyKeys : retainedKeys;
 
-    let changed = readyKeys.size !== activeKeys.size;
+    let changed = nextActiveKeys.size !== activeKeys.size;
     if (!changed) {
-      for (const key of readyKeys) {
+      for (const key of nextActiveKeys) {
         if (!activeKeys.has(key)) {
           changed = true;
           break;
         }
       }
     }
-    activeKeys = readyKeys;
+    activeKeys = nextActiveKeys;
     for (const key of chunks.keys()) {
       if (!activeKeys.has(key) && !pinnedKeys.has(key)) chunks.delete(key);
     }
@@ -253,8 +265,7 @@ export function createChunkedWorld({
     return activeKeys.has(chunkKey(chunkX, chunkZ));
   }
 
-  function setBlock(x, y, z, value) {
-    if (!inside(x, y, z) || !Number.isInteger(value) || value < 0 || value > 255) return false;
+  function applyBlock(x, y, z, value) {
     const { chunkX, chunkZ, localX, localY, localZ } = localCoordinates(x, y, z);
     const chunk = getChunk(chunkX, chunkZ);
     const index = indexOf(localX, localY, localZ);
@@ -271,17 +282,62 @@ export function createChunkedWorld({
       chunkEdits.set(index, value);
     }
     chunk.data[index] = value;
-    if (typeof invalidateLightFields === "function") {
-      invalidateLightFields(x, y, z, Number(previousBlock), value);
+    return { x, y, z, value, previousBlock: Number(previousBlock) };
+  }
+
+  function mergeLightCells(changes, sampler = affectedLightCells) {
+    const cells = new Map();
+    if (typeof sampler !== "function") return { $: "Nil" };
+    for (const change of changes) {
+      let node = sampler(change.x, change.y, change.z);
+      while (node?.$ === "Con") {
+        const cell = node.head;
+        const key = `${cell.x},${cell.y},${cell.z}`;
+        cells.set(key, cell);
+        node = node.tail;
+      }
     }
-    if (typeof generateLightChunk === "function" && (previousBlock === 12 || value === 12)) {
-      if (typeof affectedLightCells === "function") lastLightDirtyCells = affectedLightCells(x, y, z);
-      const cellCount = chunkSize * chunkSize * maxY;
-      if (typeof generateLightCells === "function" && typeof affectedLightCells === "function") {
-        applyLightPatch(generateLightCells(lastLightDirtyCells, edits), chunks, chunkSize, maxY, indexOf);
-      } else if (typeof affectedLightChunks === "function") {
-        const seen = new Set();
-        let node = affectedLightChunks(x, z, chunkSize);
+    let list = { $: "Nil" };
+    for (const cell of [...cells.values()].reverse()) list = { $: "Con", head: cell, tail: list };
+    return list;
+  }
+
+  function refreshLight(changes) {
+    let lightRelevant = false;
+    let opacityChanged = false;
+    for (const change of changes) {
+      if (typeof invalidateLightFields === "function") {
+        invalidateLightFields(change.x, change.y, change.z, change.previousBlock, change.value);
+      }
+      const blockOpacityChanged = isLightOpaque(change.previousBlock) !== isLightOpaque(change.value);
+      opacityChanged = opacityChanged || blockOpacityChanged;
+      lightRelevant = lightRelevant
+        || change.previousBlock === 12
+        || change.value === 12
+        || change.previousBlock === 7
+        || change.value === 7
+        || change.previousBlock === 21
+        || change.value === 21
+        || blockOpacityChanged;
+    }
+    if (typeof generateLightChunk !== "function" || !lightRelevant) {
+      lastLightDirtyCells = { $: "Nil" };
+      return;
+    }
+    const cellCount = chunkSize * chunkSize * maxY;
+    const dirtyCellSampler = opacityChanged && typeof affectedLightColumnCells === "function"
+      ? affectedLightColumnCells
+      : affectedLightCells;
+    if (typeof generateLightCells === "function" && typeof dirtyCellSampler === "function") {
+      lastLightDirtyCells = mergeLightCells(changes, dirtyCellSampler);
+      applyLightPatch(generateLightCells(lastLightDirtyCells, edits), chunks, chunkSize, maxY, indexOf);
+      return;
+    }
+    lastLightDirtyCells = { $: "Nil" };
+    if (typeof affectedLightChunks === "function") {
+      const seen = new Set();
+      for (const change of changes) {
+        let node = affectedLightChunks(change.x, change.z, chunkSize);
         while (node?.$ === "Con") {
           const nextChunkX = Number(node.head.x);
           const nextChunkZ = Number(node.head.z);
@@ -298,20 +354,40 @@ export function createChunkedWorld({
           }
           node = node.tail;
         }
-      } else {
-        for (const neighbor of chunks.values()) {
-          if (Math.abs(neighbor.chunkX - chunkX) > 1 || Math.abs(neighbor.chunkZ - chunkZ) > 1) continue;
-          neighbor.light = materializeChunk(
-            generateLightChunk(neighbor.chunkX, neighbor.chunkZ, edits),
-            cellCount,
-          );
-        }
       }
-    } else {
-      lastLightDirtyCells = { $: "Nil" };
+      return;
     }
+    const seen = new Set();
+    for (const change of changes) {
+      const [chunkX, chunkZ] = chunkCoordinates(change.x, change.z);
+      const centerKey = chunkKey(chunkX, chunkZ);
+      if (seen.has(centerKey)) continue;
+      seen.add(centerKey);
+      for (const neighbor of chunks.values()) {
+        if (Math.abs(neighbor.chunkX - chunkX) > 1 || Math.abs(neighbor.chunkZ - chunkZ) > 1) continue;
+        neighbor.light = materializeChunk(
+          generateLightChunk(neighbor.chunkX, neighbor.chunkZ, edits),
+          cellCount,
+        );
+      }
+    }
+  }
+
+  function setBlocks(batch) {
+    if (!Array.isArray(batch) || batch.length === 0) return false;
+    for (const change of batch) {
+      if (!inside(change?.x, change?.y, change?.z)
+        || !Number.isInteger(change?.value) || change.value < 0 || change.value > 255) return false;
+    }
+    const changes = batch.map((change) => applyBlock(change.x, change.y, change.z, change.value));
+    refreshLight(changes);
     return true;
   }
+
+  function setBlock(x, y, z, value) {
+    return setBlocks([{ x, y, z, value }]);
+  }
+
 
   function lightAt(x, y, z) {
     if (!validInteger(x) || !validInteger(y) || !validInteger(z) || y < 0 || y >= maxY) return 0;
@@ -360,6 +436,17 @@ export function createChunkedWorld({
       }
   }
 
+  function getChunkData(chunkX, chunkZ) {
+    const chunk = chunks.get(chunkKey(chunkX, chunkZ));
+    if (chunk === undefined) return null;
+    return {
+      chunkX: chunk.chunkX,
+      chunkZ: chunk.chunkZ,
+      data: chunk.data.slice(),
+      light: chunk.light.slice(),
+    };
+  }
+
   function replaceEdits(nextEdits) {
     if (typeof applyEdit !== "function") return false;
     edits = nextEdits;
@@ -367,6 +454,15 @@ export function createChunkedWorld({
     pendingRequests.clear();
     chunks.clear();
     activeKeys = new Set();
+    return true;
+  }
+
+  function patchEdits(nextEdits, changes = []) {
+    if (!Array.isArray(changes)) throw new TypeError("patchEdits changes must be an array");
+    if (changes.length > 0 && !setBlocks(changes)) return false;
+    edits = nextEdits;
+    loadVersion += 1;
+    pendingRequests.clear();
     return true;
   }
 
@@ -379,10 +475,12 @@ export function createChunkedWorld({
     blockAt,
     lightAt,
     setBlock,
+    setBlocks,
     loadAround,
     getEdits: () => edits,
     getLightDirtyCells: () => lastLightDirtyCells,
     replaceEdits,
+    patchEdits,
     hydrateChunk,
     pinChunk,
     unpinChunk,
@@ -390,7 +488,9 @@ export function createChunkedWorld({
     forEachActiveChunk,
     forEachPinnedChunk,
     forEachChunkBlock,
+    getChunkData,
     activeChunkCount: () => activeKeys.size,
     pinnedChunkCount: () => pinnedKeys.size,
+    pendingChunkCount: () => pendingRequests.size,
   };
 }

@@ -88,6 +88,57 @@ function mergePlane(faceIndex, fixed, mask) {
   return quads;
 }
 
+const FLUID_BLOCKS = new Set([7, 21, 24]);
+
+function isFluid(block) {
+  return FLUID_BLOCKS.has(block);
+}
+
+function isOpaque(block) {
+  return block !== 0 && !isFluid(block);
+}
+
+function occupied(blockAt, isActive, x, y, z) {
+  return isActive(x, z) && isOpaque(Number(blockAt(x, y, z) ?? 0));
+}
+
+function topCornerAmbient(quad, cornerIndex, blockAt, isActive) {
+  const minX = quad.u;
+  const maxX = quad.u + quad.width;
+  const minZ = quad.v;
+  const maxZ = quad.v + quad.height;
+  const vertexX = cornerIndex === 0 || cornerIndex === 3 ? minX : maxX;
+  const vertexZ = cornerIndex === 0 || cornerIndex === 1 ? minZ : maxZ;
+  const sideX = occupied(
+    blockAt,
+    isActive,
+    vertexX === minX ? vertexX - 1 : vertexX,
+    quad.y,
+    Math.floor(vertexZ),
+  );
+  const sideZ = occupied(
+    blockAt,
+    isActive,
+    Math.floor(vertexX),
+    quad.y,
+    vertexZ === minZ ? vertexZ - 1 : vertexZ,
+  );
+  const diagonal = occupied(
+    blockAt,
+    isActive,
+    vertexX === minX ? vertexX - 1 : vertexX,
+    quad.y,
+    vertexZ === minZ ? vertexZ - 1 : vertexZ,
+  );
+  if (sideX && sideZ) return 0.62;
+  return 1 - (sideX ? 0.14 : 0) - (sideZ ? 0.14 : 0) - (diagonal ? 0.1 : 0);
+}
+
+function ambientCorners(quad, blockAt, isActive) {
+  if (quad.faceIndex !== 0 || isFluid(quad.block)) return [1, 1, 1, 1];
+  return [0, 1, 2, 3].map((cornerIndex) => topCornerAmbient(quad, cornerIndex, blockAt, isActive));
+}
+
 export function buildGreedyQuads({ forEachLoadedBlock, blockAt, isActive, lightAt = null }) {
   if (typeof forEachLoadedBlock !== "function" || typeof blockAt !== "function" || typeof isActive !== "function") {
     throw new TypeError("greedy meshing requires forEachLoadedBlock, blockAt and isActive");
@@ -105,7 +156,9 @@ export function buildGreedyQuads({ forEachLoadedBlock, blockAt, isActive, lightA
       const neighborY = y + dy;
       const neighborZ = z + dz;
       const neighbor = isActive(neighborX, neighborZ) ? Number(blockAt(neighborX, neighborY, neighborZ) ?? 0) : 0;
-      if (neighbor !== 0) continue;
+      // Fluids are transparent: terrain under a fluid keeps its faces,
+      // while same-fluid interior faces stay culled.
+      if (isOpaque(neighbor) || (neighbor === block && isFluid(block))) continue;
       const { fixed, u, v } = planeCell(faceIndex, x, y, z);
       const light = typeof lightAt === "function"
         ? Number(lightAt(neighborX, neighborY, neighborZ))
@@ -127,12 +180,14 @@ export function buildGreedyQuads({ forEachLoadedBlock, blockAt, isActive, lightA
     const fixed = Number(planeKey.slice(separator + 1));
     quads.push(...mergePlane(faceIndex, fixed, mask));
   }
+  for (const quad of quads) quad.ao = ambientCorners(quad, blockAt, isActive);
   return { blockCount, quads };
 }
 
 export function quadCorners(quad) {
   const { faceIndex, fixed, u, v, width, height } = quad;
-  const topInset = quad.block === 20 ? 1 / 16 : 0;
+  // Recessed top surfaces read as soil/water instead of full cubes.
+  const topInset = quad.block === 20 ? 1 / 16 : isFluid(quad.block) ? 2 / 16 : 0;
   switch (faceIndex) {
     case 0:
       return [[u, fixed - topInset, v], [u + width, fixed - topInset, v], [u + width, fixed - topInset, v + height], [u, fixed - topInset, v + height]];

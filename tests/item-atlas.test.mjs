@@ -5,6 +5,7 @@ import {
   ITEM_ATLAS_HEIGHT,
   ITEM_ATLAS_TILE_SIZE,
   ITEM_ATLAS_WIDTH,
+  ITEM_TEXTURE_GRID_SIZE,
   ITEM_TEXTURES,
   TEXTURE_PASS,
   createItemTextureAtlasCanvas,
@@ -53,7 +54,23 @@ assert.equal(ITEM_ATLAS_ROWS, 6);
 assert.equal(ITEM_TEXTURES.length, itemNames.length);
 assert.equal(TEXTURE_PASS.id, "fallback-pixel-pass-v1");
 assert.equal(TEXTURE_PASS.referenceSheet, null);
+assert.equal(TEXTURE_PASS.itemGridSize, 16);
+assert.equal(ITEM_TEXTURE_GRID_SIZE, 16);
 assert.deepEqual(ITEM_TEXTURES.map((texture) => texture.name), itemNames);
+
+const authoredItemTopRows = {
+  wooden_pickaxe: "..ssssss........",
+  stone_pickaxe: "..ssssss........",
+  iron_pickaxe: "..ssssss........",
+  diamond_pickaxe: "..ssssss........",
+  torch: ".......h........",
+  bed: "ssaaaaaaaaaaaass",
+  door: "ssssssssssssssss",
+  wooden_hoe: "...aa...........",
+};
+for (const [name, row] of Object.entries(authoredItemTopRows)) {
+  assert.equal(itemTexture(name).pattern[0], row, `${name} should use an authored 16px silhouette`);
+}
 
 for (const [id, name] of itemNames.entries()) {
   const texture = itemTexture(id);
@@ -75,8 +92,8 @@ for (const [id, name] of itemNames.entries()) {
   assert.ok(Object.isFrozen(texture.colors));
   assert.ok(Object.isFrozen(texture.pattern));
   assert.ok(Object.isFrozen(texture.tile));
-  assert.equal(texture.pattern.length, 8);
-  for (const row of texture.pattern) assert.equal(row.length, 8);
+  assert.equal(texture.pattern.length, 16);
+  for (const row of texture.pattern) assert.equal(row.length, 16);
 }
 
 const bedUV = itemTextureUV("bed", { tileSize: ITEM_ATLAS_TILE_SIZE, inset: 0 });

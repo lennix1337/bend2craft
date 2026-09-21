@@ -5,19 +5,30 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#87b8d8">
   <title>Bend2Craft</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
   <main id="game-shell">
     <canvas id="game" aria-label="Voxel world"></canvas>
+    <div id="vignette" aria-hidden="true"></div>
+    <div id="damage-flash" aria-hidden="true"></div>
     <div id="crosshair" aria-hidden="true"></div>
+    <div id="mining-progress" aria-hidden="true" hidden>
+      <span id="mining-progress-fill"></span>
+    </div>
+    <section id="vitals" aria-live="polite" hidden>
+      <div id="hearts" aria-label="Health"></div>
+      <div id="hunger" aria-label="Hunger"></div>
+    </section>
     <section id="hud" aria-live="polite">
       <div class="brand">BEND2CRAFT <span>inventory slice</span></div>
-      <div id="seed">seed: —</div>
-      <div id="coords">loading world…</div>
-      <div id="selected">selected: —</div>
-      <div id="stats">— blocks visible</div>
+      <div id="coords" class="hud-coords">loading world…</div>
+      <div id="seed" class="hud-debug">seed: —</div>
+      <div id="selected" class="selected-item">selected: —</div>
+      <div id="stats" class="hud-debug">— blocks visible</div>
     </section>
+    <section id="debug-overlay" aria-live="polite" aria-label="Performance diagnostics" hidden></section>
     <section id="hotbar" aria-label="Hotbar">
       <div id="hotbar-slots"></div>
     </section>
@@ -70,6 +81,136 @@
       <span>1–9 hotbar · E inventory · R furnace · G eat · F attack · T trade · N sleep · click mine/place</span>
     </section>
     <div id="error" role="alert" hidden></div>
+    <section id="pause" aria-labelledby="pause-title" hidden>
+      <div class="menu-panel">
+        <h2 id="pause-title">Game Paused</h2>
+        <p id="pause-subtitle" class="field-hint"></p>
+        <div class="menu-buttons">
+          <button class="mc-button primary" type="button" data-action="resume">Back to Game</button>
+          <button class="mc-button" type="button" data-action="quit-title">Save &amp; Quit to Title</button>
+        </div>
+      </div>
+    </section>
+    <section id="death" aria-labelledby="death-title" hidden>
+      <div class="menu-panel">
+        <h2 id="death-title">You died!</h2>
+        <p id="death-stats" class="field-hint"></p>
+        <div class="menu-buttons">
+          <button class="mc-button primary" type="button" data-action="respawn">Respawn</button>
+          <button class="mc-button" type="button" data-action="quit-title">Quit to Title</button>
+        </div>
+      </div>
+    </section>
+    <section id="menu" aria-label="Main menu" hidden>
+      <div class="menu-panel" id="screen-title" data-screen>
+        <h1 class="logo">BEND2CRAFT</h1>
+        <p class="splash">Punch trees, dodge zombies, mind the fall!</p>
+        <div class="menu-buttons">
+          <button class="mc-button primary" type="button" data-action="goto-profiles">Singleplayer</button>
+          <button class="mc-button" type="button" data-action="goto-options">Options...</button>
+          <button class="mc-button" type="button" data-action="goto-help">How to Play...</button>
+        </div>
+        <p class="menu-foot">Bend 2 engine core · one save per player</p>
+      </div>
+      <div class="menu-panel" id="screen-profiles" data-screen hidden>
+        <h2>Who is playing?</h2>
+        <div id="profile-list" class="world-list"></div>
+        <div class="menu-buttons">
+          <button class="mc-button primary" type="button" data-action="play-profile">Play</button>
+          <button class="mc-button" type="button" data-action="goto-create-profile">New Player...</button>
+          <div class="menu-row">
+            <button class="mc-button small" type="button" data-action="delete-profile">Delete</button>
+            <button class="mc-button small" type="button" data-action="back-title">Back</button>
+          </div>
+        </div>
+      </div>
+      <div class="menu-panel" id="screen-create-profile" data-screen hidden>
+        <h2>New Player</h2>
+        <label class="field">
+          <span>Player name</span>
+          <input id="input-profile-name" type="text" maxlength="24" placeholder="Alex" autocomplete="off">
+        </label>
+        <p id="profile-error" class="form-error" hidden></p>
+        <div class="menu-buttons">
+          <button class="mc-button primary" type="button" data-action="confirm-profile">Create Player</button>
+          <button class="mc-button" type="button" data-action="back-profiles">Cancel</button>
+        </div>
+      </div>
+      <div class="menu-panel" id="screen-worlds" data-screen hidden>
+        <h2 id="worlds-title">Select World</h2>
+        <div id="world-list" class="world-list"></div>
+        <div class="menu-buttons">
+          <button class="mc-button primary" type="button" data-action="play-world">Play Selected World</button>
+          <button class="mc-button" type="button" data-action="goto-create-world">Create New World</button>
+          <div class="menu-row">
+            <button class="mc-button small" type="button" data-action="delete-world">Delete</button>
+            <button class="mc-button small" type="button" data-action="back-profiles">Back</button>
+          </div>
+        </div>
+      </div>
+      <div class="menu-panel" id="screen-create-world" data-screen hidden>
+        <h2>Create New World</h2>
+        <label class="field">
+          <span>World name</span>
+          <input id="input-world-name" type="text" maxlength="32" placeholder="New World" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>Seed (number or words, empty is random)</span>
+          <span class="field-row">
+            <input id="input-seed" type="text" maxlength="64" placeholder="e.g. forest" autocomplete="off">
+            <button class="mc-button small" type="button" data-action="random-seed">Random</button>
+          </span>
+        </label>
+        <label class="field">
+          <span>World mode</span>
+          <select id="input-world-mode">
+            <option value="survival">Survival · monsters and danger</option>
+            <option value="peaceful">Peaceful · no monsters</option>
+          </select>
+        </label>
+        <p id="create-error" class="form-error" hidden></p>
+        <div class="menu-buttons">
+          <button class="mc-button primary" type="button" data-action="confirm-world">Create New World</button>
+          <button class="mc-button" type="button" data-action="back-worlds">Cancel</button>
+        </div>
+      </div>
+      <div class="menu-panel" id="screen-options" data-screen hidden>
+        <h2>Options</h2>
+        <label class="field">
+          <span>Field of View: <output id="fov-value">75</output></span>
+          <input id="input-fov" type="range" min="60" max="110" step="1" value="75">
+        </label>
+        <label class="field">
+          <span>Mouse Sensitivity: <output id="sensitivity-value">1.0</output></span>
+          <input id="input-sensitivity" type="range" min="0.5" max="3" step="0.1" value="1">
+        </label>
+        <label class="field">
+          <span>Render Distance: <output id="render-distance-value">2</output> chunks</span>
+          <input id="input-render-distance" type="range" min="2" max="6" step="1" value="2">
+          <span class="field-hint">Higher values load more terrain and use more memory.</span>
+        </label>
+        <div class="menu-buttons">
+          <button class="mc-button small" type="button" data-action="toggle-coords">Coordinates: ON</button>
+          <button class="mc-button primary" type="button" data-action="options-done">Done</button>
+        </div>
+      </div>
+      <div class="menu-panel" id="screen-help" data-screen hidden>
+        <h2>How to Play</h2>
+        <ul class="help-list">
+          <li><strong>WASD</strong> move · <strong>Mouse</strong> look · <strong>Space</strong> jump</li>
+          <li><strong>Left click</strong> mine · <strong>Right click</strong> place · <strong>F</strong> attack</li>
+          <li><strong>1–9</strong> hotbar · <strong>E</strong> inventory · <strong>R</strong> furnace</li>
+          <li><strong>G</strong> eat · <strong>T</strong> trade · <strong>N</strong> sleep · <strong>Esc</strong> pause</li>
+        </ul>
+        <div class="menu-buttons">
+          <button class="mc-button primary" type="button" data-action="back-title-help">Done</button>
+        </div>
+      </div>
+      <div class="menu-panel" id="screen-loading" data-screen hidden>
+        <h2>Loading world...</h2>
+        <p class="field-hint">Generating chunks with Bend 2.</p>
+      </div>
+    </section>
   </main>
   <script type="module" src="./main.js"></script>
 </body>

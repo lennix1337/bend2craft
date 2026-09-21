@@ -2,13 +2,10 @@ import { TEXTURE_PASS } from "../assets/generated/textures/fallback-style.js";
 
 export { TEXTURE_PASS };
 export const ATLAS_COLUMNS = 5;
-export const ATLAS_ROWS = 5;
+export const ATLAS_ROWS = 10;
 export const ATLAS_TILE_SIZE = 16;
 
-const TEXTURE_GRID_SIZE = TEXTURE_PASS.gridSize;
-const TEXTURE_PIXEL_SIZE = ATLAS_TILE_SIZE / TEXTURE_GRID_SIZE;
-
-// Each material is an 8x8 pixel-art pattern enlarged to the 16x16 atlas tile.
+// Materials use authored 8x8 or 16x16 pixel-art patterns enlarged into atlas tiles.
 // A dot leaves the material base color visible; other characters name palette colors.
 const BLOCK_TEXTURE_SPECS = [
   {
@@ -36,14 +33,22 @@ const BLOCK_TEXTURE_SPECS = [
       d: "#696f6e",
     },
     pattern: [
-      "....s...",
-      "..s.....",
-      ".......l",
-      ".ss.....",
-      ".....l..",
-      "...d....",
-      "......ss",
-      ".l......",
+      "....ss......s...",
+      "...sss....ss....",
+      "................",
+      "..s......l......",
+      ".ss.....ll......",
+      "...............s",
+      "......s.........",
+      ".....ss.........",
+      "..........l.....",
+      "..s.............",
+      "........s.......",
+      "....l.......s...",
+      ".s...........ss.",
+      "...............l",
+      "...ss...........",
+      "......d.........",
     ],
   },
   {
@@ -54,14 +59,22 @@ const BLOCK_TEXTURE_SPECS = [
       r: "#7f5034",
     },
     pattern: [
-      "....s...",
-      "..l.....",
-      "......r.",
-      ".s......",
-      "...ll...",
-      ".......s",
-      "..r.....",
-      "....s...",
+      "..s.............",
+      "...ss...........",
+      "........r.......",
+      ".............l..",
+      "....r...........",
+      "........s.......",
+      ".l..............",
+      "......s.........",
+      "...........r....",
+      "..ss............",
+      "........l.......",
+      "....s...........",
+      ".............r..",
+      ".r..............",
+      ".......l........",
+      "....s...........",
     ],
   },
   {
@@ -73,32 +86,48 @@ const BLOCK_TEXTURE_SPECS = [
       r: "#7d5033",
     },
     pattern: [
-      "gggggggg",
-      "gglggggg",
-      "ggggdggg",
-      "ggdggggg",
-      ".......r",
-      "..r..l..",
-      "....r...",
-      ".r...r..",
+      "gggggggggggggggg",
+      "gggglggggggggdgg",
+      "ggggggggdggggggg",
+      "ggdggggggggggggg",
+      "gggggglggggggggg",
+      "ggggggggggdggggg",
+      "gglggggggggggdgg",
+      "ggggdggggggggggg",
+      "........r.......",
+      "..r......l......",
+      "......r.........",
+      "....r...........",
+      "...........r....",
+      ".r..............",
+      "......l.........",
+      "....r...........",
     ],
   },
   {
     palette: {
-      base: "#438f4d",
-      l: "#83c75b",
-      s: "#286c3b",
-      h: "#b7d987",
+      base: "#4b9a54",
+      l: "#8fd067",
+      s: "#397943",
+      h: "#c0df8f",
     },
     pattern: [
-      ".ll...l.",
-      "l....ll.",
-      "..ss....",
-      ".ss..h..",
-      "....ss..",
-      "..h...s.",
-      ".s....l.",
-      "...ll...",
+      "..ll......l.....",
+      ".l....ss....l...",
+      "......s.........",
+      "..ss....h.......",
+      "...........l....",
+      ".s......ss......",
+      "....h.......s...",
+      "........l.......",
+      "..l....s........",
+      ".......ss.......",
+      ".s........h.....",
+      "....ll..........",
+      "..........s.....",
+      "..h......l......",
+      ".ss.........l...",
+      "......l.........",
     ],
   },
   {
@@ -109,14 +138,22 @@ const BLOCK_TEXTURE_SPECS = [
       k: "#8b542f",
     },
     pattern: [
-      "s...s...",
-      "s...s...",
-      ".l..s...",
-      "s...s...",
-      "s...s...",
-      "s...l...",
-      "ss..k...",
-      "s...s...",
+      "ss..ss......s...",
+      "s...s.......s...",
+      ".l..s....l..s...",
+      "s...s.......s...",
+      "s...ss......s...",
+      "s...s.......s...",
+      "ss..l....s..s...",
+      "s...s.......s...",
+      "s...s.......s...",
+      ".s..s....l..s...",
+      "s...s.......s...",
+      "s...s.......s...",
+      "s...k....s..s...",
+      "s...s.......s...",
+      "ss..s.......s...",
+      "s...s.......s...",
     ],
   },
   {
@@ -127,14 +164,22 @@ const BLOCK_TEXTURE_SPECS = [
       g: "#c3a661",
     },
     pattern: [
-      "...s....",
-      ".l......",
-      "......g.",
-      "..s.....",
-      ".....s..",
-      ".g......",
-      ".......s",
-      "....l...",
+      "......s.........",
+      ".l..............",
+      ".............g..",
+      "....s...........",
+      "..........s.....",
+      ".g..............",
+      "...............s",
+      ".......l........",
+      "..s.............",
+      "........g.......",
+      ".............s..",
+      "....l...........",
+      "........s.......",
+      ".g..............",
+      "..........l.....",
+      "...s............",
     ],
   },
   {
@@ -145,14 +190,22 @@ const BLOCK_TEXTURE_SPECS = [
       g: "#d8f5ef",
     },
     pattern: [
-      "........",
-      ".wwwwww.",
-      "........",
-      "..s.....",
-      "...s....",
-      "........",
-      "..wwwww.",
-      ".g......",
+      "................",
+      "..wwwwwwwwwwww..",
+      "................",
+      "......s.........",
+      ".......s........",
+      "................",
+      ".wwwwwwwwwww....",
+      "....g...........",
+      "................",
+      "...........s....",
+      "..wwwwwwwwww....",
+      "................",
+      "....s...........",
+      "................",
+      ".wwwwwwwwwwww...",
+      "......g.........",
     ],
   },
   {
@@ -164,14 +217,22 @@ const BLOCK_TEXTURE_SPECS = [
       l: "#4d5553",
     },
     pattern: [
-      "..cc....",
-      ".cch....",
-      "....sh..",
-      "....ss..",
-      ".......c",
-      "......cc",
-      ".s......",
-      "........",
+      "....cc..........",
+      "...ccc..........",
+      "..ccccc.........",
+      "...ccc....h.....",
+      "....c...........",
+      "...........c....",
+      "..........cc....",
+      ".........ccc....",
+      "...........c....",
+      "..h.............",
+      "................",
+      ".....cc.........",
+      "....ccc.........",
+      ".....c..........",
+      "..............h.",
+      "................",
     ],
   },
   {
@@ -183,14 +244,22 @@ const BLOCK_TEXTURE_SPECS = [
       l: "#edb898",
     },
     pattern: [
-      ".....o..",
-      "....oo..",
-      ".h......",
-      "..o.....",
-      "..oo....",
-      "......l.",
-      "......o.",
-      "........",
+      "...oo...........",
+      "..ooo...........",
+      "...o....l.......",
+      "........o.......",
+      "........oo......",
+      "................",
+      ".....o..........",
+      "....oo..........",
+      ".....o..........",
+      "............l...",
+      "...........o....",
+      "..........oo....",
+      "...........o....",
+      ".h..............",
+      "................",
+      "......l.........",
     ],
   },
   {
@@ -202,14 +271,22 @@ const BLOCK_TEXTURE_SPECS = [
       l: "#b4ffff",
     },
     pattern: [
-      ".gg.....",
-      "..g.....",
-      ".....l..",
-      "....gg..",
-      "....g...",
-      ".h......",
-      ".......g",
-      "......gg",
+      ".gg.............",
+      "..g.............",
+      ".....l..........",
+      "....gg..........",
+      "....g...........",
+      ".h..............",
+      ".......g........",
+      "......gg........",
+      "..............l.",
+      ".............gg.",
+      "............g...",
+      "..l.............",
+      "...gg...........",
+      "....g...........",
+      "........h.......",
+      "...........l....",
     ],
   },
   {
@@ -221,14 +298,22 @@ const BLOCK_TEXTURE_SPECS = [
       g: "#ffd15a",
     },
     pattern: [
-      "llllllll",
-      "l......l",
-      "l.ssss.l",
-      "l.soogs.l",
-      "l.soogs.l",
-      "l.ssss.l",
-      "l......l",
-      "llllllll",
+      "llllllllllllllll",
+      "l..............l",
+      "l..ssssssssss..l",
+      "l..s........s..l",
+      "l..s..oogg..s..l",
+      "l..s..oogg..s..l",
+      "l..s........s..l",
+      "l..ssssssssss..l",
+      "l..............l",
+      "l....ssssss....l",
+      "l....s....s....l",
+      "l....s....s....l",
+      "l....s....s....l",
+      "l....ssssss....l",
+      "l..............l",
+      "llllllllllllllll",
     ],
   },
   {
@@ -240,14 +325,22 @@ const BLOCK_TEXTURE_SPECS = [
       l: "#a96b35",
     },
     pattern: [
-      "...g....",
-      "..gfg...",
-      ".gfffg..",
-      "..ffg...",
-      "...s....",
-      "...s....",
-      "..sl....",
-      "...s....",
+      ".......g........",
+      "......fg........",
+      ".....fffg.......",
+      "......fff.......",
+      ".......f........",
+      ".......s........",
+      ".......s........",
+      "......sl........",
+      ".......s........",
+      ".......s........",
+      ".......s........",
+      "......ss........",
+      ".......s........",
+      "................",
+      "................",
+      "................",
     ],
   },
   {
@@ -259,14 +352,22 @@ const BLOCK_TEXTURE_SPECS = [
       p: "#f6f0e4",
     },
     pattern: [
-      "ppqqqqpp",
-      "ppqqqqpp",
-      "qqllllqq",
-      "qqllllqq",
-      "wwwwwwww",
-      "wwwwwwww",
-      "........",
-      "........",
+      "ppqqqqqqqqqqqqpp",
+      "ppqqqqqqqqqqqqpp",
+      "qqqllllllqqqqqqq",
+      "qqqllllllqqqqqqq",
+      "qqqqqqqqqqqqqqqq",
+      "wwwwwwwwwwwwwwww",
+      "wwwwwwwwwwwwwwww",
+      "wwwwwwwwwwwwwwww",
+      "................",
+      "................",
+      "................",
+      "................",
+      "................",
+      "................",
+      "................",
+      "................",
     ],
   },
   {
@@ -278,14 +379,22 @@ const BLOCK_TEXTURE_SPECS = [
       h: "#e5c56a",
     },
     pattern: [
-      "ssssssss",
-      "sliiiils",
-      "sliiiils",
-      "sl....ls",
-      "sl..h.ls",
-      "sl....ls",
-      "sl....ls",
-      "ssssssss",
+      "ssssssssssssssss",
+      "slllllllllllllls",
+      "sl...........ils",
+      "sl...........ils",
+      "sl....iiii....ls",
+      "sl....iiii....ls",
+      "sl....iiii....ls",
+      "sl............ls",
+      "sl............ls",
+      "sl............ls",
+      "sl............ls",
+      "sl............ls",
+      "sl............ls",
+      "sl............ls",
+      "slllllllllllllls",
+      "ssssssssssssssss",
     ],
   },
   {
@@ -297,14 +406,22 @@ const BLOCK_TEXTURE_SPECS = [
       h: "#e5c56a",
     },
     pattern: [
-      "sssss...",
-      "sldds...",
-      "sldds...",
-      "sldds...",
-      "sld.h...",
-      "sldds...",
-      "sldds...",
-      "sssss...",
+      "ssssssss........",
+      "slllllls........",
+      "slddddls........",
+      "slddddls........",
+      "slddhdls........",
+      "slddddls........",
+      "slddddls........",
+      "slddddls........",
+      "slddddls........",
+      "slddddls........",
+      "slddddls........",
+      "slddddls........",
+      "slddddls........",
+      "slddddls........",
+      "slllllls........",
+      "ssssssss........",
     ],
   },
   {
@@ -315,14 +432,22 @@ const BLOCK_TEXTURE_SPECS = [
       y: "#d5b63e",
     },
     pattern: [
-      "....l...",
-      "...ll...",
-      "....d...",
-      "...l....",
-      "........",
-      "..d.....",
-      "....l...",
-      "...ll...",
+      "................",
+      ".......l........",
+      "......ll........",
+      ".......d........",
+      "......l.........",
+      ".......l........",
+      "........d.......",
+      "......ll........",
+      "................",
+      "....l...........",
+      ".....l..........",
+      "....d...........",
+      ".....l..........",
+      "................",
+      ".......y........",
+      "................",
     ],
   },
   {
@@ -333,14 +458,22 @@ const BLOCK_TEXTURE_SPECS = [
       y: "#dfc147",
     },
     pattern: [
-      "...l....",
-      "..lll...",
-      ".....d..",
-      "....l...",
-      "..d.....",
-      "...ll...",
-      "........",
-      "....y...",
+      "................",
+      ".......l........",
+      "......lll.......",
+      ".......d........",
+      "......l.........",
+      ".....ll.........",
+      ".......l........",
+      "........d.......",
+      "....l...........",
+      "...lll..........",
+      "....d...........",
+      ".....l..........",
+      "................",
+      ".......y........",
+      "................",
+      "................",
     ],
   },
   {
@@ -351,14 +484,22 @@ const BLOCK_TEXTURE_SPECS = [
       y: "#f2d54e",
     },
     pattern: [
-      "..y.....",
-      ".yyy....",
-      "..y..d..",
-      "....l...",
-      "...y....",
-      "..yyy...",
-      ".....d..",
-      "....y...",
+      "................",
+      ".......y........",
+      "......yyy.......",
+      ".......y..d.....",
+      ".....l.y........",
+      "......y.........",
+      ".....yyy........",
+      ".......d........",
+      "....y...........",
+      "...yyy..........",
+      "....y...........",
+      "........l.......",
+      "......d.........",
+      ".......y........",
+      "................",
+      "................",
     ],
   },
   {
@@ -369,14 +510,22 @@ const BLOCK_TEXTURE_SPECS = [
       y: "#fff08a",
     },
     pattern: [
-      "..yyy...",
-      ".yyyyy..",
-      "..y..d..",
-      "....l...",
-      "..yyyy..",
-      ".yyyyyy.",
-      "...d....",
-      "....y...",
+      "................",
+      ".....yyy........",
+      "....yyyyy.......",
+      ".....y..d.......",
+      ".......l........",
+      "...yyyy.........",
+      "..yyyyyy........",
+      ".....d..........",
+      "........y.......",
+      ".......yyy......",
+      "........y.......",
+      ".....l..........",
+      "....d...........",
+      ".....y..........",
+      "................",
+      "................",
     ],
   },
   {
@@ -387,84 +536,285 @@ const BLOCK_TEXTURE_SPECS = [
       s: "#2a1e15",
     },
     pattern: [
-      "ssssssss",
-      "sdddddds",
-      "sdllldds",
-      "sdddddds",
-      "sddlddds",
-      "sdddddds",
-      "sddlldds",
-      "ssssssss",
+      "ssssssssssssssss",
+      "sdddddddddddddds",
+      "sddlllldddddddds",
+      "sdddddddddddddds",
+      "sddddddlllldddds",
+      "sdddddddddddddds",
+      "sddlllldddddddds",
+      "sdddddddddddddds",
+      "sdddddddddddddds",
+      "sddlllldddddddds",
+      "sdddddddddddddds",
+      "sddddddlllldddds",
+      "sdddddddddddddds",
+      "sddlllldddddddds",
+      "sdddddddddddddds",
+      "ssssssssssssssss",
     ],
   },
   {
     palette: {
-      base: "#6c7375",
-      d: "#3a4143",
-      l: "#a2abad",
+      base: "#5da24a",
+      l: "#8dcc5d",
+      s: "#4f8135",
+      d: "#3f7a34",
     },
     pattern: [
-      "........",
-      "..d.....",
-      "....l...",
-      "........",
-      ".d......",
-      ".....l..",
-      "........",
-      "...d....",
+      "lls....l........",
+      "...l......s.....",
+      "........l.......",
+      ".s....d.........",
+      "......l.........",
+      "..........s.....",
+      "..l.............",
+      "........d.......",
+      ".....s..........",
+      "...........l....",
+      ".d..............",
+      ".......s........",
+      "....l...........",
+      "..............d.",
+      "...s............",
+      ".........l......",
     ],
   },
   {
     palette: {
-      base: "#704a32",
-      d: "#3c251b",
-      l: "#b17b52",
+      base: "#a77646",
+      l: "#d3a56b",
+      s: "#6c4328",
+      k: "#8b542f",
     },
     pattern: [
-      "llllllll",
-      "l......l",
-      "l..d...l",
-      "l......l",
-      "l...d..l",
-      "l......l",
-      "l..d...l",
-      "llllllll",
+      "....ssssssss....",
+      "...slllllllls...",
+      "..sllkkkklls....",
+      ".sllkkkkkklls...",
+      "sllkkllllkklls..",
+      "sllkllllllklls..",
+      "sllkkllllkklls..",
+      ".sllkkkkkklls...",
+      "..sllkkkklls....",
+      "...slllllllls...",
+      "....sskkkkss....",
+      ".....slllls.....",
+      "................",
+      "................",
+      "................",
+      "................",
     ],
   },
   {
     palette: {
-      base: "#4a6d79",
-      d: "#294550",
-      l: "#9ac8d1",
+      base: "#c94a1f",
+      d: "#7c2418",
+      l: "#ffbf3f",
+      y: "#f47721",
     },
     pattern: [
-      "........",
-      "...l....",
-      "........",
-      ".d......",
-      "........",
-      ".....l..",
-      "........",
-      "..d.....",
+      "..yy....yy......",
+      ".lyyl...yy......",
+      "yy..yy....d.....",
+      "..y...d.........",
+      "...l......yy....",
+      ".d...yy.........",
+      "..yy......l.....",
+      "....l...........",
+      "......yy........",
+      ".....d..........",
+      "..y.......yy....",
+      "...l........d...",
+      "........yy......",
+      ".......l........",
+      "................",
+      "................",
     ],
   },
   {
     palette: {
-      base: "#77704c",
-      d: "#413d29",
-      l: "#b5aa72",
+      base: "#f06a24",
+      y: "#ffd34e",
+      r: "#b42c1c",
+      w: "#fff3a1",
     },
     pattern: [
-      "d......l",
-      "........",
-      "..d.....",
-      "........",
-      ".....l..",
-      "........",
-      "...d....",
-      "........",
+      ".......y........",
+      "......yyy.......",
+      ".....ywwy.......",
+      "......y.........",
+      ".......r........",
+      "......rr........",
+      ".....r..........",
+      "....r...........",
+      "........y.......",
+      ".......yyy......",
+      "......ywwy......",
+      ".......r........",
+      "......rr........",
+      ".....r..........",
+      "................",
+      "................",
     ],
   },
+  {
+    palette: {
+      base: "#777b7d",
+      l: "#9ca1a2",
+      d: "#4c5052",
+      s: "#626667",
+    },
+    pattern: [
+      "sss.....dddd....",
+      "sll....d...s....",
+      "....d....lll....",
+      "...s.....d......",
+      "dd....sss....l..",
+      "....l....d..s...",
+      "....s.....d.....",
+      "l...d.....s.....",
+      ".....sss....d...",
+      "...l...d....s...",
+      "....d....lll....",
+      "s....s....d.....",
+      "..d.....s....l..",
+      "....l...d.......",
+      "ss....d.....s...",
+      "....d.....l.....",
+    ],
+  },
+  {
+    palette: {
+      base: "#29233f",
+      l: "#4d4371",
+      d: "#171326",
+      p: "#6d4f8f",
+    },
+    pattern: [
+      "d......d........",
+      ".p....p.........",
+      "..l..l..........",
+      "...p............",
+      "....d...........",
+      "..l.....p.......",
+      ".p..............",
+      "d.............d.",
+      "........d.......",
+      "...l.....p......",
+      "..p.............",
+      ".....d..........",
+      "...........l....",
+      ".p..............",
+      "d......d........",
+      "...........p....",
+    ],
+  },
+  {
+    palette: { base: "#4f5558", l: "#7f8b90" },
+    pattern: ["...l....", "........", "........", "........", "........", "........", "........", "........"],
+  },
+  {
+    palette: { base: "#4f5558", d: "#293034" },
+    pattern: ["........", "........", "....d...", "........", "........", "........", "........", "........"],
+  },
+  {
+    palette: { base: "#4f5558", p: "#a095c2" },
+    pattern: ["........", "......p.", "........", "........", "........", "........", "........", "........"],
+  },
+];
+
+const ENTITY_TEXTURE_NAMES = [
+  "zombie_skin", "zombie_shirt", "zombie_pants", "pig_skin", "pig_snout",
+  "villager_skin", "villager_robe_green", "villager_robe_brown", "entity_eye", "player_sleeve",
+];
+
+const ENTITY_SURFACE_PATTERN = [
+  "................",
+  "..l.......d.....",
+  "................",
+  "......d.........",
+  "...h............",
+  "........l.......",
+  ".d..............",
+  "......h.........",
+  "..............d.",
+  "...l............",
+  "........d.......",
+  "..h.............",
+  ".....d..........",
+  "...........l....",
+  ".d..............",
+  "................",
+];
+
+const ENTITY_STRIPE_PATTERN = [
+  "llllllllllllllll",
+  "l..............l",
+  "l....d.........l",
+  "l..............l",
+  "l.......h......l",
+  "l..............l",
+  "l....d.........l",
+  "l..............l",
+  "l..............l",
+  "l......h.......l",
+  "l..............l",
+  "l....d.........l",
+  "l..............l",
+  "l..............l",
+  "l..............l",
+  "llllllllllllllll",
+];
+
+const ENTITY_EYE_PATTERN = [
+  "dddddddddddddddd",
+  "d..............d",
+  "d..h.......h...d",
+  "d..............d",
+  "d..............d",
+  "d...l......l...d",
+  "d..............d",
+  "d..............d",
+  "d..............d",
+  "d..............d",
+  "d..............d",
+  "d..............d",
+  "d..............d",
+  "d..............d",
+  "d..............d",
+  "dddddddddddddddd",
+];
+
+const ENTITY_TEXTURE_SPECS = [
+  { palette: { base: "#6fa45b", l: "#9dca76", d: "#3f6f4a", h: "#d3e2a5" }, pattern: ENTITY_SURFACE_PATTERN },
+  { palette: { base: "#2d777c", l: "#55a6a3", d: "#1f4c5a", h: "#82d0c3" }, pattern: ENTITY_STRIPE_PATTERN },
+  { palette: { base: "#3f4f83", l: "#6377ad", d: "#27345d", h: "#8ba1cf" }, pattern: ENTITY_SURFACE_PATTERN },
+  { palette: { base: "#dda18f", l: "#f2c5ae", d: "#a96867", h: "#ffe1c7" }, pattern: ENTITY_SURFACE_PATTERN },
+  { palette: { base: "#c57473", l: "#e7a0a0", d: "#8c4c56", h: "#f5c5b4" }, pattern: ENTITY_STRIPE_PATTERN },
+  { palette: { base: "#bf865e", l: "#dda27a", d: "#8d5748", h: "#f2c49a" }, pattern: ENTITY_SURFACE_PATTERN },
+  { palette: { base: "#477a4b", l: "#6fa45d", d: "#2d5039", h: "#a0c97e" }, pattern: ENTITY_STRIPE_PATTERN },
+  { palette: { base: "#8b623d", l: "#b27d4e", d: "#5c3e2c", h: "#d19a5f" }, pattern: ENTITY_STRIPE_PATTERN },
+  { palette: { base: "#1e2324", l: "#59615f", d: "#080b0c", h: "#dcefe2" }, pattern: ENTITY_EYE_PATTERN },
+  { palette: { base: "#3a6a9f", l: "#5e91c4", d: "#25476e", h: "#9ac7e8" }, pattern: ENTITY_STRIPE_PATTERN },
+];
+
+const VARIANT_TEXTURE_SPECS = [
+  { palette: { base: "#a6acae", l: "#d1d5d5", d: "#70777b" }, pattern: ["....l...........", "...d......l.....", "........d.......", "......l.........", ".d..............", "..........d.....", "l...............", "....d.......l...", "...........d....", "..l.............", "........d.......", ".....d..........", "..............l.", ".d..............", "......l.........", "........d......."] },
+  { palette: { base: "#875034", l: "#b8774e", d: "#603522" }, pattern: ["d...l...........", "..d.......l.....", "....d...........", "l.........d.....", "...d............", "......l.........", ".d..............", ".....d..........", "........l.......", "..d.............", "...........d....", "l...............", "....d.......l...", ".d..............", "......d.........", "...........l...."] },
+  { palette: { base: "#5a9e48", g: "#5a9e48", l: "#a1d264", d: "#347337" }, pattern: ["gglggggggggggggg", "gddggggggggggggg", "gggglggggggggggg", "ggggggdggggggggg", "g...g...g...g...", "..l..d..g.......", "g...g...g...l...", ".d...l...d......", "gggggggggggggggg", "g...d...g...g...", "..l......d......", "gggggggggggggggg", "g.....l...d.....", "...d....g.......", "gggggggggggggggg", "g...l.......d..."] },
+  { palette: { base: "#397b3f", l: "#6dae54", d: "#23572f" }, pattern: [".ll..d..", "l..l....", "..d...l.", "....ll..", "d..l....", ".l....d.", "...d....", "l...l..."] },
+  { palette: { base: "#9d693e", l: "#cf9560", d: "#684126", s: "#9d693e", k: "#7f4f2e" }, pattern: ["s...s.......s...", "s..l....s.......", "..s...s.....k...", "s...k.......s...", "...s....l.......", "s...s.......s...", "..s.....s.......", "s...s...k.......", "....s.......l...", "s...s.......s...", "..k.....s.......", "s...s...l.......", "...s.......s....", "s...s.....k.....", "..s.......s.....", "s...l.......s..."] },
+  { palette: { base: "#d1b56d", l: "#f0d78f", d: "#a3874d" }, pattern: ["..d.....", "l.......", "....d...", "......l.", ".d......", ".....d..", "l.......", "...d...."] },
+  { palette: { base: "#6f7476", l: "#aab0af", d: "#4c5254" }, pattern: ["d..l....", "...d....", ".l...d..", "....d...", "d.....l.", "..d.....", "....l...", ".d......"] },
+  { palette: { base: "#332851", l: "#5c4b80", d: "#171126" }, pattern: ["d....l..", "...d....", ".l....d.", "......l.", "d.......", "..l.....", "....d...", ".d....l."] },
+  { palette: { base: "#4f9b4b", g: "#4f9b4b", l: "#91cb62", d: "#2c6e36" }, pattern: ["gglggggg", "ggggdggg", "gdlggggg", "gggggglg", "ggggdggg", "glgggggg", "ggggggdg", "gglggggg"] },
+  { palette: { base: "#4b93bc", w: "#b5e4e7", d: "#2e6f9a" }, pattern: ["........", "..wwww..", "........", ".d......", "....d...", "........", "...ww...", "........"] },
+];
+
+const VARIANT_TEXTURE_NAMES = [
+  "stone_variant", "dirt_variant", "grass_variant", "leaves_variant", "wood_variant",
+  "sand_variant", "cobblestone_variant", "obsidian_variant", "grass_top_variant", "water_variant",
 ];
 
 const BLOCK_TEXTURE_NAMES = [
@@ -489,16 +839,21 @@ const BLOCK_TEXTURE_NAMES = [
   "ripe_wheat",
   "mature_wheat",
   "farmland",
-  "reserved_21",
-  "reserved_22",
-  "reserved_23",
-  "reserved_24",
+  "grass_top",
+  "wood_top",
+  "lava",
+  "fire",
+  "cobblestone",
+  "obsidian",
+  "reserved_27",
+  "reserved_28",
+  "reserved_29",
 ];
 
-function freezeBlockTexture(spec, id) {
+function freezeBlockTexture(spec, id, name = BLOCK_TEXTURE_NAMES[id]) {
   return Object.freeze({
     id,
-    name: BLOCK_TEXTURE_NAMES[id],
+    name,
     palette: Object.freeze({ ...spec.palette }),
     pattern: Object.freeze([...spec.pattern]),
     pass: TEXTURE_PASS.id,
@@ -509,7 +864,27 @@ function freezeBlockTexture(spec, id) {
   });
 }
 
-export const BLOCK_TEXTURES = Object.freeze(BLOCK_TEXTURE_SPECS.map(freezeBlockTexture));
+export const BLOCK_TEXTURES = Object.freeze(BLOCK_TEXTURE_SPECS.map((spec, id) => freezeBlockTexture(spec, id)));
+export const VARIANT_TEXTURES = Object.freeze(
+  VARIANT_TEXTURE_SPECS.map((spec, index) => freezeBlockTexture(spec, 30 + index, VARIANT_TEXTURE_NAMES[index])),
+);
+export const ENTITY_TEXTURES = Object.freeze(
+  ENTITY_TEXTURE_SPECS.map((spec, index) => freezeBlockTexture(spec, 40 + index, ENTITY_TEXTURE_NAMES[index])),
+);
+export const ENTITY_TEXTURE_TILES = Object.freeze({
+  zombieSkin: 40,
+  zombieShirt: 41,
+  zombiePants: 42,
+  pigSkin: 43,
+  pigSnout: 44,
+  villagerSkin: 45,
+  villagerRobeGreen: 46,
+  villagerRobeBrown: 47,
+  eye: 48,
+  playerSleeve: 49,
+});
+export const ATLAS_TEXTURES = Object.freeze([...BLOCK_TEXTURES, ...VARIANT_TEXTURES, ...ENTITY_TEXTURES]);
+const ATLAS_SOURCE_CANVASES = new WeakMap();
 export const BLOCK_TEXTURES_BY_ID = Object.freeze(
   Object.fromEntries(BLOCK_TEXTURES.map((texture) => [texture.id, texture])),
 );
@@ -543,14 +918,58 @@ export function atlasTile(block) {
   return { column: id % ATLAS_COLUMNS, row: Math.floor(id / ATLAS_COLUMNS) };
 }
 
+// Face-aware tile: 0 is +Y (top), 1 is -Y (bottom), 2..5 are the sides.
+export function blockFaceTile(block, faceIndex) {
+  const id = Number(block) || 0;
+  if (id === 3) {
+    if (faceIndex === 0) return 21;
+    if (faceIndex === 1) return 2;
+    return 3;
+  }
+  if (id === 5 && (faceIndex === 0 || faceIndex === 1)) return 22;
+  if (id === 21) return 23;
+  if (id === 22) return 25;
+  if (id === 23) return 26;
+  return Math.max(0, Math.min(ATLAS_COLUMNS * ATLAS_ROWS - 1, id));
+}
+
+function variantParity(x, z) {
+  return ((Math.trunc(Number(x)) * 31 + Math.trunc(Number(z)) * 17) % 2 + 2) % 2;
+}
+
+function pickVariant(base, variant, x, z) {
+  return variantParity(x, z) === 0 ? base : variant;
+}
+
+export function blockFaceTileAt(block, faceIndex, x = 0, z = 0) {
+  const id = Number(block) || 0;
+  if (id === 1) return pickVariant(1, 30, x, z);
+  if (id === 2) return pickVariant(2, 31, x, z);
+  if (id === 3) {
+    if (faceIndex === 0) return pickVariant(21, 38, x, z);
+    if (faceIndex === 1) return 2;
+    return pickVariant(3, 32, x, z);
+  }
+  if (id === 4) return pickVariant(4, 33, x, z);
+  if (id === 5) {
+    if (faceIndex === 0 || faceIndex === 1) return 22;
+    return pickVariant(5, 34, x, z);
+  }
+  if (id === 6) return pickVariant(6, 35, x, z);
+  if (id === 7) return pickVariant(7, 39, x, z);
+  if (id === 22) return pickVariant(25, 36, x, z);
+  if (id === 23) return pickVariant(26, 37, x, z);
+  return blockFaceTile(id, faceIndex);
+}
+
 export function atlasUV(block) {
   const { column, row } = atlasTile(block);
   const inset = 0.5 / ATLAS_TILE_SIZE;
   const u0 = (column + inset) / ATLAS_COLUMNS;
   const u1 = (column + 1 - inset) / ATLAS_COLUMNS;
-  const v1 = 1 - (row + inset) / ATLAS_ROWS;
-  const v0 = 1 - (row + 1 - inset) / ATLAS_ROWS;
-  return [u0, v1, u1, v1, u1, v0, u0, v0];
+  const v0 = (row + inset) / ATLAS_ROWS;
+  const v1 = (row + 1 - inset) / ATLAS_ROWS;
+  return [u0, v0, u1, v0, u1, v1, u0, v1];
 }
 
 function colorCss(color) {
@@ -590,32 +1009,56 @@ function drawEdgeLighting(context, x, y, texture) {
   context.globalAlpha = previousAlpha;
 }
 
-function drawTexture(context, x, y, texture) {
+function drawTexture(context, x, y, texture, opacity = 1) {
+  const previousAlpha = context.globalAlpha;
+  const gridSize = texture.pattern[0]?.length ?? TEXTURE_PASS.blockGridSize;
+  const pixelSize = ATLAS_TILE_SIZE / gridSize;
+  context.globalAlpha = previousAlpha * opacity;
   context.fillStyle = texture.palette.base;
   context.fillRect(x, y, ATLAS_TILE_SIZE, ATLAS_TILE_SIZE);
 
-  for (let row = 0; row < TEXTURE_GRID_SIZE; row += 1) {
+  for (let row = 0; row < gridSize; row += 1) {
     const pattern = texture.pattern[row];
     let start = 0;
-    while (start < TEXTURE_GRID_SIZE) {
+    while (start < gridSize) {
       const key = pattern[start];
       let end = start + 1;
-      while (end < TEXTURE_GRID_SIZE && pattern[end] === key) end += 1;
+      while (end < gridSize && pattern[end] === key) end += 1;
       if (key !== ".") {
         const color = texture.palette[key];
         if (color === undefined) throw new Error(`Unknown texture color ${key}.`);
         context.fillStyle = color;
         context.fillRect(
-          x + start * TEXTURE_PIXEL_SIZE,
-          y + row * TEXTURE_PIXEL_SIZE,
-          (end - start) * TEXTURE_PIXEL_SIZE,
-          TEXTURE_PIXEL_SIZE,
+          x + start * pixelSize,
+          y + row * pixelSize,
+          (end - start) * pixelSize,
+          pixelSize,
         );
       }
       start = end;
     }
   }
+  const textureAlpha = context.globalAlpha;
+  const { highlight, shadow } = paletteEdgeColors(texture.palette);
+  for (let row = 0; row < gridSize; row += 1) {
+    for (let column = 0; column < gridSize; column += 1) {
+      const noise = (texture.id * 31 + row * 17 + column * 13) % 19;
+      if (noise !== 0 && noise !== 7) continue;
+      context.globalAlpha = textureAlpha * (
+        noise === 0 ? TEXTURE_PASS.noiseHighlightAlpha : TEXTURE_PASS.noiseShadowAlpha
+      );
+      context.fillStyle = noise === 0 ? highlight : shadow;
+      context.fillRect(
+        x + column * pixelSize + Math.min(0.5, pixelSize * 0.25),
+        y + row * pixelSize + Math.min(0.5, pixelSize * 0.25),
+        Math.max(0.5, pixelSize * 0.5),
+        Math.max(0.5, pixelSize * 0.5),
+      );
+    }
+  }
+  context.globalAlpha = textureAlpha;
   drawEdgeLighting(context, x, y, texture);
+  context.globalAlpha = previousAlpha;
 }
 
 export function createTextureAtlas(gl, blockColors) {
@@ -630,9 +1073,11 @@ export function createTextureAtlas(gl, blockColors) {
     const { column, row } = atlasTile(block);
     const x = column * ATLAS_TILE_SIZE;
     const y = row * ATLAS_TILE_SIZE;
+    const texture = ATLAS_TEXTURES[block];
+    if (texture === undefined) throw new Error(`Missing atlas texture ${block}.`);
     context.globalAlpha = 1;
     context.globalCompositeOperation = "source-over";
-    drawTexture(context, x, y, BLOCK_TEXTURES[block]);
+    drawTexture(context, x, y, texture, block === 7 || block === 24 ? 0.78 : 1);
     context.strokeStyle = TEXTURE_PASS.outline;
     context.strokeRect(x + 0.5, y + 0.5, ATLAS_TILE_SIZE - 1, ATLAS_TILE_SIZE - 1);
 
@@ -645,17 +1090,30 @@ export function createTextureAtlas(gl, blockColors) {
       context.globalCompositeOperation = "source-over";
     }
   }
+  // Some Chromium canvas-to-WebGL uploads can expose the first six source
+  // tiles as transparent even though the initial draw painted them. Repaint
+  // those common blocks source-over immediately before upload.
+  context.globalAlpha = 1;
+  context.globalCompositeOperation = "source-over";
+  for (let block = 0; block < 6; block += 1) {
+    const { column, row } = atlasTile(block);
+    drawTexture(context, column * ATLAS_TILE_SIZE, row * ATLAS_TILE_SIZE, BLOCK_TEXTURES[block]);
+  }
   context.globalAlpha = 1;
   context.globalCompositeOperation = "source-over";
 
   const texture = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  ATLAS_SOURCE_CANVASES.set(texture, canvas);
   gl.bindTexture(gl.TEXTURE_2D, null);
   return texture;
+}
+
+export function atlasSourceCanvas(texture) {
+  return ATLAS_SOURCE_CANVASES.get(texture) ?? null;
 }

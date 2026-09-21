@@ -1,7 +1,7 @@
 import Base
 
 type State is Data:
-  State{x: F32, y: F32, z: F32, yaw: F32, pitch: F32, velocity_y: F32, grounded: Bool, health: F32, hunger: F32}
+  State{x: F32, y: F32, z: F32, yaw: F32, pitch: F32, velocity_y: F32, grounded: Bool, health: F32, hunger: F32, air: F32, fall: F32, poison: F32}
 
 type Direction is Data:
   Direction{x: F32, y: F32, z: F32}
@@ -21,13 +21,19 @@ def create(+spawn_x: Nat, +spawn_z: Nat, +spawn_height: Nat) -> State:
   +x = F32.add(U32.to_f32(U32.from_nat(spawn_x)), fraction(1, 2))
   +y = F32.add(U32.to_f32(U32.from_nat(spawn_height)), fraction(5, 100))
   +z = F32.add(U32.to_f32(U32.from_nat(spawn_z)), fraction(1, 2))
-  State{x, y, z, 0.0, F32.neg(fraction(18, 100)), 0.0, False{}, 20.0, 20.0}
+  State{x, y, z, 0.0, F32.neg(fraction(18, 100)), 0.0, False{}, 20.0, 20.0, 10.0, 0.0, 0.0}
 
 def state(
   x: F32, y: F32, z: F32, yaw: F32, pitch: F32, velocity_y: F32, grounded: Bool,
   health: F32, hunger: F32
 ) -> State:
-  State{x, y, z, yaw, pitch, velocity_y, grounded, health, hunger}
+  State{x, y, z, yaw, pitch, velocity_y, grounded, health, hunger, 10.0, 0.0, 0.0}
+
+def state_full(
+  x: F32, y: F32, z: F32, yaw: F32, pitch: F32, velocity_y: F32, grounded: Bool,
+  health: F32, hunger: F32, air: F32, fall: F32, poison: F32
+) -> State:
+  State{x, y, z, yaw, pitch, velocity_y, grounded, health, hunger, air, fall, poison}
 
 def clamp_world(state: State, +width: Nat, +depth: Nat) -> State:
   state
@@ -45,7 +51,7 @@ def block_collides(+block: U32, +block_y: Nat, +player_y: F32) -> Bool:
   Bool.and(solid(block), F32.is_lt(player_y, top))
 
 def direction(state: State) -> Direction:
-  State{x, y, z, +yaw, +pitch, velocity_y, grounded, health, hunger} = state
+  State{x, y, z, +yaw, +pitch, velocity_y, grounded, health, hunger, air, fall, poison} = state
   +cos_pitch = F32.cos(pitch)
   Direction{
     F32.mul(F32.sin(yaw), cos_pitch),
@@ -54,7 +60,7 @@ def direction(state: State) -> Direction:
   }
 
 def overlaps(state: State, +x: Nat, +y: Nat, +z: Nat) -> Bool:
-  State{+px, +py, +pz, yaw, pitch, velocity_y, grounded, health, hunger} = state
+  State{+px, +py, +pz, yaw, pitch, velocity_y, grounded, health, hunger, air, fall, poison} = state
   +fx = U32.to_f32(U32.from_nat(x))
   +fy = U32.to_f32(U32.from_nat(y))
   +fz = U32.to_f32(U32.from_nat(z))
@@ -177,24 +183,27 @@ def input_axis(positive: Bool, negative: Bool) -> F32:
 
 def step.vertical.hit(
   x: F32, y: F32, z: F32, yaw: F32, pitch: F32, next_y: F32, falling: Bool,
-  health: F32, hunger: F32
+  +health: F32, +hunger: F32, +air: F32, +fall: F32, +poison: F32, +in_water: Bool
 ) -> State:
   match falling:
     case True{}:
-      State{x, F32.add(U32.to_f32(U32.from_nat(floor_nat(next_y))), 1.0), z, yaw, pitch, 0.0, True{}, health, hunger}
+      +impact = choose_f32(in_water, 0.0, choose_f32(F32.is_gt(fall, 3.0), F32.sub(fall, 3.0), 0.0))
+      +next_health = clamp_f32(F32.sub(health, impact), 0.0, 20.0)
+      State{x, F32.add(U32.to_f32(U32.from_nat(floor_nat(next_y))), 1.0), z, yaw, pitch, 0.0, True{}, next_health, hunger, air, 0.0, poison}
     case False{}:
       +top = floor_nat(F32.add(next_y, fraction(18, 10)))
-      State{x, F32.sub(U32.to_f32(U32.from_nat(top)), fraction(18, 10)), z, yaw, pitch, 0.0, False{}, health, hunger}
+      State{x, F32.sub(U32.to_f32(U32.from_nat(top)), fraction(18, 10)), z, yaw, pitch, 0.0, False{}, health, hunger, air, 0.0, poison}
 
 def step.vertical(
   x: F32, y: F32, z: F32, yaw: F32, pitch: F32, velocity_y: F32,
-  next_y: F32, falling: Bool, blocked: Bool, health: F32, hunger: F32
+  next_y: F32, falling: Bool, blocked: Bool, health: F32, hunger: F32,
+  air: F32, fall: F32, poison: F32, in_water: Bool
 ) -> State:
   match blocked:
     case False{}:
-      State{x, next_y, z, yaw, pitch, velocity_y, False{}, health, hunger}
+      State{x, next_y, z, yaw, pitch, velocity_y, False{}, health, hunger, air, fall, poison}
     case True{}:
-      step.vertical.hit(x, y, z, yaw, pitch, next_y, falling, health, hunger)
+      step.vertical.hit(x, y, z, yaw, pitch, next_y, falling, health, hunger, air, fall, poison, in_water)
 
 def step.respawn(
   state: State, +spawn_x: Nat, +spawn_z: Nat, +spawn_height: Nat, fallen: Bool
@@ -206,11 +215,50 @@ def step.respawn(
       create(spawn_x, spawn_z, spawn_height)
 
 def step.fallen(state: State) -> Bool:
-  State{ x, y, z, yaw, pitch, velocity_y, grounded, health, hunger } = state
+  State{ x, y, z, yaw, pitch, velocity_y, grounded, health, hunger, air, fall, poison } = state
   F32.is_lt(y, F32.neg(10.0))
 
+def is_water(+block: U32) -> Bool:
+  U32.is_eq(block, 7)
+
+def water_contact(blocks: List<&2, U32>) -> Bool:
+  match blocks:
+    case Nil{}:
+      False{}
+    case Con{+head, +tail}:
+      Bool.or(is_water(head), water_contact(tail))
+
+def head_in_water(
+  blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
+  +width: Nat, +height: Nat, +depth: Nat, +x: F32, +y: F32, +z: F32
+) -> Bool:
+  is_water(region_block(blocks, origin_x, origin_y, origin_z, width, height, depth,
+    floor_nat(x), floor_nat(F32.add(y, fraction(162, 100))), floor_nat(z)))
+
+def body_in_water(
+  blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
+  +width: Nat, +height: Nat, +depth: Nat, +x: F32, +y: F32, +z: F32
+) -> Bool:
+  is_water(region_block(blocks, origin_x, origin_y, origin_z, width, height, depth,
+    floor_nat(x), floor_nat(F32.add(y, fraction(4, 10))), floor_nat(z)))
+
+def poison_duration() -> F32:
+  10.0
+
+def poison_tick(state: State, +seconds: F32) -> State:
+  State{+x, +y, +z, +yaw, +pitch, +velocity_y, grounded, +health, +hunger, +air, +fall, +old_poison} = state
+  State{x, y, z, yaw, pitch, velocity_y, grounded, health, hunger, air, fall, F32.add(old_poison, seconds)}
+
+def drown_tick(state: State, +dt: F32, +head_under: Bool) -> State:
+  State{+x, +y, +z, +yaw, +pitch, +velocity_y, grounded, +health, +hunger, +air, +fall, +poison} = state
+  +next_air = choose_f32(head_under, F32.sub(air, dt), choose_f32(F32.is_lt(air, 10.0), F32.add(air, F32.mul(dt, 5.0)), air))
+  +clamped_air = clamp_f32(next_air, 0.0, 10.0)
+  +drowning = Bool.and(head_under, F32.is_eq(clamped_air, 0.0))
+  +next_health = choose_f32(drowning, F32.sub(health, F32.mul(dt, 2.0)), health)
+  State{x, y, z, yaw, pitch, velocity_y, grounded, clamp_f32(next_health, 0.0, 20.0), hunger, clamped_air, fall, poison}
+
 def tick_survival(state: State, +dt: F32, +sprinting: Bool) -> State:
-  State{+x, +y, +z, +yaw, +pitch, +velocity_y, grounded, +health, +hunger} = state
+  State{+x, +y, +z, +yaw, +pitch, +velocity_y, grounded, +health, +hunger, +air, +fall, +poison} = state
   +loss_rate = choose_f32(sprinting, fraction(1, 10), fraction(1, 50))
   +hunger_loss = F32.mul(dt, loss_rate)
   +raw_hunger = F32.sub(hunger, hunger_loss)
@@ -218,13 +266,21 @@ def tick_survival(state: State, +dt: F32, +sprinting: Bool) -> State:
   +next_hunger = clamp_f32(raw_hunger, 0.0, 20.0)
   +damage = F32.mul(dt, fraction(1, 5))
   +raw_health = choose_f32(starving, F32.sub(health, damage), health)
-  +next_health = clamp_f32(raw_health, 0.0, 20.0)
-  State{x, y, z, yaw, pitch, velocity_y, grounded, next_health, next_hunger}
+  +poisoned = F32.is_gt(poison, 0.0)
+  +after_poison = choose_f32(poisoned, F32.sub(raw_health, F32.mul(dt, 1.0)), raw_health)
+  +next_poison = choose_f32(poisoned, F32.sub(poison, dt), 0.0)
+  +clamped_poison = choose_f32(F32.is_lt(next_poison, 0.0), 0.0, next_poison)
+  +well_fed = Bool.and(F32.is_ge(next_hunger, 18.0), Bool.and(F32.is_lt(after_poison, 20.0), Bool.not(poisoned)))
+  +regen = choose_f32(well_fed, F32.mul(dt, fraction(1, 4)), 0.0)
+  +regen_drain = choose_f32(well_fed, F32.mul(dt, fraction(3, 10)), 0.0)
+  +next_health = clamp_f32(F32.add(after_poison, regen), 0.0, 20.0)
+  +final_hunger = clamp_f32(F32.sub(next_hunger, regen_drain), 0.0, 20.0)
+  State{x, y, z, yaw, pitch, velocity_y, grounded, next_health, final_hunger, air, fall, clamped_poison}
 
 def damage(state: State, +amount: F32) -> State:
-  State{+x, +y, +z, +yaw, +pitch, +velocity_y, grounded, +health, +hunger} = state
+  State{+x, +y, +z, +yaw, +pitch, +velocity_y, grounded, +health, +hunger, +air, +fall, +poison} = state
   +next_health = clamp_f32(F32.sub(health, amount), 0.0, 20.0)
-  State{x, y, z, yaw, pitch, velocity_y, grounded, next_health, hunger}
+  State{x, y, z, yaw, pitch, velocity_y, grounded, next_health, hunger, air, fall, poison}
 
 def lava_contact(blocks: List<&2, U32>) -> Bool:
   match blocks:
@@ -237,16 +293,16 @@ def lava_damage(state: State, +dt: F32) -> State:
   damage(state, F32.mul(dt, 4.0))
 
 def eat(state: State, +nutrition: F32) -> State:
-  State{+x, +y, +z, +yaw, +pitch, +velocity_y, grounded, +health, +hunger} = state
+  State{+x, +y, +z, +yaw, +pitch, +velocity_y, grounded, +health, +hunger, +air, +fall, +poison} = state
   +space = F32.sub(20.0, hunger)
   +amount = choose_f32(F32.is_lt(space, nutrition), space, nutrition)
   +valid = Bool.and(F32.is_gt(nutrition, 0.0), F32.is_lt(hunger, 20.0))
   +next_hunger = choose_f32(valid, F32.add(hunger, amount), hunger)
-  State{x, y, z, yaw, pitch, velocity_y, grounded, health, next_hunger}
+  State{x, y, z, yaw, pitch, velocity_y, grounded, health, next_hunger, air, fall, poison}
 
 def step.values(
   +x: F32, +y: F32, +z: F32, +yaw: F32, +pitch: F32, +velocity_y: F32, +grounded: Bool,
-  +health: F32, +hunger: F32,
+  +health: F32, +hunger: F32, +air: F32, +fall: F32, +poison: F32,
   +keys: U32, +dt: F32, +blocks: List<&2, U32>,
   +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat,
@@ -259,8 +315,13 @@ def step.values(
   +normal_forward = F32.div(forward, safe_length)
   +normal_strafe = F32.div(strafe, safe_length)
   +moving = Bool.not(F32.is_eq(length, 0.0))
-  +sprinting = Bool.and(held(keys, 32), moving)
-  +speed = choose_f32(sprinting, fraction(135, 20), fraction(45, 10))
+  +sneaking = held(keys, 64)
+  +sprinting = Bool.and(held(keys, 32), Bool.and(moving, Bool.not(sneaking)))
+  +in_water = body_in_water(blocks, origin_x, origin_y, origin_z, width, height, depth, x, y, z)
+  +head_under = head_in_water(blocks, origin_x, origin_y, origin_z, width, height, depth, x, y, z)
+  +swim_speed = choose_f32(sprinting, 4.0, 2.5)
+  +walk_speed = choose_f32(sneaking, fraction(13, 10), choose_f32(sprinting, fraction(135, 20), fraction(45, 10)))
+  +speed = choose_f32(in_water, swim_speed, walk_speed)
   +dx = F32.mul(
     F32.add(F32.mul(F32.sin(yaw), normal_forward), F32.mul(F32.cos(yaw), normal_strafe)),
     F32.mul(speed, dt)
@@ -270,19 +331,29 @@ def step.values(
     F32.mul(speed, dt)
   )
   +candidate_x = F32.add(x, dx)
-  +x_blocked = collides(State{x, y, z, yaw, pitch, velocity_y, grounded, health, hunger}, candidate_x, y, z, blocks, origin_x, origin_y, origin_z, width, height, depth)
+  +x_blocked = collides(State{x, y, z, yaw, pitch, velocity_y, grounded, health, hunger, air, fall, poison}, candidate_x, y, z, blocks, origin_x, origin_y, origin_z, width, height, depth)
   +next_x = choose_f32(x_blocked, x, candidate_x)
   +candidate_z = F32.add(z, dz)
-  +z_blocked = collides(State{x, y, z, yaw, pitch, velocity_y, grounded, health, hunger}, next_x, y, candidate_z, blocks, origin_x, origin_y, origin_z, width, height, depth)
+  +z_blocked = collides(State{x, y, z, yaw, pitch, velocity_y, grounded, health, hunger, air, fall, poison}, next_x, y, candidate_z, blocks, origin_x, origin_y, origin_z, width, height, depth)
   +next_z = choose_f32(z_blocked, z, candidate_z)
-  +jumping = Bool.and(held(keys, 16), grounded)
-  +jump_velocity = choose_f32(jumping, fraction(70, 10), velocity_y)
-  +next_velocity = F32.sub(jump_velocity, F32.mul(fraction(20, 1), dt))
-  +dy = F32.mul(next_velocity, dt)
+  +jumping = Bool.and(held(keys, 16), Bool.or(grounded, in_water))
+  +surface_kick = Bool.and(in_water, Bool.and(moving, Bool.not(held(keys, 16))))
+  +jump_velocity = choose_f32(jumping, choose_f32(in_water, 3.5, fraction(70, 10)), velocity_y)
+  +kick_up = F32.add(velocity_y, F32.mul(8.0, dt))
+  +kick = choose_f32(F32.is_lt(kick_up, 1.0), kick_up, 1.0)
+  +rise = choose_f32(jumping, jump_velocity, choose_f32(surface_kick, kick, velocity_y))
+  +gravity = choose_f32(in_water, 4.0, fraction(20, 1))
+  +next_velocity = F32.sub(rise, F32.mul(gravity, dt))
+  +sink_cap = choose_f32(in_water, F32.neg(3.0), F32.neg(30.0))
+  +capped_velocity = choose_f32(F32.is_lt(next_velocity, sink_cap), sink_cap, next_velocity)
+  +dy = F32.mul(capped_velocity, dt)
   +next_y = F32.add(y, dy)
-  +blocked_y = collides(State{x, y, z, yaw, pitch, velocity_y, grounded, health, hunger}, next_x, next_y, next_z, blocks, origin_x, origin_y, origin_z, width, height, depth)
-  +resolved = step.vertical(next_x, y, next_z, yaw, pitch, next_velocity, next_y, F32.is_lt(dy, 0.0), blocked_y, health, hunger)
-  tick_survival(step.respawn(resolved, spawn_x, spawn_z, spawn_height, step.fallen(resolved)), dt, sprinting)
+  +blocked_y = collides(State{x, y, z, yaw, pitch, velocity_y, grounded, health, hunger, air, fall, poison}, next_x, next_y, next_z, blocks, origin_x, origin_y, origin_z, width, height, depth)
+  +falling_down = F32.is_lt(dy, 0.0)
+  +fall_next = choose_f32(in_water, 0.0, choose_f32(blocked_y, fall, choose_f32(falling_down, F32.add(fall, F32.neg(dy)), fall)))
+  +resolved = step.vertical(next_x, y, next_z, yaw, pitch, capped_velocity, next_y, F32.is_lt(dy, 0.0), blocked_y, health, hunger, air, fall_next, poison, in_water)
+  +breathed = drown_tick(step.respawn(resolved, spawn_x, spawn_z, spawn_height, step.fallen(resolved)), dt, head_under)
+  tick_survival(breathed, dt, Bool.and(sprinting, Bool.not(in_water)))
 
 def step(
   state: State, keys: U32, dt: F32, blocks: List<&2, U32>,
@@ -290,8 +361,8 @@ def step(
   +width: Nat, +height: Nat, +depth: Nat,
   +spawn_x: Nat, +spawn_z: Nat, +spawn_height: Nat
 ) -> State:
-  State{+x, +y, +z, +yaw, +pitch, +velocity_y, grounded, +health, +hunger} = state
-  step.values(x, y, z, yaw, pitch, velocity_y, grounded, health, hunger, keys, dt, blocks,
+  State{+x, +y, +z, +yaw, +pitch, +velocity_y, grounded, +health, +hunger, +air, +fall, +poison} = state
+  step.values(x, y, z, yaw, pitch, velocity_y, grounded, health, hunger, air, fall, poison, keys, dt, blocks,
     origin_x, origin_y, origin_z, width, height, depth, spawn_x, spawn_z, spawn_height)
 
 type RayResult is Data:
@@ -339,7 +410,7 @@ def raycast.start(
   +region_x: Nat, +region_y: Nat, +region_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat
 ) -> RayResult:
-  State{+px, +py, +pz, yaw, pitch, velocity_y, grounded, health, hunger} = state
+  State{+px, +py, +pz, yaw, pitch, velocity_y, grounded, health, hunger, air, fall, poison} = state
   Direction{+dx, +dy, +dz} = direction_value
   +origin_y = F32.add(py, fraction(162, 100))
   +cell_x = floor_nat(px)

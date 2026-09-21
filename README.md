@@ -32,8 +32,11 @@ The Bend 2 compiler is pinned as the `vendor/bend` submodule. Bend 2's JavaScrip
 - Small underground caves.
 - Bend-owned inventory, crafting, player physics, collision, raycast and edit validation contracts.
 - Bend-owned health and hunger survival loop with visible HUD values.
-- Rotten flesh can be eaten through the Bend2 hunger transition (`G`).
-- Deterministic Bend-owned mobs with hostile movement, player damage and `F` melee attacks.
+- Fall damage, full-hunger regeneration, drowning air, and Bend-owned rotten-flesh poison.
+- Rotten flesh, wheat, bread and apples can be eaten through the Bend2 hunger transition (`G`).
+- Deterministic Bend-owned mobs with distinct passive, hostile, skittish and brute movement, player damage and `F` melee attacks.
+- Wooden, stone, iron and diamond swords, bows, arrows, shields and kill XP with Bend-owned damage/durability rules.
+- Night mob respawn, distance despawn and death inventory drops.
 - Mob state is spawned once for the world and preserved while the active chunk window streams; crossing chunks no longer respawns mobs or drops.
 - Mob, drop and villager Bend states are included in the seed-scoped save and restored before the first simulation tick.
 - Entity simulation uses a fixed Bend2 budget: mobs within the active radius use the full step, while distant mobs advance at one-fifth cadence; `bench:entities` compares both paths.
@@ -43,6 +46,7 @@ The Bend 2 compiler is pinned as the `vendor/bend` submodule. Bend 2's JavaScrip
 - Wooden, stone, iron and diamond pickaxes with Bend-owned tiered mining rules and durability state.
 - Ore drops and resource progression through stone/iron/diamond pickaxe recipes.
 - Bend-owned per-block furnace containers with coal fuel, raw iron smelting and iron ingot extraction.
+- Furnaces also cook wheat into bread; placeable glass, crafting tables and nine-slot chests use Bend-owned item/block contracts and save state.
 - Bend-owned wheat crops with validated planting, four growth stages, harvesting and seed/wheat drops.
 - Planting requires tilled farmland; a wooden hoe converts dirt/grass into persistent farmland.
 - Pinned simulation chunks keep furnaces, farmland and crops ticking outside the visual radius; farm state is saved with the seed-scoped world.
@@ -57,6 +61,7 @@ The Bend 2 compiler is pinned as the `vendor/bend` submodule. Bend 2's JavaScrip
 - First-person camera, WASD movement, mouse look and jumping.
 - AABB collision, block raycast, block removal and block placement.
 - Nine-slot hotbar inventory with stack counts.
+- Inventory drag transfer, half-stack right-click moves, shift-click section transfer and `Q` item drops.
 - Collecting a block adds it to the inventory; placing consumes one item.
 - Bend laws and proofs for core world invariants.
 
@@ -87,6 +92,9 @@ Block IDs:
 - `22`: cobblestone
 - `23`: obsidian
 - `24`: fire
+- `25`: glass
+- `26`: chest
+- `27`: crafting table
 
 Crop items:
 
@@ -101,6 +109,14 @@ Utility and material items:
 - `30`: lava bucket
 - `31`: cobblestone
 - `32`: obsidian
+- `33–36`: wooden, stone, iron and diamond swords
+- `37`: bow
+- `38`: shield
+- `39`: arrow
+- `40`: glass
+- `41`: bread
+- `42`: apple
+- `43`: chest
 
 The current greedy meshing benchmark over the nine active chunks preserves all `19,880` solid blocks and reduces visible terrain quads from `10,250` to `3,275` (`68.0%` fewer). The CPU mesh-build pass measured `36.7 ms` versus `32.2 ms` for the scalar face pass in the same Bun run, so the geometry reduction is validated but the rebuild path still needs profiling before claiming an end-to-end speedup.
 

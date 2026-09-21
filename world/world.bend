@@ -4,7 +4,7 @@ import ./structures.bend as Structures
 # Block IDs: 0 air, 1 stone, 2 dirt, 3 grass, 4 leaves, 5 wood, 6 sand, 7 water,
 # 8 coal ore, 9 iron ore, 10 diamond ore, 11 furnace, 12 torch, 13 bed,
 # 14 closed door, 15 open door, 16-19 wheat growth stages, 20 farmland, 21 lava,
-# 22 cobblestone, 23 obsidian.
+# 22 cobblestone, 23 obsidian, 25 glass, 26 chest, 27 crafting table.
 
 def default_seed() -> Nat:
   1337n

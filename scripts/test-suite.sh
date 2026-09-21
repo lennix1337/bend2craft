@@ -55,12 +55,16 @@ TESTS=(
   tests/light-dirty-bend.test.mjs
   tests/light-flood-bend.test.mjs
   tests/inventory-bend.test.mjs
+  tests/chest-bend.test.mjs
+  tests/chests-bend.test.mjs
+  tests/experience-bend.test.mjs
   tests/interactions-bend.test.mjs
   tests/furnace-bend.test.mjs
   tests/furnaces-bend.test.mjs
   tests/player-bend.test.mjs
   tests/entities-bend.test.mjs
   tests/inventory.test.mjs
+  tests/inventory-ux.test.mjs
   tests/game-state.test.mjs
   tests/pointer-lock.test.mjs
   tests/seed-input.test.mjs

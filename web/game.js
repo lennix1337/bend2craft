@@ -8,13 +8,18 @@ import Entities from "../world/entities.bend";
 import Villagers from "../world/villagers.bend";
 import Furnace from "../world/furnace.bend";
 import Furnaces from "../world/furnaces.bend";
+import ChestDomain from "../world/chest.bend";
+import Chests from "../world/chests.bend";
 import Simulation from "../world/simulation.bend";
+import Experience from "../world/experience.bend";
 import Crops from "../world/crops.bend";
 import Farmland from "../world/farmland.bend";
 import Fluids from "../world/fluids.bend";
 import Fire from "../world/fire.bend";
 import {
   HOTBAR_SIZE,
+  MAX_STACK,
+  ITEM_IDS,
   RECIPES,
   blockForItem,
   canCraft,
@@ -37,23 +42,32 @@ import {
   moveItem,
   selectedItem,
   tradeInventory,
+  handDamage,
   useTool,
+  weaponDamage,
 } from "./inventory.js";
+import { dropAmount, findShiftTarget, transferAmount } from "./inventory-ux.js";
 import {
   EYE_HEIGHT,
+  SNEAK_EYE_HEIGHT,
   DOMAIN_COORDINATE_OFFSET,
   applyDamage,
   applyLavaDamage,
+  applyPoison,
   cameraDirection,
   clampPlayer,
   createPlayer,
   eatFood,
+  isHeadUnderwater,
+  isInWater,
+  isSneaking,
   mobRegion,
   movePlayer,
   lavaContact,
   overlapsPlayer,
   raycast,
   respawnPlayer,
+  waterCurrentPush,
 } from "./game-state.js";
 import { createChunkedWorld } from "./chunk-world.js";
 import { quadCorners } from "./greedy-mesh.js";
@@ -123,6 +137,7 @@ const debugOverlayEl = document.getElementById("debug-overlay");
 const vitalsEl = document.getElementById("vitals");
 const heartsEl = document.getElementById("hearts");
 const hungerEl = document.getElementById("hunger");
+const airEl = document.getElementById("air");
 const damageFlashEl = document.getElementById("damage-flash");
 const pauseEl = document.getElementById("pause");
 const pauseSubtitleEl = document.getElementById("pause-subtitle");
@@ -134,12 +149,16 @@ const heldItemCanvasEl = document.getElementById("held-item-canvas");
 const heldItemLabelEl = document.getElementById("held-item-label");
 const inventoryToggleEl = document.getElementById("inventory-toggle");
 const furnaceToggleEl = document.getElementById("furnace-toggle");
+const chestToggleEl = document.getElementById("chest-toggle");
 const inventoryPanelEl = document.getElementById("inventory-panel");
 const furnacePanelEl = document.getElementById("furnace-panel");
+const chestPanelEl = document.getElementById("chest-panel");
 const inventorySlotsEl = document.getElementById("inventory-slots");
+const chestSlotsEl = document.getElementById("chest-slots");
 const recipeListEl = document.getElementById("recipe-list");
 const inventoryMessageEl = document.getElementById("inventory-message");
 const furnaceStatusEl = document.getElementById("furnace-status");
+const chestStatusEl = document.getElementById("chest-status");
 const lockHintEl = document.getElementById("lock-hint");
 const helpEl = document.getElementById("help");
 const errorEl = document.getElementById("error");
@@ -947,7 +966,7 @@ try {
       appendShadow(shadowPositions, shadowColors, shadowUvs, drop);
       for (const part of dropBoxes(drop, time)) appendBox(positions, colors, uvs, tiles, part);
     }
-    const eye = [player.x, player.y + EYE_HEIGHT, player.z];
+    const eye = [player.x, player.y + (isSneaking(held) ? SNEAK_EYE_HEIGHT : EYE_HEIGHT), player.z];
     const direction = cameraDirection(player);
     const right = normalize(cross(direction, [0, 1, 0]));
     const up = normalize(cross(right, direction));
@@ -1293,10 +1312,14 @@ try {
   }
   let selectedSlot = 0;
   let inventoryCursor = null;
+  let inventoryCursorAmount = null;
   let inventoryOpen = false;
   let furnaceWorldState = Furnaces.empty();
   let activeFurnace = null;
   let furnaceOpen = false;
+  let chestWorldState = savedGame?.chests?.$ === "World" ? savedGame.chests : Chests.empty();
+  let activeChest = null;
+  let chestOpen = false;
   const held = new Set();
   const restoredEntities = restoreEntities(savedGame, null, null);
   let mobDomainState = PEACEFUL ? { $: "Nil" } : restoredEntities.mobs;
@@ -1316,6 +1339,7 @@ try {
   let villagerTick = Number(savedGame?.villagerTick ?? 0);
   let dropDomainState = restoredEntities.drops;
   let drops = [];
+  let xpState = savedGame?.xp?.$ === "XP" ? savedGame.xp : Experience.empty();
   let simulationTerrainDirty = false;
   let playerStreamingDirty = false;
   let playerSpawnReady = Boolean(savedGame?.player && typeof savedGame.player === "object");
@@ -1903,7 +1927,10 @@ try {
     stepMobsBudgeted(dt);
     mobs = mobViews(mobDomainState);
     const threat = Number(Entities.threat_damage(mobDomainState, player.x, player.z));
-    if (threat > 0) applyDamage(player, threat * dt);
+    if (threat > 0) {
+      const blocking = itemId(selectedItem(inventory, selectedSlot)) === "shield";
+      applyDamage(player, threat * (blocking ? 0.34 : 1) * dt);
+    }
     collectNearbyDrops();
     return true;
   }
@@ -1990,6 +2017,8 @@ try {
       window.setTimeout(() => heldItemViewEl.classList.remove("is-swinging"), 260);
     }
     if (mobDomainState === null) return false;
+    const selected = selectedItem(inventory, selectedSlot);
+    if (itemId(selected) === "bow") return shootArrow(selected);
     let nearest = null;
     let nearestDistance = 4 * 4;
     for (const mob of mobs) {
@@ -2003,13 +2032,27 @@ try {
       }
     }
     if (nearest === null) return false;
-    const result = Entities.attack(mobDomainState, BigInt(nearest.id), 4.0, player.x, player.z, dropDomainState);
+    const selectedId = itemId(selected);
+    const damage = ["wooden_sword", "stone_sword", "iron_sword", "diamond_sword"].includes(selectedId)
+      ? weaponDamage(selected)
+      : handDamage();
+    const result = Entities.attack(mobDomainState, BigInt(nearest.id), damage, player.x, player.z, dropDomainState);
     if (!result.hit) return false;
+    if (["wooden_sword", "stone_sword", "iron_sword", "diamond_sword"].includes(selectedId)) {
+      useTool(inventory, selectedSlot);
+    }
     mobDomainState = result.mobs;
     mobs = mobViews(mobDomainState);
     dropDomainState = result.drops;
     drops = dropViews(dropDomainState);
-    if (result.drops?.$ === "Con") killCount += 1;
+    const slain = mobs.find((mob) => String(mob.id) === String(nearest.id));
+    if (slain !== undefined && !slain.alive) {
+      killCount += 1;
+      xpState = Experience.award(xpState, Number(nearest.kind ?? 2));
+      setInventoryMessage(`Mob slain (+${Number(Experience.xp_for_kind(Number(nearest.kind ?? 2)))} XP).`);
+    } else {
+      setInventoryMessage("Mob hit.");
+    }
     mobFlash.set(nearest.id, worldTime);
     if (mobFlash.size > 64) {
       for (const key of mobFlash.keys()) {
@@ -2025,7 +2068,69 @@ try {
       ],
       { duration: 180 },
     );
-    setInventoryMessage("Mob hit.");
+    refreshInventoryUi();
+    rebuildDynamicMesh(worldTime);
+    return true;
+  }
+
+  function shootArrow(selected) {
+    if (mobDomainState === null) return false;
+    const arrowSlot = inventory.findIndex((slot) => itemId(slot) === "arrow");
+    if (arrowSlot === -1) {
+      setInventoryMessage("No arrows.");
+      return false;
+    }
+    const direction = cameraDirection(player);
+    const eyeX = player.x;
+    const eyeY = player.y + EYE_HEIGHT;
+    const eyeZ = player.z;
+    let target = null;
+    let targetDistance = 16;
+    for (const mob of mobs) {
+      if (!mob.alive) continue;
+      const vx = mob.x - eyeX;
+      const vy = (mob.y ?? eyeY) + 0.9 - eyeY;
+      const vz = mob.z - eyeZ;
+      const dist = Math.hypot(vx, vy, vz);
+      if (dist > 16 || dist < 0.001) continue;
+      const cos = (vx * direction[0] + vy * direction[1] + vz * direction[2]) / dist;
+      if (cos > 0.985 && dist < targetDistance) {
+        target = mob;
+        targetDistance = dist;
+      }
+    }
+    useTool(inventory, selectedSlot);
+    if (target === null) {
+      consume(inventory, arrowSlot, 1);
+      setInventoryMessage("Arrow missed.");
+      refreshInventoryUi();
+      return true;
+    }
+    consume(inventory, arrowSlot, 1);
+    const result = Entities.attack(mobDomainState, BigInt(target.id), 6.0, player.x, player.z, dropDomainState);
+    if (!result.hit) return false;
+    mobDomainState = result.mobs;
+    mobs = mobViews(mobDomainState);
+    dropDomainState = result.drops;
+    drops = dropViews(dropDomainState);
+    const slain = mobs.find((mob) => String(mob.id) === String(target.id));
+    if (slain !== undefined && !slain.alive) {
+      killCount += 1;
+      xpState = Experience.award(xpState, Number(target.kind ?? 2));
+      setInventoryMessage(`Mob shot (+${Number(Experience.xp_for_kind(Number(target.kind ?? 2)))} XP).`);
+    } else {
+      setInventoryMessage("Arrow hit.");
+    }
+    mobFlash.set(target.id, worldTime);
+    crosshairEl?.animate(
+      [
+        { transform: "translate(-50%, -50%) scale(1)" },
+        { transform: "translate(-50%, -50%) scale(1.8)" },
+        { transform: "translate(-50%, -50%) scale(1)" },
+      ],
+      { duration: 180 },
+    );
+    refreshInventoryUi();
     rebuildDynamicMesh(worldTime);
     return true;
   }
@@ -2040,6 +2145,25 @@ try {
     setInventoryMessage(`${itemName({ item })} collected.`);
     refreshInventoryUi();
     updateHud();
+    return true;
+  }
+
+  function dropInventoryItem(slot = selectedSlot, stack = false) {
+    const item = selectedItem(inventory, slot);
+    const id = itemId(item);
+    const amount = dropAmount(item?.count ?? 0, stack);
+    if (id === null || amount <= 0 || ITEM_IDS[id] === undefined) return false;
+    if (!consume(inventory, slot, amount)) return false;
+    const dropId = BigInt(Date.now()) * 1000n + BigInt(drops.length);
+    dropDomainState = Entities.cons_drop(
+      Entities.make_drop(dropId, ITEM_IDS[id], player.x, player.y + 0.6, player.z, amount),
+      dropDomainState,
+    );
+    drops = dropViews(dropDomainState);
+    setInventoryMessage(`${itemName(item)} dropped${stack ? " (stack)" : ""}.`);
+    refreshInventoryUi();
+    updateHud();
+    rebuildDynamicMesh(worldTime);
     return true;
   }
 
@@ -2082,7 +2206,7 @@ try {
     const name = itemName(item);
     const count = item?.count || 0;
     return `<button class="${className}${selected ? " selected" : ""}${cursor ? " cursor" : ""}${empty ? " empty" : ""}"
-      type="button" data-slot="${slot}" aria-label="Slot ${slot + 1}: ${name}, ${count}"
+      type="button" draggable="true" data-slot="${slot}" aria-label="Slot ${slot + 1}: ${name}, ${count}"
       aria-pressed="${selected || cursor}" title="${slot + 1}: ${name}">
       <span class="slot-key">${slot + 1}</span>
       <span class="slot-swatch" data-item="${empty ? "" : name}" style="--slot-color: ${itemColor(item)}"></span>
@@ -2149,8 +2273,10 @@ try {
 
   function setInventoryOpen(open) {
     if (open && furnaceOpen) setFurnaceOpen(false);
+    if (open && chestOpen) setChestOpen(false);
     inventoryOpen = open;
     inventoryCursor = null;
+    inventoryCursorAmount = null;
     inventoryPanelEl.hidden = !open;
     inventoryToggleEl.setAttribute("aria-expanded", String(open));
     inventoryToggleEl.textContent = open ? "Close inventory (E)" : "Inventory (E)";
@@ -2203,7 +2329,9 @@ try {
     const output = Number(state.output_count);
     const progress = Number(state.progress);
     const burn = Number(state.burn);
-    furnaceStatusEl.textContent = `Input: ${input} raw iron · fuel: ${fuel} coal · progress: ${progress}/8 · burn: ${burn} · output: ${output} iron ingot`;
+    const inputName = itemNameFromId(Number(state.input)) ?? "empty";
+    const outputName = itemNameFromId(Number(state.output)) ?? "empty";
+    furnaceStatusEl.textContent = `Input: ${input} ${inputName} · fuel: ${fuel} coal · progress: ${progress}/8 · burn: ${burn} · output: ${output} ${outputName}`;
   }
 
   function setFurnaceOpen(open, location = activeFurnace) {
@@ -2224,6 +2352,7 @@ try {
       inventoryPanelEl.hidden = true;
       inventoryToggleEl.setAttribute("aria-expanded", "false");
       inventoryToggleEl.textContent = "Inventory (E)";
+      if (chestOpen) setChestOpen(false);
       if (document.pointerLockElement === canvas && typeof document.exitPointerLock === "function") {
         document.exitPointerLock();
       }
@@ -2241,12 +2370,13 @@ try {
     const current = activeFurnaceState();
     if (current === null) return false;
     if (action === "input") {
-      const slot = furnaceSlot("raw_iron");
+      const inputName = furnaceSlot("raw_iron") !== -1 ? "raw_iron" : "wheat";
+      const slot = furnaceSlot(inputName);
       if (slot === -1) {
-        setInventoryMessage("You need raw iron to smelt.");
+        setInventoryMessage("You need raw iron or wheat to smelt.");
         return false;
       }
-      const loaded = Furnace.load_input(current, 15, 1n);
+      const loaded = Furnace.load_input(current, ITEM_IDS[inputName], 1n);
       if (!loaded.ok || !consume(inventory, slot)) {
         setInventoryMessage("The furnace input is full.");
         return false;
@@ -2292,6 +2422,147 @@ try {
     return true;
   }
 
+  function chestPosition(x, y, z) {
+    return [
+      BigInt(Math.trunc(x)) + BigInt(DOMAIN_COORDINATE_OFFSET),
+      BigInt(Math.trunc(y)),
+      BigInt(Math.trunc(z)) + BigInt(DOMAIN_COORDINATE_OFFSET),
+    ];
+  }
+
+  function activeChestState() {
+    if (activeChest === null) return null;
+    const [x, y, z] = chestPosition(...activeChest);
+    const lookup = Chests.at(chestWorldState, x, y, z);
+    return lookup.$ === "ChestFound" ? lookup.slots : null;
+  }
+
+  function chestSlotsView(slots) {
+    const view = [];
+    for (let node = slots; node?.$ === "Con"; node = node.tail) {
+      const slot = node.head;
+      view.push({
+        item: Number(slot.item),
+        count: Number(slot.count),
+        durability: Number(slot.durability),
+      });
+    }
+    return view;
+  }
+
+  function chestSlotMarkup(slot, index) {
+    const name = slot.item === 0 ? "empty" : (itemNameFromId(slot.item) ?? "unknown item");
+    const empty = slot.item === 0 || slot.count === 0;
+    return `<button class="inventory-slot${empty ? " empty" : ""}" type="button" data-chest-slot="${index}"
+      aria-label="Chest slot ${index + 1}: ${name}, ${slot.count}">
+      <span class="slot-key">${index + 1}</span>
+      <span class="slot-swatch" data-item="${empty ? "" : name}" style="--slot-color: ${empty ? "transparent" : itemColor({ item: name })}"></span>
+      <span class="slot-name">${name}</span>
+      <span class="slot-count">${slot.count || ""}</span>
+    </button>`;
+  }
+
+  function refreshChestUi() {
+    if (chestSlotsEl === null) return;
+    const slots = activeChestState();
+    if (slots === null) {
+      chestSlotsEl.innerHTML = "";
+      if (chestStatusEl !== null) chestStatusEl.textContent = "Right-click a placed chest first.";
+      return;
+    }
+    const view = chestSlotsView(slots);
+    chestSlotsEl.innerHTML = view.map(chestSlotMarkup).join("");
+    const filled = view.filter((slot) => slot.item !== 0 && slot.count > 0).length;
+    if (chestStatusEl !== null) chestStatusEl.textContent = `${filled}/9 slots used · click a slot to withdraw.`;
+    paintSlotIcons();
+  }
+
+  function setChestSlots(slots) {
+    if (activeChest === null) return false;
+    const [x, y, z] = chestPosition(...activeChest);
+    chestWorldState = Chests.set(chestWorldState, x, y, z, slots);
+    return true;
+  }
+
+  function setChestOpen(open, location = activeChest) {
+    if (open) {
+      if (location !== null) activeChest = location.map((value) => Math.trunc(value));
+      if (activeChestState() === null) {
+        setInventoryMessage("Right-click a placed chest first.");
+        return false;
+      }
+    }
+    chestOpen = open;
+    if (chestToggleEl !== null) {
+      chestToggleEl.hidden = activeChest === null;
+      chestToggleEl.setAttribute("aria-expanded", String(open));
+      chestToggleEl.textContent = open ? "Close chest (C)" : "Chest (C)";
+    }
+    if (chestPanelEl !== null) chestPanelEl.hidden = !open;
+    if (open) {
+      inventoryOpen = false;
+      inventoryPanelEl.hidden = true;
+      inventoryToggleEl.setAttribute("aria-expanded", "false");
+      inventoryToggleEl.textContent = "Inventory (E)";
+      if (furnaceOpen) setFurnaceOpen(false);
+      if (document.pointerLockElement === canvas && typeof document.exitPointerLock === "function") {
+        document.exitPointerLock();
+      }
+    }
+    refreshChestUi();
+    return true;
+  }
+
+  function toggleChest(location = activeChest) {
+    return setChestOpen(!chestOpen, location);
+  }
+
+  function chestAction(action, slotIndex = null) {
+    if (!chestOpen) return false;
+    const current = activeChestState();
+    if (current === null) return false;
+    if (action === "deposit") {
+      const item = selectedItem(inventory, selectedSlot);
+      const id = itemId(item);
+      if (id === null || id === "empty") {
+        setInventoryMessage("Select an item to deposit.");
+        return false;
+      }
+      const result = ChestDomain.deposit(
+        current,
+        ITEM_IDS[id],
+        1,
+        Number(item?.durability ?? 0),
+      );
+      if (!result.ok || !consume(inventory, selectedSlot)) {
+        setInventoryMessage("The chest is full.");
+        return false;
+      }
+      setChestSlots(ChestDomain.deposit_slots(result));
+      setInventoryMessage(`${itemName(item)} deposited.`);
+    } else if (action === "withdraw" && slotIndex !== null) {
+      const result = ChestDomain.withdraw(current, BigInt(slotIndex), 64);
+      if (!result.ok) return false;
+      const itemNameValue = itemNameFromId(result.item);
+      if (itemNameValue === null) return false;
+      const trial = inventory.map((slot) => ({ ...slot }));
+      if (!collectItem(trial, itemNameValue, Number(result.amount))) {
+        setInventoryMessage("Make room in the inventory first.");
+        return false;
+      }
+      inventory.splice(0, inventory.length, ...trial);
+      setChestSlots(ChestDomain.withdraw_slots(result));
+      setInventoryMessage(`${itemNameValue} withdrawn.`);
+    } else {
+      return false;
+    }
+    refreshChestUi();
+    refreshInventoryUi();
+    updateHud();
+    saveGame();
+    return true;
+  }
+
   function craftRecipe(recipeId) {
     const recipe = RECIPES.find((entry) => entry.id === recipeId);
     if (recipe === undefined || !craft(inventory, recipeId)) {
@@ -2316,7 +2587,12 @@ try {
     }
     if (!consume(inventory, selectedSlot)) return false;
     eatFood(player, nutrition);
-    setInventoryMessage(`${itemName(item)} eaten.`);
+    if (itemId(item) === "rotten_flesh") {
+      applyPoison(player, 10.0);
+      setInventoryMessage("Rotten flesh eaten (you feel sick).");
+    } else {
+      setInventoryMessage(`${itemName(item)} eaten.`);
+    }
     refreshInventoryUi();
     updateHud();
     return true;
@@ -2330,10 +2606,17 @@ try {
     const block = blockForItem(item);
     if (block === null) return false;
     let nextFurnaces = furnaceWorldState;
+    let nextChests = chestWorldState;
     if (block === 11) {
       const added = Furnaces.add(furnaceWorldState, BigInt(x), BigInt(y), BigInt(z));
       if (!added.ok) return false;
       nextFurnaces = added.world;
+    }
+    if (block === 26) {
+      const [cx, cy, cz] = chestPosition(x, y, z);
+      const added = Chests.add(chestWorldState, cx, cy, cz);
+      if (!added.ok) return false;
+      nextChests = added.world;
     }
     const placement = placeInteraction(
       inventory,
@@ -2349,6 +2632,7 @@ try {
     );
     if (!placement.ok) return false;
     furnaceWorldState = nextFurnaces;
+    chestWorldState = nextChests;
     if (block === 11) {
       const chunkX = Math.floor(x / CHUNK_SIZE);
       const chunkZ = Math.floor(z / CHUNK_SIZE);
@@ -2361,6 +2645,10 @@ try {
     if (block === 11) {
       activeFurnace = [x, y, z];
       furnaceToggleEl.hidden = false;
+    }
+    if (block === 26) {
+      activeChest = [x, y, z];
+      if (chestToggleEl !== null) chestToggleEl.hidden = false;
     }
     return true;
   }
@@ -2480,6 +2768,16 @@ try {
 
   function completeMiningAt(x, y, z) {
     const removedBlock = blockAt(x, y, z);
+    if (removedBlock === 26) {
+      const [cx, cy, cz] = chestPosition(x, y, z);
+      const stored = Chests.at(chestWorldState, cx, cy, cz);
+      for (let node = stored.slots; stored.$ === "ChestFound" && node?.$ === "Con"; node = node.tail) {
+        if (Number(node.head.count) > 0) {
+          setInventoryMessage("Empty the chest before breaking it.");
+          return false;
+        }
+      }
+    }
     if (isCropBlock(removedBlock) && removedBlock === 19 && harvestCropAt(x, y, z)) {
       refreshInventoryUi();
       updateHud();
@@ -2522,6 +2820,15 @@ try {
       if (sameFurnacePosition(activeFurnace, x, y, z)) {
         activeFurnace = null;
         setFurnaceOpen(false);
+      }
+    }
+    if (removedBlock === 26) {
+      const [cx, cy, cz] = chestPosition(x, y, z);
+      chestWorldState = Chests.remove(chestWorldState, cx, cy, cz).world;
+      if (activeChest !== null && sameFurnacePosition(activeChest, x, y, z)) {
+        setChestOpen(false);
+        activeChest = null;
+        if (chestToggleEl !== null) chestToggleEl.hidden = true;
       }
     }
     refreshInventoryUi();
@@ -2597,6 +2904,10 @@ try {
       setFurnaceOpen(true, [x, y, z]);
       return;
     }
+    if (button === 2 && blockAt(x, y, z) === 26) {
+      setChestOpen(true, [x, y, z]);
+      return;
+    }
     if (button === 0) {
       startMining(target);
       return;
@@ -2620,6 +2931,7 @@ try {
 
   const heartPips = [];
   const hungerPips = [];
+  const airPips = [];
   for (let index = 0; index < 10; index += 1) {
     const heart = document.createElement("div");
     heart.className = "pip full";
@@ -2629,6 +2941,10 @@ try {
     food.className = "pip full";
     hungerEl.append(food);
     hungerPips.push(food);
+    const bubble = document.createElement("div");
+    bubble.className = "pip full";
+    airEl.append(bubble);
+    airPips.push(bubble);
   }
   let vitalsKey = "";
   let lastHealth = 20;
@@ -2648,16 +2964,18 @@ try {
     const count = item === null ? 0 : item.count;
     coordsEl.textContent = `x ${player.x.toFixed(1)} · y ${player.y.toFixed(1)} · z ${player.z.toFixed(1)}`;
     seedEl.textContent = `seed: ${seedLabel(SEED)}`;
-    statsEl.textContent = `${blockCount} blocks · ${terrainQuadCount + waterQuadCount} faces · ${world.activeChunkCount()} chunks · ${mobs.filter((mob) => mob.alive).length} mobs · ${villagers.length} villagers · ${drops.length} drops`;
+    statsEl.textContent = `${blockCount} blocks · ${terrainQuadCount + waterQuadCount} faces · ${world.activeChunkCount()} chunks · ${mobs.filter((mob) => mob.alive).length} mobs · ${villagers.length} villagers · ${drops.length} drops · Lv ${Number(Experience.xp_level(xpState))}${(player.poison ?? 0) > 0 ? ` · poisoned ${Math.ceil(player.poison)}s` : ""}`;
     selectedEl.textContent = count > 0
       ? `${name}${count > 1 ? ` ×${count}` : ""}`
       : "Empty hand";
-    const key = `${Math.round(player.health * 2)}|${Math.round(player.hunger * 2)}`;
+    const key = `${Math.round(player.health * 2)}|${Math.round(player.hunger * 2)}|${Math.round((player.air ?? 10) * 2)}`;
     if (key !== vitalsKey) {
       vitalsKey = key;
       paintPips(heartPips, player.health);
       paintPips(hungerPips, player.hunger);
+      paintPips(airPips, (player.air ?? 10) * 2);
     }
+    airEl.hidden = (player.air ?? 10) >= 9.99 && !isHeadUnderwater(world, player);
     if (player.health < lastHealth - 0.001 && damageFlashEl !== null) {
       damageFlashEl.animate([{ opacity: 0.9 }, { opacity: 0 }], { duration: 450 });
     }
@@ -2752,12 +3070,14 @@ try {
         player: { ...player },
         inventory: inventory.map((item) => ({ ...item })),
         furnaces: furnaceWorldState,
+        chests: chestWorldState,
         crops: cropState,
         farmland: farmlandState,
         fluids: fluidState,
         fire: fireState,
         simulation: simulationState,
         entities: packEntityState(mobDomainState, dropDomainState),
+        xp: xpState,
         villagers: villagerDomainState,
         villagerTick: BigInt(villagerTick),
       });
@@ -2793,7 +3113,7 @@ try {
     heldItemViewEl?.style.setProperty("--held-sway", `${(motion.sway * 180).toFixed(2)}px`);
     heldItemViewEl?.style.setProperty("--held-bob", `${(-motion.bob * 180).toFixed(2)}px`);
     heldItemViewEl?.style.setProperty("--held-roll", `${(motion.roll * 140).toFixed(2)}deg`);
-    const eye = [player.x + motion.sway * 0.5, player.y + EYE_HEIGHT + motion.bob, player.z];
+    const eye = [player.x + motion.sway * 0.5, player.y + (isSneaking(held) ? SNEAK_EYE_HEIGHT : EYE_HEIGHT) + motion.bob, player.z];
     const direction = cameraDirection(player);
     const center = [eye[0] + direction[0], eye[1] + direction[1], eye[2] + direction[2]];
     const view = lookAt(eye, center, [0, 1, 0]);
@@ -2915,26 +3235,81 @@ try {
   });
   inventoryToggleEl.addEventListener("click", toggleInventory);
   furnaceToggleEl.addEventListener("click", toggleFurnace);
-  inventorySlotsEl.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-slot]");
-    if (button === null) return;
-    const slot = Number(button.dataset.slot);
+  function handleInventorySlot(slot, button = 0) {
+    if (!Number.isInteger(slot) || slot < 0 || slot >= inventory.length) return;
     if (inventoryCursor === null) {
-      if (itemId(selectedItem(inventory, slot)) === null) {
+      const source = inventory[slot];
+      const amount = transferAmount(source?.count ?? 0, button);
+      if (amount <= 0 || itemId(source) === null) {
         setInventoryMessage("That slot is empty.");
         return;
       }
       inventoryCursor = slot;
-      setInventoryMessage("Choose a destination slot to move this stack.");
+      inventoryCursorAmount = amount;
+      setInventoryMessage(button === 2
+        ? `Picked up half the stack (${amount}). Choose a destination.`
+        : "Choose a destination slot to move this stack.");
     } else if (slot === inventoryCursor) {
       inventoryCursor = null;
+      inventoryCursorAmount = null;
       setInventoryMessage("Move cancelled.");
-    } else if (moveItem(inventory, inventoryCursor, slot)) {
+    } else if (moveItem(inventory, inventoryCursor, slot, inventoryCursorAmount ?? null)) {
       inventoryCursor = null;
+      inventoryCursorAmount = null;
       setInventoryMessage("Item moved.");
     } else {
       setInventoryMessage("That slot cannot accept this item.");
     }
+    refreshInventoryUi();
+  }
+
+  inventorySlotsEl.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-slot]");
+    if (button === null) return;
+    const slot = Number(button.dataset.slot);
+    if (event.shiftKey && inventoryCursor === null) {
+      const target = findShiftTarget(inventory, slot, HOTBAR_SIZE, MAX_STACK);
+      const source = inventory[slot];
+      if (target !== -1 && moveItem(inventory, slot, target, source?.count ?? 0)) {
+        setInventoryMessage("Item moved to the other inventory section.");
+      } else {
+        setInventoryMessage("No room in the other inventory section.");
+      }
+      refreshInventoryUi();
+      return;
+    }
+    handleInventorySlot(slot, event.button);
+  });
+  inventorySlotsEl.addEventListener("contextmenu", (event) => {
+    const button = event.target.closest("[data-slot]");
+    if (button === null) return;
+    event.preventDefault();
+    handleInventorySlot(Number(button.dataset.slot), 2);
+  });
+  inventorySlotsEl.addEventListener("dragstart", (event) => {
+    const button = event.target.closest("[data-slot]");
+    if (button === null) return;
+    const slot = Number(button.dataset.slot);
+    if (itemId(inventory[slot]) === null) {
+      event.preventDefault();
+      return;
+    }
+    inventoryCursor = slot;
+    inventoryCursorAmount = Number(inventory[slot].count ?? 0);
+    event.dataTransfer.effectAllowed = "move";
+  });
+  inventorySlotsEl.addEventListener("dragover", (event) => {
+    if (event.target.closest("[data-slot]") !== null) event.preventDefault();
+  });
+  inventorySlotsEl.addEventListener("drop", (event) => {
+    const button = event.target.closest("[data-slot]");
+    if (button === null || inventoryCursor === null) return;
+    event.preventDefault();
+    handleInventorySlot(Number(button.dataset.slot), 0);
+  });
+  inventorySlotsEl.addEventListener("dragend", () => {
+    inventoryCursor = null;
+    inventoryCursorAmount = null;
     refreshInventoryUi();
   });
   recipeListEl.addEventListener("click", (event) => {
@@ -2952,12 +3327,23 @@ try {
     const action = event.target.closest("[data-furnace-action]")?.dataset.furnaceAction;
     if (action !== undefined) furnaceAction(action);
   });
+  chestToggleEl?.addEventListener("click", () => toggleChest());
+  chestPanelEl?.addEventListener("click", (event) => {
+    if (event.target.closest("[data-close-chest]") !== null) {
+      setChestOpen(false);
+      return;
+    }
+    const slot = event.target.closest("[data-chest-slot]")?.dataset.chestSlot;
+    if (slot !== undefined) chestAction("withdraw", Number(slot));
+    const action = event.target.closest("[data-chest-action]")?.dataset.chestAction;
+    if (action !== undefined) chestAction(action);
+  });
   canvas.addEventListener("click", () => {
-    if (!inventoryOpen && !furnaceOpen) pointerLock.request();
+    if (!inventoryOpen && !furnaceOpen && !chestOpen) pointerLock.request();
   });
   canvas.addEventListener("mousedown", (event) => {
     event.preventDefault();
-    if (inventoryOpen || furnaceOpen) return;
+    if (inventoryOpen || furnaceOpen || chestOpen) return;
     if (document.pointerLockElement !== canvas) {
       pointerLock.request();
       return;
@@ -2975,15 +3361,40 @@ try {
   let killCount = 0;
   // One daylight cycle (sin(worldTime * 0.08)) lasts 2*PI/0.08 seconds.
   const DAY_SECONDS = 78.54;
+  function scatterDeathDrops() {
+    const base = BigInt(Date.now()) * 1000n;
+    let scattered = 0;
+    for (let index = 0; index < inventory.length; index += 1) {
+      const slot = inventory[index];
+      const name = itemId(slot);
+      const count = Number(slot?.count ?? 0);
+      if (name === null || count <= 0) continue;
+      dropDomainState = Entities.cons_drop(
+        Entities.make_drop(base + BigInt(scattered), ITEM_IDS[name], player.x, player.y + 0.5, player.z, count),
+        dropDomainState,
+      );
+      scattered += 1;
+    }
+    if (scattered > 0) {
+      drops = dropViews(dropDomainState);
+      for (let index = 0; index < inventory.length; index += 1) {
+        const count = Number(inventory[index]?.count ?? 0);
+        if (count > 0) consume(inventory, index, count);
+      }
+      refreshInventoryUi();
+      rebuildDynamicMesh(worldTime);
+    }
+  }
   function showDeath() {
     deadShown = true;
     held.clear();
+    scatterDeathDrops();
     saveGame();
     if (document.pointerLockElement === canvas && typeof document.exitPointerLock === "function") {
       document.exitPointerLock();
     }
     const days = worldTime / DAY_SECONDS;
-    deathStatsEl.textContent = `Survived ${days.toFixed(1)} days · ${killCount} mob ${killCount === 1 ? "kill" : "kills"} · ${WORLD_NAME}`;
+    deathStatsEl.textContent = `Survived ${days.toFixed(1)} days · level ${Number(Experience.xp_level(xpState))} · ${killCount} mob ${killCount === 1 ? "kill" : "kills"} · ${WORLD_NAME}`;
     deathEl.hidden = false;
   }
   deathEl.addEventListener("click", (event) => {
@@ -3039,7 +3450,7 @@ try {
     if (locked) hasLockedOnce = true;
     pointerLock.handleChange();
     updateLockHint();
-    if (!locked && hasLockedOnce && !inventoryOpen && !furnaceOpen && !paused && Number(player.health) > 0) {
+    if (!locked && hasLockedOnce && !inventoryOpen && !furnaceOpen && !chestOpen && !paused && Number(player.health) > 0) {
       setPaused(true);
     }
   });
@@ -3064,6 +3475,11 @@ try {
     if (event.code === "KeyR") {
       event.preventDefault();
       toggleFurnace();
+      return;
+    }
+    if (event.code === "KeyC") {
+      event.preventDefault();
+      toggleChest();
       return;
     }
     if (event.code === "KeyG") {
@@ -3092,8 +3508,13 @@ try {
       sleepAtBed();
       return;
     }
-    if (inventoryOpen || furnaceOpen) return;
-    if (["KeyW", "KeyA", "KeyS", "KeyD", "Space"].includes(event.code)) {
+    if (event.code === "KeyQ") {
+      event.preventDefault();
+      if (!event.repeat) dropInventoryItem(selectedSlot, event.shiftKey);
+      return;
+    }
+    if (inventoryOpen || furnaceOpen || chestOpen) return;
+    if (["KeyW", "KeyA", "KeyS", "KeyD", "Space", "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight"].includes(event.code)) {
       event.preventDefault();
       held.add(event.code);
     }
@@ -3181,6 +3602,7 @@ try {
     getMobs: () => mobs.map((mob) => ({ ...mob })),
     getVillagers: () => villagers.map((villager) => ({ ...villager })),
     getDrops: () => drops.map((drop) => ({ ...drop })),
+    getChest: () => chestSlotsView(activeChestState() ?? ChestDomain.empty()),
     getDropGroundStats: () => dropGroundCache?.stats() ?? { hits: 0, misses: 0, size: 0 },
     getEntityBucketStats: () => ({ ...entityBucketStats }),
     getCrops: cropViews,
@@ -3216,6 +3638,7 @@ try {
       pointerLocked: document.pointerLockElement === canvas,
       inventoryOpen,
       furnaceOpen,
+      chestOpen,
       paused,
     }),
     getMovementDiagnostics: () => ({ calls: moveFrameCalls, active: moveFrameActive, player: { ...player } }),
@@ -3267,6 +3690,11 @@ try {
       };
     },
     toggleInventory,
+    toggleChest,
+    selectSlotForTest: (slot) => {
+      selectSlot(slot);
+      return true;
+    },
     loadChunksAt: (x, z, budget = Infinity, render = true) => {
       const result = world.loadAround(x, z, undefined, budget);
       if (result.changed && render) rebuildMesh();
@@ -3298,6 +3726,7 @@ try {
     unpinChunk: (x, z) => world.unpinChunk(x, z),
     save: saveGame,
     attack: attackNearestMob,
+    drop: (stack = false) => dropInventoryItem(selectedSlot, stack),
     trade: tradeNearestVillager,
     sleep: sleepAtBed,
     seedWaterAt,
@@ -3315,6 +3744,7 @@ try {
     },
     craft: craftRecipe,
     eat: eatSelected,
+    chestAction,
     collect: (item, amount = 1) => {
       const ok = collectItem(inventory, item, amount);
       if (ok) {
@@ -3383,6 +3813,7 @@ try {
     toggleFurnace,
     get isInventoryOpen() { return inventoryOpen; },
     get isFurnaceOpen() { return furnaceOpen; },
+    get isChestOpen() { return chestOpen; },
   };
 
   let villagerSimulationSteps = 0;
@@ -3405,6 +3836,13 @@ try {
     moveFrameCalls += 1;
     moveFrameActive = true;
     movePlayer(world, player, held, dt, spawnCell, spawnHeight, Number(World.width()), Number(World.depth()));
+    if (isInWater(world, player)) {
+      const [pushX, pushZ] = waterCurrentPush(Fluids.take(64n, Fluids.state_flows(fluidState)), player.x, player.y, player.z);
+      if (pushX !== 0 || pushZ !== 0) {
+        player.x += pushX * dt;
+        player.z += pushZ * dt;
+      }
+    }
     if (world.loadAround(player.x, player.z).changed) playerStreamingDirty = true;
   });
   let previousPlayerTime = performance.now();
@@ -3415,12 +3853,61 @@ try {
     if (!paused) playerTicker.advance(elapsed);
   }, 16);
 
+  // Night spawns use Bend ground queries for validation; candidate cells
+  // with negative coordinates are skipped because the Bend world contract
+  // addresses columns with Nat.
+  function spawnNightMobs() {
+    if (PEACEFUL || mobDomainState === null) return;
+    const alive = mobs.filter((mob) => mob.alive);
+    if (alive.length >= 24) return;
+    if (alive.filter((mob) => mob.kind === 2 || mob.kind === 4).length >= 8) return;
+    let nextId = 1;
+    for (const mob of mobs) nextId = Math.max(nextId, Number(mob.id) + 1);
+    let spawned = 0;
+    for (let attempt = 0; attempt < 6 && spawned < 2; attempt += 1) {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = 18 + Math.random() * 10;
+      const nx = Math.floor(player.x + Math.cos(angle) * dist);
+      const nz = Math.floor(player.z + Math.sin(angle) * dist);
+      if (nx < 0 || nz < 0) continue;
+      const height = Number(World.column_height(SEED, BigInt(nx), BigInt(nz)));
+      if (!Number.isFinite(height) || height <= 0 || height >= MAX_Y - 2) continue;
+      if (Number(World.block(SEED, BigInt(nx), BigInt(height), BigInt(nz))) !== 0) continue;
+      if (Number(World.block(SEED, BigInt(nx), BigInt(height + 1), BigInt(nz))) !== 0) continue;
+      const kind = Math.random() < 0.8 ? 2 : 4;
+      mobDomainState = Entities.cons_mob(
+        Entities.make_mob(BigInt(nextId), kind, nx + 0.5, height, nz + 0.5, kind === 4 ? 40.0 : 20.0, true),
+        mobDomainState,
+      );
+      nextId += 1;
+      spawned += 1;
+    }
+    if (spawned > 0) {
+      mobs = mobViews(mobDomainState);
+      rebuildDynamicMesh(worldTime);
+    }
+  }
+  let nightSpawnTimer = 0;
+  let despawnTimer = 0;
   const simulationTicker = createFixedTicker(0.2, (dt) => {
     updateMobs(dt);
     stepDrops(dt);
     collectNearbyDrops();
     if (tickFluids()) simulationTerrainDirty = true;
     if (lavaContact(world, player)) applyLavaDamage(player, dt);
+    nightSpawnTimer += dt;
+    if (nightSpawnTimer >= 5) {
+      nightSpawnTimer = 0;
+      if (daylight < 0.4) spawnNightMobs();
+    }
+    despawnTimer += dt;
+    if (despawnTimer >= 10) {
+      despawnTimer = 0;
+      if (mobDomainState !== null) {
+        mobDomainState = Entities.despawn(mobDomainState, player.x, player.z, 48.0);
+        mobs = mobViews(mobDomainState);
+      }
+    }
     villagerSimulationSteps += 1;
     if (villagerSimulationSteps >= 5) {
       villagerSimulationSteps = 0;

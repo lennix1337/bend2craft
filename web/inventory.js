@@ -29,9 +29,12 @@ export const BLOCK_INFO = Object.freeze({
   18: Object.freeze({ name: "ripe wheat", color: "#d5b83f" }),
   19: Object.freeze({ name: "mature wheat", color: "#f0c84b" }),
   20: Object.freeze({ name: "farmland", color: "#523d29" }),
+  25: Object.freeze({ name: "glass", color: "#b5d9e8" }),
+  26: Object.freeze({ name: "chest", color: "#9d6a3e" }),
+  27: Object.freeze({ name: "crafting table", color: "#9d6a3e" }),
 });
 
-const ITEM_IDS = Object.freeze({
+export const ITEM_IDS = Object.freeze({
   empty: 0,
   stone: 1,
   dirt: 2,
@@ -65,6 +68,17 @@ const ITEM_IDS = Object.freeze({
   lava_bucket: 30,
   cobblestone: 31,
   obsidian: 32,
+  wooden_sword: 33,
+  stone_sword: 34,
+  iron_sword: 35,
+  diamond_sword: 36,
+  bow: 37,
+  shield: 38,
+  arrow: 39,
+  glass: 40,
+  bread: 41,
+  apple: 42,
+  chest: 43,
 });
 const ITEM_NAMES = Object.freeze(Object.fromEntries(
   Object.entries(ITEM_IDS).map(([name, id]) => [id, name]),
@@ -93,6 +107,9 @@ export const BLOCK_TO_ITEM = Object.freeze({
   20: "dirt",
   22: "cobblestone",
   23: "obsidian",
+  25: "glass",
+  26: "chest",
+  27: "crafting_table",
 });
 
 export const ITEM_TO_BLOCK = Object.freeze({
@@ -107,6 +124,9 @@ export const ITEM_TO_BLOCK = Object.freeze({
   torch: 12,
   bed: 13,
   door: 14,
+  crafting_table: 27,
+  glass: 25,
+  chest: 26,
   cobblestone: 22,
   obsidian: 23,
 });
@@ -121,7 +141,7 @@ export const ITEM_INFO = Object.freeze({
   water: Object.freeze({ name: "water", color: BLOCK_INFO[7].color, block: 7, placeable: false, collectible: false }),
   planks: Object.freeze({ name: "wood planks", color: "#c28a4d", block: null, placeable: false, collectible: true }),
   sticks: Object.freeze({ name: "sticks", color: "#d8a66a", block: null, placeable: false, collectible: true }),
-  crafting_table: Object.freeze({ name: "crafting table", color: "#9d6a3e", block: null, placeable: false, collectible: true }),
+  crafting_table: Object.freeze({ name: "crafting table", color: "#9d6a3e", block: 27, placeable: true, collectible: true }),
   wooden_pickaxe: Object.freeze({ name: "wooden pickaxe", color: "#b77b48", block: null, placeable: false, collectible: true }),
   wool: Object.freeze({ name: "wool", color: "#ece8d8", block: null, placeable: false, collectible: true }),
   rotten_flesh: Object.freeze({ name: "rotten flesh", color: "#8c4d45", block: null, placeable: false, collectible: true }),
@@ -144,6 +164,17 @@ export const ITEM_INFO = Object.freeze({
   lava_bucket: Object.freeze({ name: "lava bucket", color: "#e56b2f", block: null, placeable: false, collectible: true }),
   cobblestone: Object.freeze({ name: "cobblestone", color: BLOCK_INFO[22].color, block: 22, placeable: true, collectible: true }),
   obsidian: Object.freeze({ name: "obsidian", color: BLOCK_INFO[23].color, block: 23, placeable: true, collectible: true }),
+  wooden_sword: Object.freeze({ name: "wooden sword", color: "#b77b48", block: null, placeable: false, collectible: true }),
+  stone_sword: Object.freeze({ name: "stone sword", color: "#92999f", block: null, placeable: false, collectible: true }),
+  iron_sword: Object.freeze({ name: "iron sword", color: "#d5d9dc", block: null, placeable: false, collectible: true }),
+  diamond_sword: Object.freeze({ name: "diamond sword", color: "#5ee8e0", block: null, placeable: false, collectible: true }),
+  bow: Object.freeze({ name: "bow", color: "#8c5a38", block: null, placeable: false, collectible: true }),
+  shield: Object.freeze({ name: "shield", color: "#7f8a91", block: null, placeable: false, collectible: true }),
+  arrow: Object.freeze({ name: "arrow", color: "#d8cfc0", block: null, placeable: false, collectible: true }),
+  glass: Object.freeze({ name: "glass", color: "#b5d9e8", block: 25, placeable: true, collectible: true }),
+  bread: Object.freeze({ name: "bread", color: "#d59b45", block: null, placeable: false, collectible: true }),
+  apple: Object.freeze({ name: "apple", color: "#c94a3f", block: null, placeable: false, collectible: true }),
+  chest: Object.freeze({ name: "chest", color: "#9d6a3e", block: 26, placeable: true, collectible: true }),
 });
 
 function valuesFromList(list) {
@@ -168,6 +199,14 @@ const RECIPE_IDS = [
   "door",
   "wooden_hoe",
   "empty_bucket",
+  "wooden_sword",
+  "stone_sword",
+  "iron_sword",
+  "diamond_sword",
+  "bow",
+  "arrow",
+  "shield",
+  "bread",
 ];
 export const RECIPES = Object.freeze(RECIPE_IDS.map((id, recipeIndex) => {
   const offset = recipeIndex * 8;
@@ -197,7 +236,7 @@ function slotView(item, count, durability, previous, durabilityByItem) {
   if (item === 0 || count === 0) return { block: 0, count: 0 };
   const block = ITEM_TO_BLOCK[name];
   const view = block === undefined ? { item: name, count } : { block, count };
-  if ([11, 17, 18, 19, 27].includes(item)) {
+  if ([11, 17, 18, 19, 27, 33, 34, 35, 36, 37, 38].includes(item)) {
     view.durabilityMax = Number(InventoryDomain.tool_max_durability(item));
     view.durability = durability || previous?.durability || durabilityByItem?.get(name) || view.durabilityMax;
   }
@@ -415,6 +454,14 @@ export function placeInteraction(inventory, slot, item, block, x, y, z, targetEm
 
 export function toolMaxDurability(item) {
   return Number(InventoryDomain.tool_max_durability(numericItem(item)));
+}
+
+export function weaponDamage(item) {
+  return Number(InventoryDomain.weapon_damage(numericItem(item)));
+}
+
+export function handDamage() {
+  return Number(InventoryDomain.hand_damage());
 }
 
 export function foodValue(item) {

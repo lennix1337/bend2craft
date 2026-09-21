@@ -6,8 +6,13 @@ import ./world_state.bend as WorldState
 # 12 wool, 13 rotten flesh, 14 coal, 15 raw iron, 16 diamond,
 # 17 stone pickaxe, 18 iron pickaxe, 19 diamond pickaxe, 20 iron ingot,
 # 21 furnace, 22 torch, 23 bed, 24 door, 25 wheat seeds, 26 wheat,
-# 27 wooden hoe, 28 empty bucket, 29 water bucket, 30 lava bucket.
+# 27 wooden hoe, 28 empty bucket, 29 water bucket, 30 lava bucket,
+# 31 cobblestone, 32 obsidian, 33 wooden sword, 34 stone sword,
+# 35 iron sword, 36 diamond sword, 37 bow, 38 shield, 39 arrow,
+# 40 glass, 41 bread, 42 apple, 43 chest.
 # Block 20 is farmland and drops dirt; it has no standalone inventory item.
+# Blocks 25 (glass), 26 (chest) and 27 (crafting table) drop items
+# 40, 43 and 10.
 
 type Slot is Data:
   Slot{item: U32, count: U32, durability: U32}
@@ -45,7 +50,23 @@ def tool_max_durability(+item: U32) -> U32:
     Bool.pick(U32, U32.is_eq(item, 19), 1561,
       Bool.pick(U32, U32.is_eq(item, 18), 250,
         Bool.pick(U32, U32.is_eq(item, 17), 131,
-          Bool.pick(U32, U32.is_eq(item, 11), 59, 0)))))
+          Bool.pick(U32, U32.is_eq(item, 11), 59,
+            Bool.pick(U32, U32.is_eq(item, 36), 1561,
+              Bool.pick(U32, U32.is_eq(item, 35), 250,
+                Bool.pick(U32, U32.is_eq(item, 34), 131,
+                  Bool.pick(U32, U32.is_eq(item, 33), 59,
+                    Bool.pick(U32, U32.is_eq(item, 37), 384,
+                      Bool.pick(U32, U32.is_eq(item, 38), 336, 0)))))))))))
+
+def weapon_damage(+item: U32) -> U32:
+  Bool.pick(U32, U32.is_eq(item, 36), 7,
+    Bool.pick(U32, U32.is_eq(item, 35), 6,
+      Bool.pick(U32, U32.is_eq(item, 37), 6,
+        Bool.pick(U32, U32.is_eq(item, 34), 5,
+          Bool.pick(U32, U32.is_eq(item, 33), 4, 1)))))
+
+def hand_damage() -> U32:
+  4
 
 def slot_count() -> Nat:
   36n
@@ -55,7 +76,9 @@ def max_stack() -> U32:
 
 def food_value(+item: U32) -> U32:
   Bool.pick(U32, U32.is_eq(item, 13), 4,
-    Bool.pick(U32, U32.is_eq(item, 26), 2, 0))
+    Bool.pick(U32, U32.is_eq(item, 26), 2,
+      Bool.pick(U32, U32.is_eq(item, 41), 5,
+        Bool.pick(U32, U32.is_eq(item, 42), 4, 0))))
 
 def slot_item(slot: Slot) -> U32:
   Slot{item, count, durability} = slot
@@ -199,9 +222,11 @@ def pickup_item(+item: U32) -> Bool:
   +mob = Bool.or(Bool.or(U32.is_eq(item, 11), U32.is_eq(item, 12)), U32.is_eq(item, 13))
   +ore = Bool.or(Bool.or(U32.is_eq(item, 14), U32.is_eq(item, 15)), U32.is_eq(item, 16))
   +tools = Bool.or(Bool.or(Bool.or(U32.is_eq(item, 17), U32.is_eq(item, 18)), U32.is_eq(item, 19)), U32.is_eq(item, 27))
+  +combat = Bool.or(Bool.or(Bool.or(U32.is_eq(item, 33), U32.is_eq(item, 34)), Bool.or(U32.is_eq(item, 35), U32.is_eq(item, 36))), Bool.or(Bool.or(U32.is_eq(item, 37), U32.is_eq(item, 38)), U32.is_eq(item, 39)))
+  +goods = Bool.or(Bool.or(U32.is_eq(item, 40), U32.is_eq(item, 41)), Bool.or(U32.is_eq(item, 42), U32.is_eq(item, 43)))
   +smelted = Bool.or(Bool.or(U32.is_eq(item, 20), U32.is_eq(item, 21)), Bool.or(Bool.or(Bool.or(U32.is_eq(item, 22), U32.is_eq(item, 23)), U32.is_eq(item, 24)), Bool.or(U32.is_eq(item, 25), U32.is_eq(item, 26))))
   +buckets = Bool.or(Bool.or(U32.is_eq(item, 28), U32.is_eq(item, 29)), U32.is_eq(item, 30))
-  Bool.or(is_block_item(item), Bool.or(mob, Bool.or(ore, Bool.or(tools, Bool.or(smelted, buckets)))))
+  Bool.or(Bool.or(Bool.or(is_block_item(item), combat), goods), Bool.or(mob, Bool.or(ore, Bool.or(tools, Bool.or(smelted, buckets)))))
 
 def pickup(slots: List<&2, Slot>, +item: U32, +amount: Nat) -> InventoryResult:
   collect.if(slots, item, U32.from_nat(amount),
@@ -379,6 +404,22 @@ def recipe(index: Nat) -> Recipe:
       Recipe{8, 2, 9, 2, 27, 1}
     case 12n:
       Recipe{20, 3, 0, 0, 28, 1}
+    case 13n:
+      Recipe{8, 2, 9, 1, 33, 1}
+    case 14n:
+      Recipe{1, 2, 9, 1, 34, 1}
+    case 15n:
+      Recipe{20, 2, 9, 1, 35, 1}
+    case 16n:
+      Recipe{16, 2, 9, 1, 36, 1}
+    case 17n:
+      Recipe{9, 3, 12, 3, 37, 1}
+    case 18n:
+      Recipe{9, 1, 14, 1, 39, 4}
+    case 19n:
+      Recipe{8, 6, 20, 1, 38, 1}
+    case 20n:
+      Recipe{26, 3, 0, 0, 41, 1}
     case 9n+p:
       Recipe{0, 0, 0, 0, 0, 0}
 
@@ -395,7 +436,15 @@ def recipe_data() -> List<U32>:
   12 <> 3 <> 8 <> 3 <> 23 <> 1 <> 0 <> 0 <>
   8 <> 6 <> 0 <> 0 <> 24 <> 1 <> 0 <> 0 <>
   8 <> 2 <> 9 <> 2 <> 27 <> 1 <> 0 <> 0 <>
-  20 <> 3 <> 0 <> 0 <> 28 <> 1 <> 0 <> 0 <> Nil{}
+  20 <> 3 <> 0 <> 0 <> 28 <> 1 <> 0 <> 0 <>
+  8 <> 2 <> 9 <> 1 <> 33 <> 1 <> 0 <> 0 <>
+  1 <> 2 <> 9 <> 1 <> 34 <> 1 <> 0 <> 0 <>
+  20 <> 2 <> 9 <> 1 <> 35 <> 1 <> 0 <> 0 <>
+  16 <> 2 <> 9 <> 1 <> 36 <> 1 <> 0 <> 0 <>
+  9 <> 3 <> 12 <> 3 <> 37 <> 1 <> 0 <> 0 <>
+  9 <> 1 <> 14 <> 1 <> 39 <> 4 <> 0 <> 0 <>
+  8 <> 6 <> 20 <> 1 <> 38 <> 1 <> 0 <> 0 <>
+  26 <> 3 <> 0 <> 0 <> 41 <> 1 <> 0 <> 0 <> Nil{}
 
 def craft.finalize.if(
   original: List<&2, Slot>, slots: List<&2, Slot>, remaining: U32, valid: Bool
@@ -436,13 +485,15 @@ def craft.if(slots: List<&2, Slot>, +index: Nat, valid: Bool) -> InventoryResult
       craft.spec(slots, spec)
 
 def craft(slots: List<&2, Slot>, +index: Nat) -> InventoryResult:
-  craft.if(slots, index, Nat.is_lt(index, 13n))
+  craft.if(slots, index, Nat.is_lt(index, 21n))
 
 def can_collect_block(+block: U32, +y: Nat) -> Bool:
-  Bool.and(Bool.or(Bool.or(Bool.or(is_block_item(block), U32.is_eq(block, 11)), U32.is_eq(block, 13)), Bool.or(Bool.or(U32.is_eq(block, 14), U32.is_eq(block, 15)), Bool.or(U32.is_eq(block, 22), U32.is_eq(block, 23)))), Nat.is_gt(y, 0n))
+  +utility = Bool.or(Bool.or(U32.is_eq(block, 25), U32.is_eq(block, 26)), U32.is_eq(block, 27))
+  Bool.and(Bool.or(utility, Bool.or(Bool.or(Bool.or(is_block_item(block), U32.is_eq(block, 11)), U32.is_eq(block, 13)), Bool.or(Bool.or(U32.is_eq(block, 14), U32.is_eq(block, 15)), Bool.or(U32.is_eq(block, 22), U32.is_eq(block, 23))))), Nat.is_gt(y, 0n))
 
 def is_placeable(+item: U32) -> Bool:
-  Bool.or(Bool.or(Bool.or(Bool.or(is_block_item(item), U32.is_eq(item, 21)), U32.is_eq(item, 22)), U32.is_eq(item, 23)), U32.is_eq(item, 24))
+  +utility = Bool.or(Bool.or(U32.is_eq(item, 10), U32.is_eq(item, 40)), U32.is_eq(item, 43))
+  Bool.or(utility, Bool.or(Bool.or(Bool.or(Bool.or(is_block_item(item), U32.is_eq(item, 21)), U32.is_eq(item, 22)), U32.is_eq(item, 23)), U32.is_eq(item, 24)))
 
 def can_place(
   +item: U32, target_empty: Bool, inside: Bool, overlaps_player: Bool
@@ -505,7 +556,8 @@ def mining_block(+block: U32) -> Bool:
     Bool.or(U32.is_eq(block, 8), U32.is_eq(block, 9)))
   +special = Bool.or(Bool.or(U32.is_eq(block, 10), U32.is_eq(block, 11)),
     Bool.or(Bool.or(U32.is_eq(block, 12), U32.is_eq(block, 13)), Bool.or(Bool.or(U32.is_eq(block, 14), U32.is_eq(block, 15)), Bool.or(Bool.or(U32.is_eq(block, 16), U32.is_eq(block, 17)), Bool.or(U32.is_eq(block, 18), Bool.or(U32.is_eq(block, 19), U32.is_eq(block, 20)))))))
-  Bool.or(Bool.or(Bool.or(basic, ores), special), Bool.or(U32.is_eq(block, 22), U32.is_eq(block, 23)))
+  +utility = Bool.or(Bool.or(U32.is_eq(block, 25), U32.is_eq(block, 26)), U32.is_eq(block, 27))
+  Bool.or(Bool.or(Bool.or(basic, ores), special), Bool.or(Bool.or(U32.is_eq(block, 22), U32.is_eq(block, 23)), utility))
 
 def mining_level(+block: U32) -> U32:
   Bool.pick(U32, U32.is_eq(block, 23), 4,
@@ -547,7 +599,10 @@ def mining_duration(+item: U32, +block: U32) -> F32:
   Bool.pick(F32, can_mine(item, block), mining_duration.material(item, block), 0.0)
 
 def mining_item.base(+block: U32) -> U32:
-  Bool.pick(U32, U32.is_eq(block, 20), 2,
+  Bool.pick(U32, U32.is_eq(block, 27), 10,
+   Bool.pick(U32, U32.is_eq(block, 26), 43,
+    Bool.pick(U32, U32.is_eq(block, 25), 40,
+    Bool.pick(U32, U32.is_eq(block, 20), 2,
     Bool.pick(U32, U32.is_eq(block, 14), 24,
     Bool.pick(U32, U32.is_eq(block, 13), 23,
       Bool.pick(U32, U32.is_eq(block, 12), 22,
@@ -556,7 +611,7 @@ def mining_item.base(+block: U32) -> U32:
             Bool.pick(U32, U32.is_eq(block, 22), 31,
               Bool.pick(U32, U32.is_eq(block, 10), 16,
             Bool.pick(U32, U32.is_eq(block, 9), 15,
-              Bool.pick(U32, U32.is_eq(block, 8), 14, block))))))))))
+              Bool.pick(U32, U32.is_eq(block, 8), 14, block)))))))))))))
 
 def mining_item(+block: U32) -> U32:
   +seeds = Bool.or(Bool.or(U32.is_eq(block, 16), U32.is_eq(block, 17)), U32.is_eq(block, 18))
@@ -581,6 +636,20 @@ def mine_collect(
   slots: List<&2, Slot>, +item: U32, +block: U32, +y: Nat
 ) -> InventoryResult:
   mine_collect.if(slots, mine_drop(item, block, y))
+
+def leaf_bonus(+x: Nat, +y: Nat, +z: Nat) -> Bool:
+  Nat.is_eq(Nat.mod(Nat.add(Nat.add(x, z), Nat.mul(y, 7n)), 8n), 0n)
+
+def mine_drop_at(+item: U32, +block: U32, +x: Nat, +y: Nat, +z: Nat) -> MiningResult:
+  +apple = Bool.and(U32.is_eq(block, 4), leaf_bonus(x, y, z))
+  +drop_item = Bool.pick(U32, apple, 42, mining_item(block))
+  MiningResult{drop_item, 1,
+    Bool.and(Nat.is_gt(y, 0n), can_mine(item, block))}
+
+def mine_collect_at(
+  slots: List<&2, Slot>, +item: U32, +block: U32, +x: Nat, +y: Nat, +z: Nat
+) -> InventoryResult:
+  mine_collect.if(slots, mine_drop_at(item, block, x, y, z))
 
 def place.valid(+original: List<&2, Slot>, +index: Nat, valid: Bool) -> InventoryResult:
   match valid:
@@ -700,7 +769,7 @@ def mine_interaction_at(
   +x: Nat, +y: Nat, +z: Nat
 ) -> InteractionResult:
   +edit = WorldState.make_edit(x, y, z, 0)
-  mine_interaction_at.finish(edit, slots, index, tool, mine_collect(slots, tool, block, y))
+  mine_interaction_at.finish(edit, slots, index, tool, mine_collect_at(slots, tool, block, x, y, z))
 
 def place_interaction(
   +slots: List<&2, Slot>, +index: Nat, +item: U32, +block: U32,

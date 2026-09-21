@@ -362,17 +362,77 @@ try {
       painted: swatches.filter((node) => getComputedStyle(node).backgroundImage !== "none").length,
       namesHidden: [...document.querySelectorAll(".inventory-slot .slot-name")]
         .every((node) => getComputedStyle(node).display === "none"),
+      draggable: [...document.querySelectorAll(".inventory-slot")]
+        .filter((node) => node.draggable).length,
     };
   });
   assert.ok(inventoryIconProbe.slots > 0);
   assert.ok(inventoryIconProbe.painted > 0, "open inventory slots must use the item atlas icons");
   assert.equal(inventoryIconProbe.namesHidden, true);
+  assert.ok(inventoryIconProbe.draggable > 0, "inventory slots must support drag transfer");
   await page.locator("[data-close-inventory]").click();
   await page.waitForFunction(() => document.getElementById("inventory-panel")?.hidden === true);
 
+  const chestProbe = await page.evaluate(() => {
+    const player = window.__bend2craft.getPlayer();
+    let target = null;
+    for (let y = 1; y < 14 && target === null; y += 1) {
+      for (let x = Math.floor(player.x) - 4; x <= Math.floor(player.x) + 4 && target === null; x += 1) {
+        for (let z = Math.floor(player.z) - 4; z <= Math.floor(player.z) + 4; z += 1) {
+          if (Math.hypot(x + 0.5 - player.x, z + 0.5 - player.z) < 1.5) continue;
+          if (window.__bend2craft.getBlock(x, y, z) === 0
+            && window.__bend2craft.getBlock(x, y - 1, z) !== 0) {
+            target = [x, y, z];
+            break;
+          }
+        }
+      }
+    }
+    if (target === null) return { target: null };
+    const collected = window.__bend2craft.collect("chest");
+    const placed = collected && window.__bend2craft.placeAt("chest", ...target);
+    const opened = placed && window.__bend2craft.toggleChest();
+    const selected = opened && window.__bend2craft.selectSlotForTest(0);
+    const deposited = selected && window.__bend2craft.chestAction("deposit");
+    const stored = window.__bend2craft.getChest()[0];
+    const withdrawn = deposited && window.__bend2craft.chestAction("withdraw", 0);
+    return {
+      target,
+      collected,
+      placed,
+      opened,
+      deposited,
+      withdrawn,
+      block: window.__bend2craft.getBlock(...target),
+      slots: window.__bend2craft.getChest().length,
+      storedItem: stored?.item ?? null,
+      afterWithdrawCount: window.__bend2craft.getChest()[0]?.count ?? null,
+      panelHidden: document.getElementById("chest-panel")?.hidden ?? true,
+    };
+  });
+  assert.ok(chestProbe.target !== null, "a chest placement target is required");
+  assert.equal(chestProbe.collected, true);
+  assert.equal(chestProbe.placed, true);
+  assert.equal(chestProbe.block, 26);
+  assert.equal(chestProbe.opened, true);
+  assert.equal(chestProbe.deposited, true);
+  assert.equal(chestProbe.withdrawn, true);
+  assert.equal(chestProbe.slots, 9);
+  assert.notEqual(chestProbe.storedItem, 0);
+  assert.equal(chestProbe.afterWithdrawCount, 0);
+  assert.equal(chestProbe.panelHidden, false);
+  await page.evaluate(() => window.__bend2craft.toggleChest());
+  const dropProbe = await page.evaluate(() => {
+    const before = window.__bend2craft.getDrops().length;
+    const ok = window.__bend2craft.drop(false);
+    return { ok, before, after: window.__bend2craft.getDrops().length };
+  });
+  assert.equal(dropProbe.ok, true);
+  assert.equal(dropProbe.after, dropProbe.before + 1);
+
   assert.deepEqual(consoleErrors, []);
   assert.deepEqual(pageErrors, []);
-  console.log(JSON.stringify({ ...state, textureProbe, animatedSurfaceProbe, atlasProbe, interactionResult, mobProbe, collectedInventory, damageProbe, persistenceBefore, persistenceAfter, entityPersistenceBefore, entityPersistenceAfter, negativeState, streamingSwap, inventoryToggle: "ok", consoleErrors, pageErrors }));
+  console.log(JSON.stringify({ ...state, textureProbe, animatedSurfaceProbe, atlasProbe, interactionResult, mobProbe, collectedInventory, damageProbe, persistenceBefore, persistenceAfter, entityPersistenceBefore, entityPersistenceAfter, negativeState, streamingSwap, inventoryToggle: "ok", chestProbe, dropProbe, consoleErrors, pageErrors }));
 } finally {
   await browser.close();
 }

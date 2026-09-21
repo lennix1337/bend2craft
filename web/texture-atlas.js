@@ -711,16 +711,67 @@ const BLOCK_TEXTURE_SPECS = [
     ],
   },
   {
-    palette: { base: "#4f5558", l: "#7f8b90" },
-    pattern: ["...l....", "........", "........", "........", "........", "........", "........", "........"],
+    palette: { base: "#b5d9e8", l: "#e8f6fc", d: "#6fa3bd", w: "#ffffff" },
+    pattern: [
+      "llllllllllllllll",
+      "llllllllllllllll",
+      "llwwwwwwww....ll",
+      "llwwwwwwww....ll",
+      "llww........ddll",
+      "llww........ddll",
+      "ll..........ddll",
+      "ll..........ddll",
+      "ll..........ddll",
+      "ll..........ddll",
+      "ll....dd......ll",
+      "ll....dd......ll",
+      "ll..........ddll",
+      "ll..........ddll",
+      "ll..........wwll",
+      "llllllllllllllll",
+    ],
   },
   {
-    palette: { base: "#4f5558", d: "#293034" },
-    pattern: ["........", "........", "....d...", "........", "........", "........", "........", "........"],
+    palette: { base: "#9d6a3e", b: "#a77646", l: "#cf9560", d: "#5c3a22", h: "#e8b878", s: "#6f4528" },
+    pattern: [
+      "ssssssssssssssss",
+      "ssssssssssssssss",
+      "ssllllllllllllss",
+      "ssllllllllllllss",
+      "ssllddddddddllss",
+      "ssllddddddddllss",
+      "ssllddhhhhddllss",
+      "ssllddhhhhddllss",
+      "ssllddddddddllss",
+      "ssllddddddddllss",
+      "ssllllllllllllss",
+      "ssllllllllllllss",
+      "ssbbbbbbbbbbbbss",
+      "ssbbbbbbbbbbbbss",
+      "ssssssssssssssss",
+      "ssssssssssssssss",
+    ],
   },
   {
-    palette: { base: "#4f5558", p: "#a095c2" },
-    pattern: ["........", "......p.", "........", "........", "........", "........", "........", "........"],
+    palette: { base: "#9d6a3e", b: "#a77646", l: "#cf9560", d: "#5c3a22", s: "#7a5230" },
+    pattern: [
+      "bbbbbbbbbbbbbbbb",
+      "bbbbbbbbbbbbbbbb",
+      "bbllllbbbbllddbb",
+      "bbllllbbbbllddbb",
+      "bbbbbbbbbbbbbbbb",
+      "bbbbbbbbbbbbbbbb",
+      "ssssssddddssssss",
+      "ssssssddddssssss",
+      "ssbbbbssddbbbbss",
+      "ssbbbbssddbbbbss",
+      "ssssssddddssssss",
+      "ssssssddddssssss",
+      "bbbbbbbbbbbbbbbb",
+      "bbbbbbbbbbbbbbbb",
+      "bbbbbbbbbbbbbbbb",
+      "bbbbbbbbbbbbbbbb",
+    ],
   },
 ];
 
@@ -845,9 +896,9 @@ const BLOCK_TEXTURE_NAMES = [
   "fire",
   "cobblestone",
   "obsidian",
-  "reserved_27",
-  "reserved_28",
-  "reserved_29",
+  "glass",
+  "chest",
+  "crafting_table",
 ];
 
 function freezeBlockTexture(spec, id, name = BLOCK_TEXTURE_NAMES[id]) {
@@ -930,6 +981,9 @@ export function blockFaceTile(block, faceIndex) {
   if (id === 21) return 23;
   if (id === 22) return 25;
   if (id === 23) return 26;
+  if (id === 25) return 27;
+  if (id === 26) return 28;
+  if (id === 27) return 29;
   return Math.max(0, Math.min(ATLAS_COLUMNS * ATLAS_ROWS - 1, id));
 }
 
@@ -959,6 +1013,9 @@ export function blockFaceTileAt(block, faceIndex, x = 0, z = 0) {
   if (id === 7) return pickVariant(7, 39, x, z);
   if (id === 22) return pickVariant(25, 36, x, z);
   if (id === 23) return pickVariant(26, 37, x, z);
+  if (id === 25) return 27;
+  if (id === 26) return 28;
+  if (id === 27) return 29;
   return blockFaceTile(id, faceIndex);
 }
 

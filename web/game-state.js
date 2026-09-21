@@ -1,17 +1,28 @@
 import PlayerDomain from "../world/player.bend";
+import FluidsDomain from "../world/fluids.bend";
 
 export const PLAYER_RADIUS = 0.3;
 export const PLAYER_HEIGHT = 1.8;
 export const EYE_HEIGHT = 1.62;
 export const MOVE_SPEED = 4.5;
 export const SPRINT_SPEED = 6.75;
+export const SNEAK_SPEED = 1.3;
+export const SNEAK_EYE_HEIGHT = 1.27;
 export const JUMP_SPEED = 7.0;
 export const GRAVITY = 20.0;
 
-const SPRINT_KEYS = ["ShiftLeft", "ShiftRight", "Sprint"];
+const SPRINT_KEYS = ["ControlLeft", "ControlRight", "Sprint"];
+const SNEAK_KEYS = ["ShiftLeft", "ShiftRight", "Shift"];
 
 export function isSprinting(held) {
   for (const key of SPRINT_KEYS) {
+    if (held.has(key)) return true;
+  }
+  return false;
+}
+
+export function isSneaking(held) {
+  for (const key of SNEAK_KEYS) {
     if (held.has(key)) return true;
   }
   return false;
@@ -51,11 +62,19 @@ function stateView(raw) {
     grounded: raw.grounded,
     health: Number(raw.health),
     hunger: Number(raw.hunger),
+    air: Number(raw.air),
+    fall: Number(raw.fall),
+    poison: Number(raw.poison),
   };
 }
 
+function finiteOr(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function stateRaw(player) {
-  const raw = PlayerDomain.state(
+  const raw = PlayerDomain.state_full(
     Number(player.x) + DOMAIN_COORDINATE_OFFSET,
     Number(player.y),
     Number(player.z) + DOMAIN_COORDINATE_OFFSET,
@@ -63,8 +82,11 @@ function stateRaw(player) {
     Number(player.pitch),
     Number(player.velocityY),
     Boolean(player.grounded),
-    Number.isFinite(Number(player.health)) ? Number(player.health) : 20,
-    Number.isFinite(Number(player.hunger)) ? Number(player.hunger) : 20,
+    finiteOr(player.health, 20),
+    finiteOr(player.hunger, 20),
+    finiteOr(player.air, 10),
+    finiteOr(player.fall, 0),
+    finiteOr(player.poison, 0),
   );
   PLAYER_STATES.set(player, raw);
   return raw;
@@ -168,6 +190,28 @@ export function lavaContact(world, player) {
   return PlayerDomain.lava_contact(region.blocks);
 }
 
+export function waterContact(world, player) {
+  const region = collisionRegion(world, player.x, player.y, player.z);
+  return PlayerDomain.water_contact(region.blocks);
+}
+
+export function isHeadUnderwater(world, player) {
+  return world.blockAt(Math.floor(player.x), Math.floor(player.y + 1.62), Math.floor(player.z)) === 7;
+}
+
+export function isInWater(world, player) {
+  return world.blockAt(Math.floor(player.x), Math.floor(player.y + 0.4), Math.floor(player.z)) === 7
+    || isHeadUnderwater(world, player);
+}
+
+export function waterCurrentPush(flows, x, y, z) {
+  const current = FluidsDomain.current(flows, x, y, z);
+  return [
+    Number(FluidsDomain.current_x(current)),
+    Number(FluidsDomain.current_z(current)),
+  ];
+}
+
 export function overlapsPlayer(player, x, y, z) {
   return PlayerDomain.overlaps(
     stateRaw(player),
@@ -196,6 +240,13 @@ export function eatFood(player, nutrition) {
   Object.assign(player, stateView(raw));
   PLAYER_STATES.set(player, raw);
   return player.hunger;
+}
+
+export function applyPoison(player, seconds) {
+  const raw = PlayerDomain.poison_tick(stateRaw(player), seconds);
+  Object.assign(player, stateView(raw));
+  PLAYER_STATES.set(player, raw);
+  return player.poison;
 }
 
 export function cameraDirection(player) {
@@ -259,6 +310,7 @@ export function movePlayer(world, player, held, dt, spawnCell, spawnHeight, widt
   if (held.has("KeyD")) keys |= 8;
   if (held.has("Space")) keys |= 16;
   if (isSprinting(held)) keys |= 32;
+  if (isSneaking(held)) keys |= 64;
 
   const region = collisionRegion(world, player.x, player.y, player.z);
   const raw = PlayerDomain.step(

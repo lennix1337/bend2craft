@@ -86,4 +86,8 @@ for (let index = 0; index < 40; index += 1) {
 }
 manyFlows = Fluids.remove(manyFlows, 39n, 1n, 1n);
 assert.equal(listValues(Fluids.state_flows(manyFlows)).length, 39);
+const currentFlows = { $: "Con", head: Fluids.flow(2n, 1n, 3n, 8), tail: { $: "Nil" } };
+const current = Fluids.current(currentFlows, 3.5, 1.1, 3.0);
+assert.ok(Number(Fluids.current_x(current)) > 0);
+assert.ok(Math.abs(Number(Fluids.current_z(current))) < 0.01);
 console.log("bend fluids ok");

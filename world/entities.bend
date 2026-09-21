@@ -24,6 +24,9 @@ type DropTarget is Data:
 def fraction(+numerator: U32, +denominator: U32) -> F32:
   F32.div(U32.to_f32(numerator), U32.to_f32(denominator))
 
+def choose_f32(c: Bool, yes: F32, no: F32) -> F32:
+  Bool.pick(F32, c, yes, no)
+
 def make_mob(
   id: Nat, kind: U32, x: F32, y: F32, z: F32, health: F32, alive: Bool
 ) -> Mob:
@@ -59,9 +62,13 @@ def combat_hit(state: CombatResult) -> Bool:
   CombatResult{mobs, drops, hit} = state
   hit
 
+def make_drop(id: Nat, item: U32, x: F32, y: F32, z: F32, amount: U32) -> Drop:
+  Drop{id, item, x, y, z, amount, 0.0, False{}}
+
 def drop_for(mob: Mob) -> Drop:
-  Mob{id, kind, x, y, z, heading_x, heading_z, health, alive} = mob
-  +item = Bool.pick(U32, U32.is_eq(kind, 1), 12, 13)
+  Mob{id, +kind, x, y, z, heading_x, heading_z, health, alive} = mob
+  +wool = Bool.or(U32.is_eq(kind, 1), U32.is_eq(kind, 3))
+  +item = Bool.pick(U32, wool, 12, 13)
   Drop{id, item, x, y, z, 1, 0.0, False{}}
 
 def spawn_x(
@@ -78,14 +85,15 @@ def spawn_x(
       +feet_open = U32.is_eq(World.block(seed, x, height, z), 0)
       +head_open = U32.is_eq(World.block(seed, x, Nat.add(height, 1n), z), 0)
       +clear = Bool.and(feet_open, head_open)
-      +kind = U32.add(U32.from_nat(Nat.mod(World.mix(seed, z, x), 2n)), 1)
+      +kind = U32.add(U32.from_nat(Nat.mod(World.mix(seed, z, x), 4n)), 1)
+      +tough = U32.is_eq(kind, 4)
       +mob = make_mob(
         next_id,
         kind,
         F32.add(U32.to_f32(U32.from_nat(x)), fraction(1, 2)),
         U32.to_f32(U32.from_nat(height)),
         F32.add(U32.to_f32(U32.from_nat(z)), fraction(1, 2)),
-        20.0,
+        Bool.pick(F32, tough, 40.0, 20.0),
         True{}
       )
       +updated = Bool.pick(List<&2, Mob>, Bool.and(selected, clear), cons_mob(mob, mobs), mobs)
@@ -243,14 +251,21 @@ def step_grounded(
   Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive} = mob
   Region{+blocks, +origin_x, +origin_y, +origin_z, +width, +height, +depth} = region
   +offset_f = U32.to_f32(U32.from_nat(offset))
-  +hostile = U32.is_eq(kind, 2)
+  +hostile = Bool.or(U32.is_eq(kind, 2), U32.is_eq(kind, 4))
+  +skittish = U32.is_eq(kind, 3)
   +phase = F32.add(F32.mul(time, fraction(6, 10)), F32.mul(U32.to_f32(U32.from_nat(id)), fraction(24, 10)))
-  +dir_x = Bool.pick(F32, hostile, F32.sub(player_x, x), F32.sin(phase))
-  +dir_z = Bool.pick(F32, hostile, F32.sub(player_z, z), F32.cos(phase))
-  +distance = Bool.pick(F32, hostile,
-    F32.sqrt(F32.add(F32.mul(dir_x, dir_x), F32.mul(dir_z, dir_z))), 1.0)
+  +to_player_x = F32.sub(player_x, x)
+  +to_player_z = F32.sub(player_z, z)
+  +dir_x = Bool.pick(F32, hostile, to_player_x,
+    Bool.pick(F32, skittish, F32.neg(to_player_x), F32.sin(phase)))
+  +dir_z = Bool.pick(F32, hostile, to_player_z,
+    Bool.pick(F32, skittish, F32.neg(to_player_z), F32.cos(phase)))
+  +distance = Bool.pick(F32, Bool.or(hostile, skittish),
+    F32.sqrt(F32.add(F32.mul(to_player_x, to_player_x), F32.mul(to_player_z, to_player_z))), 1.0)
   +safe_distance = Bool.pick(F32, F32.is_eq(distance, 0.0), 1.0, distance)
-  +rate = Bool.pick(F32, hostile, fraction(8, 10), fraction(4, 10))
+  +rate = Bool.pick(F32, U32.is_eq(kind, 4), fraction(1, 2),
+    Bool.pick(F32, U32.is_eq(kind, 2), fraction(8, 10),
+      Bool.pick(F32, skittish, fraction(12, 10), fraction(4, 10))))
   +stride = F32.mul(rate, dt)
   +try_x = F32.add(x, F32.mul(F32.div(dir_x, safe_distance), stride))
   +moved_x = step_x(blocks, origin_x, origin_y, origin_z, width, height, depth, offset_f, alive, x, y, z, try_x)
@@ -298,14 +313,22 @@ def step_mob_budgeted(
   +near = F32.is_lt(distance, active_radius)
   +far_dt = F32.div(dt, 5.0)
   +effective_dt = Bool.pick(F32, near, dt, far_dt)
-  +hostile = U32.is_eq(kind, 2)
-  +active = Bool.and(hostile, alive)
+  +hostile = Bool.or(U32.is_eq(kind, 2), U32.is_eq(kind, 4))
+  +skittish = U32.is_eq(kind, 3)
+  +chaser = Bool.and(hostile, alive)
+  +fleer = Bool.and(skittish, alive)
   +safe_distance = Bool.pick(F32, F32.is_eq(distance, 0.0), 1.0, distance)
   +speed = F32.mul(fraction(8, 10), effective_dt)
-  +next_x = Bool.pick(F32, active, F32.add(x, F32.mul(F32.div(dx, safe_distance), speed)), x)
-  +next_z = Bool.pick(F32, active, F32.add(z, F32.mul(F32.div(dz, safe_distance), speed)), z)
-  +next_heading_x = Bool.pick(F32, active, F32.div(dx, safe_distance), heading_x)
-  +next_heading_z = Bool.pick(F32, active, F32.div(dz, safe_distance), heading_z)
+  +chase_x = F32.add(x, F32.mul(F32.div(dx, safe_distance), speed))
+  +chase_z = F32.add(z, F32.mul(F32.div(dz, safe_distance), speed))
+  +flee_x = F32.sub(x, F32.mul(F32.div(dx, safe_distance), speed))
+  +flee_z = F32.sub(z, F32.mul(F32.div(dz, safe_distance), speed))
+  +next_x = Bool.pick(F32, chaser, chase_x, Bool.pick(F32, fleer, flee_x, x))
+  +next_z = Bool.pick(F32, chaser, chase_z, Bool.pick(F32, fleer, flee_z, z))
+  +face_x = Bool.pick(F32, fleer, F32.neg(F32.div(dx, safe_distance)), F32.div(dx, safe_distance))
+  +face_z = Bool.pick(F32, fleer, F32.neg(F32.div(dz, safe_distance)), F32.div(dz, safe_distance))
+  +next_heading_x = Bool.pick(F32, Bool.or(chaser, fleer), face_x, heading_x)
+  +next_heading_z = Bool.pick(F32, Bool.or(chaser, fleer), face_z, heading_z)
   make_mob_heading(id, kind, next_x, y, next_z, next_heading_x, next_heading_z, health, alive)
 
 def step_budgeted(
@@ -330,8 +353,13 @@ def threat_damage(mobs: List<&2, Mob>, +player_x: F32, +player_z: F32) -> F32:
       +dx = F32.sub(player_x, x)
       +dz = F32.sub(player_z, z)
       +distance = F32.sqrt(F32.add(F32.mul(dx, dx), F32.mul(dz, dz)))
-      +danger = Bool.and(Bool.and(U32.is_eq(kind, 2), alive), F32.is_lt(distance, fraction(3, 2)))
-      Bool.pick(F32, danger, 2.0, threat_damage(tail, player_x, player_z))
+      +close = F32.is_lt(distance, fraction(3, 2))
+      +brute = Bool.and(U32.is_eq(kind, 4), alive)
+      +hostile = Bool.and(U32.is_eq(kind, 2), alive)
+      +here = Bool.pick(F32, brute, 4.0, Bool.pick(F32, hostile, 2.0, 0.0))
+      +local = choose_f32(Bool.and(close, F32.is_gt(here, 0.0)), here, 0.0)
+      +rest = threat_damage(tail, player_x, player_z)
+      choose_f32(F32.is_lt(local, rest), rest, local)
 
 def attack.go(
   mobs: List<&2, Mob>, +target_id: Nat, +damage: F32,
@@ -422,3 +450,29 @@ def remove_drop(drops: List<&2, Drop>, +target_id: Nat) -> List<&2, Drop>:
       Drop{id, item, x, y, z, amount, velocity_y, settled} = head
       +rest = remove_drop(tail, target_id)
       Bool.pick(List<&2, Drop>, Nat.is_eq(id, target_id), tail, cons_drop(head, rest))
+
+def far_away(+x: F32, +z: F32, +player_x: F32, +player_z: F32, +radius: F32) -> Bool:
+  +dx = F32.sub(player_x, x)
+  +dz = F32.sub(player_z, z)
+  +distance = F32.sqrt(F32.add(F32.mul(dx, dx), F32.mul(dz, dz)))
+  F32.is_lt(radius, distance)
+
+def despawn(
+  +mobs: List<&2, Mob>, +player_x: F32, +player_z: F32, +radius: F32
+) -> List<&2, Mob>:
+  match mobs:
+    case Nil{}:
+      Nil{}
+    case Con{+head, tail}:
+      Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive} = head
+      +rest = despawn(tail, player_x, player_z, radius)
+      +gone = Bool.and(alive, far_away(x, z, player_x, player_z, radius))
+      Bool.pick(List<&2, Mob>, gone, rest, cons_mob(head, rest))
+
+def count_alive(mobs: List<&2, Mob>, +total: Nat) -> Nat:
+  match mobs:
+    case Nil{}:
+      total
+    case Con{+head, tail}:
+      Mob{id, kind, x, y, z, heading_x, heading_z, health, +alive} = head
+      count_alive(tail, Bool.pick(Nat, alive, Nat.add(total, 1n), total))

@@ -16,6 +16,7 @@ import {
   countItem,
   craft,
   foodValue,
+  handDamage,
   isPlaceable,
   itemColor,
   itemId,
@@ -27,6 +28,7 @@ import {
   toolMaxDurability,
   tradeInventory,
   useTool,
+  weaponDamage,
 } from "../web/inventory.js";
 
 const inventory = createInventory();
@@ -94,6 +96,11 @@ assert.equal(itemId({ item: "lava_bucket", count: 1 }), "lava_bucket");
 assert.equal(blockForItem("cobblestone"), 22);
 assert.equal(blockForItem("obsidian"), 23);
 assert.equal(blockForItem("door"), 14);
+assert.equal(blockForItem("crafting_table"), 27);
+assert.equal(blockForItem("glass"), 25);
+assert.equal(blockForItem("chest"), 26);
+assert.equal(foodValue("bread"), 5);
+assert.equal(foodValue("apple"), 4);
 assert.equal(toolMaxDurability("stone_pickaxe"), 131);
 assert.ok(miningDuration("wooden_pickaxe", 1) > 0);
 assert.ok(miningDuration("diamond_pickaxe", 23) > miningDuration("wooden_pickaxe", 1));
@@ -119,6 +126,8 @@ assert.deepEqual(RECIPES.map((recipe) => recipe.id), [
   "planks", "sticks", "crafting_table", "wooden_pickaxe",
   "stone_pickaxe", "iron_pickaxe", "diamond_pickaxe", "furnace",
   "torch", "bed", "door", "wooden_hoe", "empty_bucket",
+  "wooden_sword", "stone_sword", "iron_sword", "diamond_sword",
+  "bow", "arrow", "shield", "bread",
 ]);
 assert.deepEqual(RECIPES[0].ingredients, [{ item: "wood", count: 1 }]);
 assert.deepEqual(RECIPES[0].output, { item: "planks", count: 4 });
@@ -167,8 +176,12 @@ assert.equal(collectItem(tableInventory, "wood"), true);
 assert.equal(craft(tableInventory, "planks"), true);
 assert.equal(craft(tableInventory, "crafting_table"), true);
 const tableSlot = tableInventory.find((slot) => itemId(slot) === "crafting_table");
-assert.equal(isPlaceable(tableSlot), false);
-assert.equal(blockForItem(tableSlot), null);
+assert.equal(isPlaceable(tableSlot), true);
+assert.equal(blockForItem(tableSlot), 27);
+assert.equal(collectItem(tableInventory, "glass"), true);
+assert.equal(collectItem(tableInventory, "chest"), true);
+assert.equal(isPlaceable(tableInventory.find((slot) => itemId(slot) === "glass")), true);
+assert.equal(isPlaceable(tableInventory.find((slot) => itemId(slot) === "chest")), true);
 
 const pickaxeInventory = emptyInventory();
 assert.equal(collectItem(pickaxeInventory, "wood", 2), true);
@@ -200,6 +213,32 @@ assert.equal(countItem(tierInventory, "iron_pickaxe"), 1);
 assert.equal(collectItem(tierInventory, "iron_ingot"), true);
 assert.equal(collectItem(tierInventory, "furnace"), true);
 assert.equal(countItem(tierInventory, "furnace"), 1);
+
+const swordInventory = emptyInventory();
+assert.equal(collectItem(swordInventory, "wood", 2), true);
+assert.equal(craft(swordInventory, "planks"), true);
+assert.equal(craft(swordInventory, "planks"), true);
+assert.equal(craft(swordInventory, "sticks"), true);
+assert.equal(craft(swordInventory, "wooden_sword"), true);
+assert.equal(countItem(swordInventory, "wooden_sword"), 1);
+assert.equal(weaponDamage("wooden_sword"), 4);
+assert.equal(weaponDamage("stone_sword"), 5);
+assert.equal(weaponDamage("iron_sword"), 6);
+assert.equal(weaponDamage("diamond_sword"), 7);
+assert.equal(weaponDamage("bow"), 6);
+assert.equal(weaponDamage("wood"), 1);
+assert.equal(handDamage(), 4);
+assert.equal(toolMaxDurability("bow"), 384);
+assert.equal(toolMaxDurability("shield"), 336);
+const bowInventory = emptyInventory();
+assert.equal(collectItem(bowInventory, "wood", 3), true);
+assert.equal(craft(bowInventory, "planks"), true);
+assert.equal(craft(bowInventory, "planks"), true);
+assert.equal(craft(bowInventory, "planks"), true);
+assert.equal(craft(bowInventory, "sticks"), true);
+assert.equal(collectItem(bowInventory, "wool", 3), true);
+assert.equal(craft(bowInventory, "bow"), true);
+assert.equal(countItem(bowInventory, "bow"), 1);
 const tradeInventoryState = emptyInventory();
 assert.equal(collectItem(tradeInventoryState, "rotten_flesh", 4), true);
 assert.equal(tradeInventory(tradeInventoryState, 13, 4, 20, 1), true);

@@ -54,6 +54,12 @@ for (const [index, texture] of ENTITY_TEXTURES.entries()) {
   assert.ok(texture.pattern.every((row) => row.length === 16));
 }
 
+for (const texture of [...BLOCK_TEXTURES, ...VARIANT_TEXTURES, ...ENTITY_TEXTURES]) {
+  for (const glyph of new Set(texture.pattern.join("").replaceAll(".", "").split(""))) {
+    assert.notEqual(texture.palette[glyph], undefined, `${texture.name} should define glyph ${glyph}`);
+  }
+}
+
 for (const block of [1, 5, 8, 10, 11, 16, 17, 18, 19]) {
   const uv = atlasUV(block);
   assert.equal(uv.length, 8);

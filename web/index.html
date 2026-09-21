@@ -20,6 +20,7 @@
     <section id="vitals" aria-live="polite" hidden>
       <div id="hearts" aria-label="Health"></div>
       <div id="hunger" aria-label="Hunger"></div>
+      <div id="air" aria-label="Air" hidden></div>
     </section>
     <section id="hud" aria-live="polite">
       <div class="brand">BEND2CRAFT <span>inventory slice</span></div>
@@ -38,6 +39,7 @@
     </section>
     <button id="inventory-toggle" type="button" aria-controls="inventory-panel" aria-expanded="false">Inventory (E)</button>
     <button id="furnace-toggle" type="button" aria-controls="furnace-panel" aria-expanded="false">Furnace (R)</button>
+    <button id="chest-toggle" type="button" aria-controls="chest-panel" aria-expanded="false" hidden>Chest (C)</button>
     <section id="inventory-panel" aria-labelledby="inventory-title" hidden>
       <header class="inventory-header">
         <div>
@@ -62,23 +64,38 @@
       <header class="inventory-header">
         <div>
           <h2 id="furnace-title">Furnace</h2>
-          <p>Right-click a placed furnace to smelt raw iron with coal.</p>
+          <p>Right-click a placed furnace to cook food or smelt materials.</p>
         </div>
         <button type="button" data-close-furnace>Close</button>
       </header>
       <div class="furnace-content">
         <div id="furnace-status" role="status" aria-live="polite">No fuel loaded.</div>
         <div class="furnace-actions">
-          <button type="button" data-furnace-action="input">Load raw iron</button>
+          <button type="button" data-furnace-action="input">Load raw iron / wheat</button>
           <button type="button" data-furnace-action="fuel">Load coal</button>
-          <button type="button" data-furnace-action="output">Take iron ingot</button>
+          <button type="button" data-furnace-action="output">Take cooked output</button>
+        </div>
+      </div>
+    </section>
+    <section id="chest-panel" aria-labelledby="chest-title" hidden>
+      <header class="inventory-header">
+        <div>
+          <h2 id="chest-title">Chest</h2>
+          <p id="chest-status" role="status" aria-live="polite">Store items safely in this chest.</p>
+        </div>
+        <button type="button" data-close-chest>Close</button>
+      </header>
+      <div class="chest-content">
+        <div id="chest-slots" class="inventory-grid" aria-label="Chest slots"></div>
+        <div class="chest-actions">
+          <button type="button" data-chest-action="deposit">Deposit selected item</button>
         </div>
       </div>
     </section>
     <section id="help">
       <strong id="lock-hint">Click to capture the mouse</strong>
-      <span>WASD · mouse look · Space jump</span>
-      <span>1–9 hotbar · E inventory · R furnace · G eat · F attack · T trade · N sleep · click mine/place</span>
+      <span>WASD · mouse look · Space jump · Shift sneak · Ctrl sprint</span>
+      <span>1–9 hotbar · E inventory · R furnace · C chest · G eat · Q drop · F attack/shoot · T trade · N sleep · click mine/place</span>
     </section>
     <div id="error" role="alert" hidden></div>
     <section id="pause" aria-labelledby="pause-title" hidden>
@@ -206,8 +223,9 @@
       <div class="menu-panel" id="screen-help" data-screen hidden>
         <h2>How to Play</h2>
         <ul class="help-list">
-          <li><strong>WASD</strong> move · <strong>Mouse</strong> look · <strong>Space</strong> jump</li>
-          <li><strong>Left click</strong> mine · <strong>Right click</strong> place · <strong>F</strong> attack</li>
+          <li><strong>WASD</strong> move · <strong>Mouse</strong> look · <strong>Space</strong> jump · <strong>Shift</strong> sneak · <strong>Ctrl</strong> sprint</li>
+          <li><strong>Left click</strong> mine · <strong>Right click</strong> place · <strong>F</strong> attack (bow selected: shoot)</li>
+          <li><strong>Shield</strong> selected blocks 2/3 of mob damage · <strong>Swords</strong> deal 4–7 damage</li>
           <li><strong>1–9</strong> hotbar · <strong>E</strong> inventory · <strong>R</strong> furnace</li>
           <li><strong>G</strong> eat · <strong>T</strong> trade · <strong>N</strong> sleep · <strong>Esc</strong> pause</li>
         </ul>

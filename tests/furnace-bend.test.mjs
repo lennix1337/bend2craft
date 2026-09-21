@@ -36,4 +36,11 @@ assert.equal(extracted.ok, true);
 assert.equal(Number(extracted.item), 20);
 assert.equal(Number(extracted.amount), 1);
 assert.equal(Number(extracted.furnace.output_count), 0);
+
+let breadFurnace = Furnace.load_input(Furnace.empty(), 26, 1n);
+assert.equal(breadFurnace.ok, true);
+breadFurnace = Furnace.load_fuel(breadFurnace.furnace, 14, 1n);
+assert.equal(breadFurnace.ok, true);
+for (let index = 0; index < 8; index += 1) breadFurnace = Furnace.tick(breadFurnace.furnace);
+assert.equal(Number(breadFurnace.furnace.output), 41);
 console.log("bend furnace ok");

@@ -65,9 +65,56 @@ const fedHungry = Player.eat(hungry, 4.0);
 assert.ok(Number(fedHungry.hunger) > Number(hungry.hunger));
 let walker = state;
 let runner = state;
+let sneaker = state;
 for (let index = 0; index < 30; index += 1) {
   walker = Player.step(walker, 1, 0.016, blocks, 0n, 0n, 0n, 5n, 6n, 5n, 2n, 2n, 1n);
   runner = Player.step(runner, 33, 0.016, blocks, 0n, 0n, 0n, 5n, 6n, 5n, 2n, 2n, 1n);
+  sneaker = Player.step(sneaker, 65, 0.016, blocks, 0n, 0n, 0n, 5n, 6n, 5n, 2n, 2n, 1n);
 }
 assert.ok(2.5 - Number(runner.z) > (2.5 - Number(walker.z)) * 1.25);
+assert.ok(2.5 - Number(sneaker.z) < (2.5 - Number(walker.z)) * 0.75, `sneak must be slower than walk, got sneak=${2.5 - Number(sneaker.z)} walk=${2.5 - Number(walker.z)}`);
+let sneakOverride = state;
+for (let index = 0; index < 30; index += 1) {
+  sneakOverride = Player.step(sneakOverride, 97, 0.016, blocks, 0n, 0n, 0n, 5n, 6n, 5n, 2n, 2n, 1n);
+}
+assert.ok(2.5 - Number(sneakOverride.z) < (2.5 - Number(walker.z)) * 0.75, "sneak must override sprint");
+
+// --- survival: fall damage, water, drowning, regen, poison (Bend-owned) ---
+function flatBlocks(width, height, depth, fill) {
+  let list = { $: "Nil" };
+  for (let index = width * height * depth - 1; index >= 0; index -= 1) {
+    const y = Math.floor(index / (width * depth));
+    list = { $: "Con", head: y === 0 ? fill : 0, tail: list };
+  }
+  return list;
+}
+const airBlocks = flatBlocks(5, 6, 5, 1);
+// Fall 6 blocks onto stone must hurt; water landing must not.
+const faller = Player.state_full(2.5, 8.0, 2.5, 0.0, 0.0, -8.0, false, 20.0, 20.0, 10.0, 6.0, 0.0);
+const landedHard = Player.step(faller, 0, 0.2, airBlocks, 0n, 0n, 0n, 5n, 6n, 5n, 2n, 2n, 1n);
+assert.ok(Number(landedHard.health) < 20, `fall damage expected, got ${Number(landedHard.health)}`);
+assert.equal(Player.water_contact(airBlocks), false);
+let waterList = { $: "Nil" };
+for (let i = 0; i < 5 * 6 * 5; i += 1) waterList = { $: "Con", head: 7, tail: waterList };
+assert.equal(Player.water_contact(waterList), true);
+assert.equal(Player.is_water(7), true);
+assert.equal(Player.is_water(1), false);
+// Head under water drains air and then health.
+const diver = Player.state_full(2.5, 2.0, 2.5, 0.0, 0.0, 0.0, false, 20.0, 20.0, 1.0, 0.0, 0.0);
+const drowned = Player.drown_tick(diver, 2.0, true);
+assert.equal(Number(drowned.air), 0);
+assert.ok(Number(drowned.health) < 20, "drowning must damage at zero air");
+const surfaced = Player.drown_tick(drowned, 1.0, false);
+assert.ok(Number(surfaced.air) > 0, "air must refill out of water");
+// Full hunger regenerates health.
+const wounded = Player.state_full(2.5, 1.05, 2.5, 0.0, 0.0, 0.0, true, 10.0, 20.0, 10.0, 0.0, 0.0);
+const healed = Player.tick_survival(wounded, 4.0, false);
+assert.ok(Number(healed.health) > 10, `regen expected, got ${Number(healed.health)}`);
+// Poison drains health and ticks down.
+const sick = Player.state_full(2.5, 1.05, 2.5, 0.0, 0.0, 0.0, true, 20.0, 20.0, 10.0, 0.0, 10.0);
+const poisoned = Player.tick_survival(sick, 2.0, false);
+assert.ok(Number(poisoned.health) < 20, "poison must damage");
+assert.ok(Number(poisoned.poison) < 10, "poison timer must tick down");
+const dosed = Player.poison_tick(sick, 5.0);
+assert.equal(Number(dosed.poison), 15);
 console.log("bend player ok");

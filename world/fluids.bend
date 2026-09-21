@@ -9,6 +9,9 @@ type Flow is Data:
 type State is Data:
   State{flows: List<&2, Flow>}
 
+type Current is Data:
+  Current{x: F32, z: F32}
+
 type Edit is Data:
   Edit{x: Nat, y: Nat, z: Nat, block: U32}
 
@@ -277,3 +280,109 @@ def tick(+state: State, +samples: List<&2, Sample>) -> State:
 def remove(+state: State, +x: Nat, +y: Nat, +z: Nat) -> State:
   State{+flows} = state
   State{remove_entries(flows, x, y, z)}
+
+def current_contribution(
+  flow: Flow, +player_x: F32, +player_y: F32, +player_z: F32
+) -> Current:
+  Flow{+x, +y, +z, +level, source, block} = flow
+  +flow_x = U32.to_f32(U32.from_nat(x))
+  +flow_y = U32.to_f32(U32.from_nat(y))
+  +flow_z = U32.to_f32(U32.from_nat(z))
+  +dx = F32.sub(player_x, flow_x)
+  +dy = F32.sub(player_y, flow_y)
+  +dz = F32.sub(player_z, flow_z)
+  +distance = F32.sqrt(F32.add(F32.mul(dx, dx), F32.mul(dz, dz)))
+  +near = Bool.and(
+    Bool.and(F32.is_le(F32.abs(dx), 2.5), F32.is_le(F32.abs(dz), 2.5)),
+    F32.is_le(F32.abs(dy), 1.5)
+  )
+  +valid = Bool.and(Bool.and(near, U32.is_gt(level, 1)), F32.is_gt(distance, 0.001))
+  +weight = F32.mul(F32.div(U32.to_f32(level), 8.0), 0.6)
+  Current{
+    Bool.pick(F32, valid, F32.mul(F32.div(dx, distance), weight), 0.0),
+    Bool.pick(F32, valid, F32.mul(F32.div(dz, distance), weight), 0.0)
+  }
+
+def current_contribution_x(
+  flow: Flow, +player_x: F32, +player_y: F32, +player_z: F32
+) -> F32:
+  Flow{+x, +y, +z, +level, source, block} = flow
+  +dx = F32.sub(player_x, U32.to_f32(U32.from_nat(x)))
+  +dy = F32.sub(player_y, U32.to_f32(U32.from_nat(y)))
+  +dz = F32.sub(player_z, U32.to_f32(U32.from_nat(z)))
+  +distance = F32.sqrt(F32.add(F32.mul(dx, dx), F32.mul(dz, dz)))
+  +near = Bool.and(Bool.and(F32.is_le(F32.abs(dx), 2.5), F32.is_le(F32.abs(dz), 2.5)), F32.is_le(F32.abs(dy), 1.5))
+  +valid = Bool.and(Bool.and(near, U32.is_gt(level, 1)), F32.is_gt(distance, 0.001))
+  +weight = F32.mul(F32.div(U32.to_f32(level), 8.0), 0.6)
+  Bool.pick(F32, valid, F32.mul(F32.div(dx, distance), weight), 0.0)
+
+def current_contribution_z(
+  flow: Flow, +player_x: F32, +player_y: F32, +player_z: F32
+) -> F32:
+  Flow{+x, +y, +z, +level, source, block} = flow
+  +dx = F32.sub(player_x, U32.to_f32(U32.from_nat(x)))
+  +dy = F32.sub(player_y, U32.to_f32(U32.from_nat(y)))
+  +dz = F32.sub(player_z, U32.to_f32(U32.from_nat(z)))
+  +distance = F32.sqrt(F32.add(F32.mul(dx, dx), F32.mul(dz, dz)))
+  +near = Bool.and(Bool.and(F32.is_le(F32.abs(dx), 2.5), F32.is_le(F32.abs(dz), 2.5)), F32.is_le(F32.abs(dy), 1.5))
+  +valid = Bool.and(Bool.and(near, U32.is_gt(level, 1)), F32.is_gt(distance, 0.001))
+  +weight = F32.mul(F32.div(U32.to_f32(level), 8.0), 0.6)
+  Bool.pick(F32, valid, F32.mul(F32.div(dz, distance), weight), 0.0)
+
+def current_scan(
+  +flows: List<&2, Flow>, +player_x: F32, +player_y: F32, +player_z: F32,
+  +sum_x: F32, +sum_z: F32
+) -> Current:
+  match flows:
+    case Nil{}:
+      Current{sum_x, sum_z}
+    case Con{+head, +tail}:
+      +x = current_contribution_x(head, player_x, player_y, player_z)
+      +z = current_contribution_z(head, player_x, player_y, player_z)
+      current_scan(tail, player_x, player_y, player_z, F32.add(sum_x, x), F32.add(sum_z, z))
+
+def current_limited(+sum_x: F32, +sum_z: F32) -> Current:
+  +magnitude = F32.sqrt(F32.add(F32.mul(sum_x, sum_x), F32.mul(sum_z, sum_z)))
+  +safe_magnitude = Bool.pick(F32, F32.is_gt(magnitude, 0.0), magnitude, 1.0)
+  +limited = F32.is_gt(magnitude, 1.2)
+  Current{
+    Bool.pick(F32, limited, F32.mul(F32.div(sum_x, safe_magnitude), 1.2), sum_x),
+    Bool.pick(F32, limited, F32.mul(F32.div(sum_z, safe_magnitude), 1.2), sum_z)
+  }
+
+def current_scan_x(
+  +flows: List<&2, Flow>, +player_x: F32, +player_y: F32, +player_z: F32,
+  +sum_x: F32
+) -> F32:
+  match flows:
+    case Nil{}:
+      sum_x
+    case Con{+head, +tail}:
+      current_scan_x(tail, player_x, player_y, player_z,
+        F32.add(sum_x, current_contribution_x(head, player_x, player_y, player_z)))
+
+def current_scan_z(
+  +flows: List<&2, Flow>, +player_x: F32, +player_y: F32, +player_z: F32,
+  +sum_z: F32
+) -> F32:
+  match flows:
+    case Nil{}:
+      sum_z
+    case Con{+head, +tail}:
+      current_scan_z(tail, player_x, player_y, player_z,
+        F32.add(sum_z, current_contribution_z(head, player_x, player_y, player_z)))
+
+def current(
+  +flows: List<&2, Flow>, +player_x: F32, +player_y: F32, +player_z: F32
+) -> Current:
+  +sum_x = current_scan_x(flows, player_x, player_y, player_z, 0.0)
+  +sum_z = current_scan_z(flows, player_x, player_y, player_z, 0.0)
+  current_limited(sum_x, sum_z)
+
+def current_x(state: Current) -> F32:
+  Current{+x, z} = state
+  x
+
+def current_z(state: Current) -> F32:
+  Current{x, +z} = state
+  z

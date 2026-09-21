@@ -5,12 +5,18 @@ import {
   collidesAt,
   createPlayer,
   createWorldState,
+  isHeadUnderwater,
+  isInWater,
+  isSneaking,
+  isSprinting,
   mobRegion,
   lavaContact,
   movePlayer,
   overlapsPlayer,
   raycast,
   respawnPlayer,
+  waterContact,
+  waterCurrentPush,
 } from "../web/game-state.js";
 
 const world = createWorldState(6, 6, 6);
@@ -100,4 +106,64 @@ assert.equal(heldJumpPlayer.grounded, true);
 movePlayer(jumpWorld, heldJumpPlayer, heldSpace, 0.016, [1, 1], 1);
 assert.equal(heldJumpPlayer.grounded, false);
 assert.ok(heldJumpPlayer.velocityY > 0);
+
+assert.equal(isSprinting(new Set(["ControlLeft"])), true);
+assert.equal(isSprinting(new Set(["ControlRight"])), true);
+assert.equal(isSprinting(new Set(["ShiftLeft"])), false);
+assert.equal(isSneaking(new Set(["ShiftLeft"])), true);
+assert.equal(isSneaking(new Set(["ShiftRight"])), true);
+assert.equal(isSneaking(new Set(["ControlLeft"])), false);
+
+const sneakWorld = createWorldState(8, 8, 6);
+for (let z = 0; z < 8; z += 1) for (let x = 0; x < 8; x += 1) sneakWorld.setBlock(x, 0, z, 1);
+const sneakWalker = createPlayer([3, 3], 1);
+const sneakSneaker = createPlayer([3, 3], 1);
+const sneakRunner = createPlayer([3, 3], 1);
+for (let i = 0; i < 30; i += 1) {
+  movePlayer(sneakWorld, sneakWalker, new Set(["KeyW"]), 0.016, [3, 3], 1);
+  movePlayer(sneakWorld, sneakSneaker, new Set(["KeyW", "ShiftLeft"]), 0.016, [3, 3], 1);
+  movePlayer(sneakWorld, sneakRunner, new Set(["KeyW", "ControlLeft"]), 0.016, [3, 3], 1);
+}
+assert.ok(3.5 - sneakSneaker.z < (3.5 - sneakWalker.z) * 0.75, "Shift must sneak slower than walk");
+assert.ok(3.5 - sneakRunner.z > (3.5 - sneakWalker.z) * 1.25, "Ctrl must sprint faster than walk");
+
+// Water detection, swim-up and current push (adapter over Bend water rules).
+const poolWorld = createWorldState(8, 8, 6);
+for (let z = 0; z < 8; z += 1) for (let x = 0; x < 8; x += 1) poolWorld.setBlock(x, 0, z, 1);
+for (let z = 2; z < 6; z += 1) for (let x = 2; x < 6; x += 1) {
+  poolWorld.setBlock(x, 1, z, 7);
+  poolWorld.setBlock(x, 2, z, 7);
+}
+const swimmer = createPlayer([3, 3], 1);
+swimmer.x = 3.5;
+swimmer.y = 1.1;
+swimmer.z = 3.5;
+swimmer.velocityY = 0;
+swimmer.grounded = false;
+assert.equal(isInWater(poolWorld, swimmer), true);
+assert.equal(isHeadUnderwater(poolWorld, swimmer), true);
+assert.equal(waterContact(poolWorld, swimmer), true);
+const sankStart = swimmer.y;
+for (let i = 0; i < 30; i += 1) {
+  movePlayer(poolWorld, swimmer, new Set(), 0.016, [3, 3], 1);
+}
+assert.ok(swimmer.y > sankStart - 1.2, "water must slow sinking");
+const floater = createPlayer([3, 3], 1);
+floater.x = 3.5;
+floater.y = 1.1;
+floater.z = 3.5;
+floater.velocityY = 0;
+floater.grounded = false;
+for (let i = 0; i < 30; i += 1) {
+  movePlayer(poolWorld, floater, new Set(["Space"]), 0.016, [3, 3], 1);
+}
+assert.ok(floater.y > 1.1, `Space must swim up, y=${floater.y}`);
+const flows = {
+  $: "Con",
+  head: { x: 2n, y: 1n, z: 3n, level: 8, source: false, block: 7 },
+  tail: { $: "Nil" },
+};
+const [pushX, pushZ] = waterCurrentPush(flows, 3.5, 1.1, 3.0);
+assert.ok(pushX > 0, `current must push away from high-level flow, got ${pushX}`);
+assert.deepEqual(waterCurrentPush({ $: "Nil" }, 3.5, 1.1, 3.0), [0, 0]);
 console.log("game state ok");

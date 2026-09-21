@@ -262,3 +262,27 @@ const climbed = listValues(climbing)[0];
 assert.ok(Number(climbed.x) < 7.5);
 assert.equal(Number(climbed.y), 2);
 console.log(JSON.stringify({ mobs: mobs.length, kinds: [...new Set(mobs.map((mob) => Number(mob.kind)))] }));
+const deathDrop = Entities.make_drop(999n, 5, 3.5, 2.5, 3.5, 8);
+assert.equal(deathDrop.$, 'Drop');
+assert.equal(Number(deathDrop.item), 5);
+assert.equal(Number(deathDrop.amount), 8);
+const scattered = Entities.cons_drop(deathDrop, Entities.empty_drops());
+assert.equal(Entities.remove_drop(scattered, 999n).$, 'Nil');
+console.log('death drops ok');
+
+// Distinct AI: brutes threaten harder, skittish flee, despawn clears the far.
+const brute = Entities.make_mob(1001n, 4, 10.5, 1.0, 10.5, 40.0, true);
+const skittish = Entities.make_mob(1002n, 3, 20.5, 1.0, 20.5, 20.0, true);
+assert.equal(Number(Entities.drop_for(brute).item), 13);
+assert.equal(Number(Entities.drop_for(skittish).item), 12);
+assert.equal(Number(Entities.threat_damage(Entities.cons_mob(brute, { $: "Nil" }), 10.5, 10.5)), 4);
+assert.equal(Number(Entities.threat_damage(Entities.cons_mob(skittish, { $: "Nil" }), 20.5, 20.5)), 0);
+const mixed = Entities.cons_mob(skittish, Entities.cons_mob(brute, { $: "Nil" }));
+assert.equal(Number(Entities.threat_damage(mixed, 10.5, 10.5)), 4);
+const kept = Entities.despawn(mixed, 10.5, 10.5, 48.0);
+assert.equal(Number(Entities.count_alive(kept, 0n)), 2);
+const cleared = Entities.despawn(mixed, 500.5, 500.5, 48.0);
+assert.equal(Number(Entities.count_alive(cleared, 0n)), 0);
+const fled = Entities.step_budgeted(Entities.cons_mob(skittish, { $: "Nil" }), 20.5, 25.5, 1.0, 64.0);
+assert.ok(Number(fled.head.z) < 20.5, `skittish must flee the player, z=${Number(fled.head.z)}`);
+console.log('mob AI ok');

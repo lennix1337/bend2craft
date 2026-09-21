@@ -30,13 +30,19 @@ assert.equal(collected.ok, true);
 assert.deepEqual(slotsFromList(collected.slots)[4], { $: "Slot", item: 5, count: 9, durability: 0 });
 
 const recipes = valuesFromList(Inventory.recipe_data());
-assert.equal(recipes.length, 168);
+assert.equal(recipes.length, 200);
 assert.deepEqual(recipes.slice(0, 6), [5, 1, 0, 0, 8, 4]);
 assert.deepEqual(recipes.slice(88, 94), [8, 2, 9, 2, 27, 1]);
 assert.deepEqual(recipes.slice(96, 102), [20, 3, 0, 0, 28, 1]);
 assert.deepEqual(recipes.slice(104, 110), [8, 2, 9, 1, 33, 1]);
 assert.deepEqual(recipes.slice(152, 160), [8, 6, 20, 1, 38, 1, 0, 0]);
 assert.deepEqual(recipes.slice(160, 168), [26, 3, 0, 0, 41, 1, 0, 0]);
+assert.deepEqual(recipes.slice(168, 200), [
+  12, 5, 0, 0, 44, 1, 0, 0,
+  20, 8, 0, 0, 45, 1, 0, 0,
+  20, 7, 0, 0, 46, 1, 0, 0,
+  20, 4, 0, 0, 47, 1, 0, 0,
+]);
 assert.equal(Number(Inventory.weapon_damage(36)), 7);
 assert.equal(Number(Inventory.weapon_damage(33)), 4);
 assert.equal(Number(Inventory.weapon_damage(5)), 1);

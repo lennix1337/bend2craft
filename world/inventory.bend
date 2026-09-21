@@ -59,7 +59,11 @@ def tool_max_durability(+item: U32) -> U32:
                 Bool.pick(U32, U32.is_eq(item, 34), 131,
                   Bool.pick(U32, U32.is_eq(item, 33), 59,
                     Bool.pick(U32, U32.is_eq(item, 37), 384,
-                      Bool.pick(U32, U32.is_eq(item, 38), 336, 0)))))))))))
+                      Bool.pick(U32, U32.is_eq(item, 38), 336,
+                        Bool.pick(U32, U32.is_eq(item, 44), 55,
+                          Bool.pick(U32, U32.is_eq(item, 45), 400,
+                            Bool.pick(U32, U32.is_eq(item, 46), 450,
+                              Bool.pick(U32, U32.is_eq(item, 47), 385, 0)))))))))))))))
 
 def weapon_damage(+item: U32) -> U32:
   Bool.pick(U32, U32.is_eq(item, 36), 7,
@@ -423,6 +427,14 @@ def recipe(index: Nat) -> Recipe:
       Recipe{8, 6, 20, 1, 38, 1}
     case 20n:
       Recipe{26, 3, 0, 0, 41, 1}
+    case 21n:
+      Recipe{12, 5, 0, 0, 44, 1}
+    case 22n:
+      Recipe{20, 8, 0, 0, 45, 1}
+    case 23n:
+      Recipe{20, 7, 0, 0, 46, 1}
+    case 24n:
+      Recipe{20, 4, 0, 0, 47, 1}
     case 9n+p:
       Recipe{0, 0, 0, 0, 0, 0}
 
@@ -447,7 +459,11 @@ def recipe_data() -> List<U32>:
   9 <> 3 <> 12 <> 3 <> 37 <> 1 <> 0 <> 0 <>
   9 <> 1 <> 14 <> 1 <> 39 <> 4 <> 0 <> 0 <>
   8 <> 6 <> 20 <> 1 <> 38 <> 1 <> 0 <> 0 <>
-  26 <> 3 <> 0 <> 0 <> 41 <> 1 <> 0 <> 0 <> Nil{}
+  26 <> 3 <> 0 <> 0 <> 41 <> 1 <> 0 <> 0 <>
+  12 <> 5 <> 0 <> 0 <> 44 <> 1 <> 0 <> 0 <>
+  20 <> 8 <> 0 <> 0 <> 45 <> 1 <> 0 <> 0 <>
+  20 <> 7 <> 0 <> 0 <> 46 <> 1 <> 0 <> 0 <>
+  20 <> 4 <> 0 <> 0 <> 47 <> 1 <> 0 <> 0 <> Nil{}
 
 def grid_result_slots(state: GridCraftResult) -> List<&2, Slot>:
   GridCraftResult{+slots, grid, output, amount, ok} = state
@@ -516,6 +532,14 @@ def shape_pattern(+index: Nat) -> List<&2, U32>:
       9 <> 20 <> 9 <> 20 <> 20 <> 20 <> 0 <> 20 <> 0 <> Nil{}
     case 20n:
       26 <> 26 <> 26 <> 0 <> 0 <> 0 <> 0 <> 0 <> 0 <> Nil{}
+    case 21n:
+      12 <> 12 <> 12 <> 12 <> 0 <> 12 <> 0 <> 0 <> 0 <> Nil{}
+    case 22n:
+      20 <> 0 <> 20 <> 20 <> 20 <> 20 <> 20 <> 20 <> 20 <> Nil{}
+    case 23n:
+      20 <> 20 <> 20 <> 20 <> 0 <> 20 <> 20 <> 0 <> 20 <> Nil{}
+    case 24n:
+      20 <> 0 <> 20 <> 0 <> 0 <> 0 <> 0 <> 0 <> 0 <> Nil{}
     case 21n+p:
       0 <> 0 <> 0 <> 0 <> 0 <> 0 <> 0 <> 0 <> 0 <> Nil{}
 
@@ -595,7 +619,7 @@ def craft_grid.if(
 def craft_grid(
   slots: List<&2, Slot>, grid: List<&2, Slot>, +index: Nat
 ) -> GridCraftResult:
-  craft_grid.if(slots, grid, index, Nat.is_lt(index, 21n))
+  craft_grid.if(slots, grid, index, Nat.is_lt(index, 25n))
 
 def craft.finalize.if(
   original: List<&2, Slot>, slots: List<&2, Slot>, remaining: U32, valid: Bool
@@ -636,7 +660,7 @@ def craft.if(slots: List<&2, Slot>, +index: Nat, valid: Bool) -> InventoryResult
       craft.spec(slots, spec)
 
 def craft(slots: List<&2, Slot>, +index: Nat) -> InventoryResult:
-  craft.if(slots, index, Nat.is_lt(index, 21n))
+  craft.if(slots, index, Nat.is_lt(index, 25n))
 
 def can_collect_block(+block: U32, +y: Nat) -> Bool:
   +utility = Bool.or(Bool.or(U32.is_eq(block, 25), U32.is_eq(block, 26)), U32.is_eq(block, 27))

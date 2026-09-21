@@ -79,6 +79,10 @@ export const ITEM_IDS = Object.freeze({
   bread: 41,
   apple: 42,
   chest: 43,
+  leather_helmet: 44,
+  iron_chestplate: 45,
+  iron_leggings: 46,
+  iron_boots: 47,
 });
 const ITEM_NAMES = Object.freeze(Object.fromEntries(
   Object.entries(ITEM_IDS).map(([name, id]) => [id, name]),
@@ -175,6 +179,10 @@ export const ITEM_INFO = Object.freeze({
   bread: Object.freeze({ name: "bread", color: "#d59b45", block: null, placeable: false, collectible: true }),
   apple: Object.freeze({ name: "apple", color: "#c94a3f", block: null, placeable: false, collectible: true }),
   chest: Object.freeze({ name: "chest", color: "#9d6a3e", block: 26, placeable: true, collectible: true }),
+  leather_helmet: Object.freeze({ name: "leather helmet", color: "#9b5c38", block: null, placeable: false, collectible: true }),
+  iron_chestplate: Object.freeze({ name: "iron chestplate", color: "#c5cbcd", block: null, placeable: false, collectible: true }),
+  iron_leggings: Object.freeze({ name: "iron leggings", color: "#aeb7ba", block: null, placeable: false, collectible: true }),
+  iron_boots: Object.freeze({ name: "iron boots", color: "#92999f", block: null, placeable: false, collectible: true }),
 });
 
 function valuesFromList(list) {
@@ -207,6 +215,10 @@ const RECIPE_IDS = [
   "arrow",
   "shield",
   "bread",
+  "leather_helmet",
+  "iron_chestplate",
+  "iron_leggings",
+  "iron_boots",
 ];
 export const RECIPES = Object.freeze(RECIPE_IDS.map((id, recipeIndex) => {
   const offset = recipeIndex * 8;
@@ -236,7 +248,7 @@ function slotView(item, count, durability, previous, durabilityByItem) {
   if (item === 0 || count === 0) return { block: 0, count: 0 };
   const block = ITEM_TO_BLOCK[name];
   const view = block === undefined ? { item: name, count } : { block, count };
-  if ([11, 17, 18, 19, 27, 33, 34, 35, 36, 37, 38].includes(item)) {
+  if ([11, 17, 18, 19, 27, 33, 34, 35, 36, 37, 38, 44, 45, 46, 47].includes(item)) {
     view.durabilityMax = Number(InventoryDomain.tool_max_durability(item));
     view.durability = durability || previous?.durability || durabilityByItem?.get(name) || view.durabilityMax;
   }

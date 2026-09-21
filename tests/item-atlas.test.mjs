@@ -58,10 +58,14 @@ const itemNames = [
   "bread",
   "apple",
   "chest",
+  "leather_helmet",
+  "iron_chestplate",
+  "iron_leggings",
+  "iron_boots",
 ];
 
 assert.equal(ITEM_ATLAS_COLUMNS, 5);
-assert.equal(ITEM_ATLAS_ROWS, 8);
+assert.equal(ITEM_ATLAS_ROWS, 9);
 assert.equal(ITEM_TEXTURES.length, itemNames.length);
 assert.equal(TEXTURE_PASS.id, "fallback-pixel-pass-v1");
 assert.equal(TEXTURE_PASS.referenceSheet, null);
@@ -116,13 +120,13 @@ for (const [id, name] of itemNames.entries()) {
 
 const bedUV = itemTextureUV("bed", { tileSize: ITEM_ATLAS_TILE_SIZE, inset: 0 });
 assert.equal(bedUV[0], 0.6);
-assert.ok(Math.abs(bedUV[1] - (1 / 2)) < Number.EPSILON);
+assert.ok(Math.abs(bedUV[1] - (5 / 9)) < Number.EPSILON);
 assert.equal(bedUV[2], 0.8);
-assert.ok(Math.abs(bedUV[3] - (1 / 2)) < Number.EPSILON);
+assert.ok(Math.abs(bedUV[3] - (5 / 9)) < Number.EPSILON);
 assert.equal(bedUV[4], 0.8);
-assert.ok(Math.abs(bedUV[5] - (3 / 8)) < Number.EPSILON);
+assert.ok(Math.abs(bedUV[5] - (4 / 9)) < Number.EPSILON);
 assert.equal(bedUV[6], 0.6);
-assert.ok(Math.abs(bedUV[7] - (3 / 8)) < Number.EPSILON);
+assert.ok(Math.abs(bedUV[7] - (4 / 9)) < Number.EPSILON);
 assert.throws(() => itemTextureUV("bed", { inset: ITEM_ATLAS_TILE_SIZE / 2 }), RangeError);
 
 function createContext() {
@@ -200,7 +204,7 @@ assert.ok(itemCanvasContext.calls.length > 1);
 
 const atlasContext = createContext();
 drawItemTextureAtlas(atlasContext, { tileSize: 8 });
-assert.deepEqual(atlasContext.calls[0], ["clearRect", 0, 0, 40, 64]);
+assert.deepEqual(atlasContext.calls[0], ["clearRect", 0, 0, 40, 72]);
 assert.ok(atlasContext.calls.length > ITEM_TEXTURES.length);
 
 const atlasCanvasContext = createContext();

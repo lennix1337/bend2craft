@@ -1325,7 +1325,9 @@ try {
   let selectedSlot = 0;
   let inventoryCursor = null;
   let inventoryCursorAmount = null;
-  let craftingGrid = Array.from({ length: 9 }, () => ({ block: 0, count: 0 }));
+  let craftingGrid = Array.isArray(savedGame?.craftingGrid) && savedGame.craftingGrid.length === 9
+    ? savedGame.craftingGrid.map((item) => ({ ...item }))
+    : Array.from({ length: 9 }, () => ({ block: 0, count: 0 }));
   let inventoryOpen = false;
   let furnaceWorldState = Furnaces.empty();
   let activeFurnace = null;
@@ -3250,13 +3252,13 @@ try {
 
   function saveGame() {
     try {
-      returnCraftingGrid();
       saveTransactional(window.localStorage, SAVE_KEY, {
         version: 1,
         edits: world.getEdits(),
         player: { ...player },
         inventory: inventory.map((item) => ({ ...item })),
         equipment: equipmentState,
+        craftingGrid: craftingGrid.map((item) => ({ ...item })),
         furnaces: furnaceWorldState,
         chests: chestWorldState,
         crops: cropState,

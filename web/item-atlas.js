@@ -2,7 +2,7 @@ import { TEXTURE_PASS } from "../assets/generated/textures/fallback-style.js";
 
 export { TEXTURE_PASS };
 export const ITEM_ATLAS_COLUMNS = 5;
-export const ITEM_ATLAS_ROWS = 8;
+export const ITEM_ATLAS_ROWS = 9;
 export const ITEM_ATLAS_TILE_SIZE = 16;
 export const ITEM_ATLAS_WIDTH = ITEM_ATLAS_COLUMNS * ITEM_ATLAS_TILE_SIZE;
 export const ITEM_ATLAS_HEIGHT = ITEM_ATLAS_ROWS * ITEM_ATLAS_TILE_SIZE;
@@ -698,6 +698,70 @@ const TEXTURE_SPECS = [
       "sabbbbas",
       "saaaaaas",
       "ssssssss",
+    ],
+  },
+  {
+    name: "leather_helmet",
+    label: "Leather Helmet",
+    kind: "armor",
+    colors: { base: "#9b5c38", accent: "#c27b4c", shadow: "#613b29", highlight: "#d6965c" },
+    pattern: [
+      "..ssss..",
+      ".saaabs.",
+      "sbbbbbbs",
+      "sbbbbbbs",
+      "sbbbbbbs",
+      "sbbbbbbs",
+      ".sbbbbbs",
+      "..ssss..",
+    ],
+  },
+  {
+    name: "iron_chestplate",
+    label: "Iron Chestplate",
+    kind: "armor",
+    colors: { base: "#c5cbcd", accent: "#edf0ef", shadow: "#4e585e", highlight: "#ffffff" },
+    pattern: [
+      "s......s",
+      "sbbbbbbs",
+      "sbaaaabs",
+      "sbbbbbbs",
+      "sbbbbbbs",
+      "sbbbbbbs",
+      "sbbbbbbs",
+      ".ssssss.",
+    ],
+  },
+  {
+    name: "iron_leggings",
+    label: "Iron Leggings",
+    kind: "armor",
+    colors: { base: "#aeb7ba", accent: "#edf0ef", shadow: "#4e585e", highlight: "#ffffff" },
+    pattern: [
+      ".ssssss.",
+      "sbbbbbbs",
+      "sbbbbbbs",
+      "sbbbbbbs",
+      "sbbbbsbs",
+      "sbbbbsbs",
+      "sbbbbsbs",
+      ".ssssss.",
+    ],
+  },
+  {
+    name: "iron_boots",
+    label: "Iron Boots",
+    kind: "armor",
+    colors: { base: "#92999f", accent: "#edf0ef", shadow: "#4e585e", highlight: "#ffffff" },
+    pattern: [
+      "........",
+      "sbb..bbs",
+      "sbb..bbs",
+      "sbb..bbs",
+      "sbb..bbs",
+      "sbbbbbbs",
+      "sbbbbbbs",
+      ".ssssss.",
     ],
   },
 ];

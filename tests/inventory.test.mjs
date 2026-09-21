@@ -129,7 +129,8 @@ assert.deepEqual(RECIPES.map((recipe) => recipe.id), [
   "stone_pickaxe", "iron_pickaxe", "diamond_pickaxe", "furnace",
   "torch", "bed", "door", "wooden_hoe", "empty_bucket",
   "wooden_sword", "stone_sword", "iron_sword", "diamond_sword",
-  "bow", "arrow", "shield", "bread",
+  "bow", "arrow", "shield", "bread", "leather_helmet",
+  "iron_chestplate", "iron_leggings", "iron_boots",
 ]);
 assert.deepEqual(RECIPES[0].ingredients, [{ item: "wood", count: 1 }]);
 assert.deepEqual(RECIPES[0].output, { item: "planks", count: 4 });
@@ -150,6 +151,8 @@ const shapedCraft = craftGrid(shapedInventory, shapedGrid, "planks");
 assert.equal(shapedCraft.ok, true);
 assert.equal(countItem(shapedInventory, "planks"), 4);
 assert.equal(shapedCraft.grid[0].count, 0);
+assert.deepEqual(RECIPES[21].ingredients, [{ item: "wool", count: 5 }]);
+assert.deepEqual(RECIPES[21].output, { item: "leather_helmet", count: 1 });
 
 const planks = createInventory();
 assert.equal(canCraft(planks, "planks"), true);

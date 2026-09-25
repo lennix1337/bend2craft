@@ -15,6 +15,45 @@ export function bytesPerRow(width) {
 }
 
 /**
+ * Top row of a readback region, given the bottom-left origin the caller used.
+ *
+ * Callers address the frame the way WebGL `readPixels` does, with the origin at
+ * the bottom left. A canvas texture is stored top-down, so the copy has to start
+ * at the mirrored row. Without this the copy silently starts at row 0 and every
+ * readback returns the top-left corner of the frame instead of the requested
+ * region.
+ */
+export function readbackRowTop(canvasHeight, bottom, height) {
+  const total = Math.max(1, Math.trunc(Number(canvasHeight) || 0));
+  const from = Math.trunc(Number(bottom) || 0);
+  const rows = Math.max(1, Math.trunc(Number(height) || 0));
+  return Math.max(0, total - from - rows);
+}
+
+/** Where a copied row belongs in the returned buffer, so the frame is upright. */
+export function readbackTargetRow(height, row) {
+  const rows = Math.max(1, Math.trunc(Number(height) || 0));
+  return rows - 1 - Math.max(0, Math.min(rows - 1, Math.trunc(Number(row) || 0)));
+}
+
+/**
+ * Undo the swap chain's channel order.
+ *
+ * The preferred canvas format is normally `bgra8unorm`, so a raw copy comes back
+ * with red and blue exchanged. The browser presents the frame correctly, but
+ * anything that reads the pixels back has to undo the swap or it disagrees with
+ * the WebGL backend, which reports RGBA.
+ */
+export function swapRedBlue(pixels) {
+  for (let index = 0; index + 3 < pixels.length; index += 4) {
+    const red = pixels[index];
+    pixels[index] = pixels[index + 2];
+    pixels[index + 2] = red;
+  }
+  return pixels;
+}
+
+/**
  * Whether this device can actually hand a rendered frame back to JavaScript.
  * A pipeline that compiles is not the same thing as a frame we can measure, so
  * an unsupported path reports why instead of silently skipping.

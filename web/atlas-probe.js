@@ -315,7 +315,7 @@ export function certifyAtlasMipmaps(
   return { ...verdict, tiles: probeTiles.length };
 }
 
-function spreadProbeTiles(textureCount, columns) {
+export function spreadProbeTiles(textureCount, columns) {
   const step = Math.max(1, Math.floor(textureCount / 16));
   const tiles = [];
   for (let tile = 0; tile < textureCount; tile += step) tiles.push(tile);

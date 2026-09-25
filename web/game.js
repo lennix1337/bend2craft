@@ -524,6 +524,10 @@ try {
   };
   if (rendererKind === "webgpu") {
     try {
+      // The WebGPU path has no WebGL context to certify against, so the
+      // renderer certifies the atlas on its own device before it builds the
+      // texture it samples. It reports the verdict so the diagnostics agree
+      // with whichever backend is live.
       gpuRenderer = await withTimeout(
         createWebGpuTerrainRenderer({
           canvas,
@@ -532,6 +536,7 @@ try {
         3000,
         "WebGPU renderer initialization timed out.",
       );
+      atlasMipmapVerdict = gpuRenderer.getAtlasMipmapVerdict();
     } catch (error) {
       if (requestedRenderer !== "auto") throw error;
       rendererKind = "webgl";
@@ -881,7 +886,9 @@ try {
   atlasLocation = gl.getUniformLocation(program, "uAtlas");
   terrainCloudMapLocation = gl.getUniformLocation(program, "uCloudMap");
   // Mipmaps stay off until the padded atlas is certified free of foreign tile
-  // contamination on a throwaway mip chain, so a bad atlas can never ship.
+  // contamination on a throwaway mip chain, so a bad atlas can never ship. The
+  // WebGPU path certifies on its own device before it builds its atlas, and its
+  // verdict is already in `atlasMipmapVerdict` by the time diagnostics read it.
   atlasMipmapVerdict = certifyAtlasMipmaps(gl, BLOCK_COLORS);
   atlasTexture = createTextureAtlas(gl, BLOCK_COLORS, {
     mipmaps: true,

@@ -6,11 +6,28 @@ import {
   packedLayerBounds,
 } from "./webgpu-chunk-buffers.js";
 import {
+  ATLAS_MIPMAP_SAFE_LEVELS,
+  ATLAS_TILE_GUTTER,
+  ATLAS_TILE_SIZE,
+  ATLAS_TILE_STRIDE,
+  ATLAS_TEXTURES,
+  ATLAS_WIDTH,
+  ATLAS_COLUMNS,
+  atlasCellOrigin,
+  atlasMipLevelGeometry,
+  foreignTileContamination,
+  maxChannelDelta,
+} from "./texture-atlas.js";
+import { spreadProbeTiles } from "./atlas-probe.js";
+import {
   COPY_SRC,
   FRAME_READBACK_BYTES_PER_PIXEL,
   MAP_READ,
   bytesPerRow,
   describeFrameReadbackSupport,
+  readbackRowTop,
+  readbackTargetRow,
+  swapRedBlue,
 } from "./webgpu-frame-readback.js";
 import {
   createSubmitMetrics,
@@ -189,8 +206,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let materialView = normalize(-input.viewDirection);
     let materialFacing = max(dot(vec3<f32>(0.0, 1.0, 0.0), materialView), 0.0);
     let materialSpecular = ${MATERIAL_SPECULAR_STRENGTH.toFixed(3)} * pow(materialFacing, ${MATERIAL_SPECULAR_POWER.toFixed(1)}) * (1.0 - surfaceRoughness);
-    var color = litColor + frame.sunColor.rgb * materialSpecular * smoothstep(-0.08, 0.08, frame.sunDirection.y);
-    var alpha = textureColor.a;
+    // These assign the fragment-scope color and alpha. Re-declaring them here
+    // would shadow the outer pair, and the final return would then ship the
+    // unshaded seed value instead of the material result.
+    color = litColor + frame.sunColor.rgb * materialSpecular * smoothstep(-0.08, 0.08, frame.sunDirection.y);
+    alpha = textureColor.a;
     if (surfacePass > 0.5 && surfacePass < 1.5 && input.material >= ${SURFACE_MATERIAL_WATER} && input.material < ${SURFACE_MATERIAL_LAVA}) {
       let phaseA = frame.params.y * 1.8 + input.worldPosition.x * 0.42 + input.worldPosition.z * 0.28;
       let phaseB = frame.params.y * 2.7 - input.worldPosition.z * 0.19 + input.worldPosition.x * 0.11;
@@ -366,6 +386,10 @@ function shaderStage(name) {
   return globalThis.GPUShaderStage?.[name] ?? SHADER_STAGE[name];
 }
 
+function mapMode() {
+  return globalThis.GPUMapMode?.READ ?? MAP_READ;
+}
+
 function createVertexBuffer(device, packed) {
   if (packed.vertexCount === 0) return null;
   const buffer = device.createBuffer({
@@ -398,11 +422,167 @@ function createDefaultAtlas(device) {
   return texture;
 }
 
-function createAtlasTexture(device, canvas) {
+// Foreign Tile Contamination gate for the WebGPU path. The atlas is built on a
+// throwaway texture, its mip chain is generated, and each tile's cell is read
+// back through a copy so it can be compared against an isolation reference that
+// holds only that one tile. This mirrors the WebGL certification, and the verdict
+// decides whether the shipping atlas gets a mip chain at all.
+async function certifyAtlasMipmapsOnGpu(device, canvas) {
+  const levels = ATLAS_MIPMAP_SAFE_LEVELS;
+  const verdict = { safe: false, reason: null, levels: [...levels], contaminated: [], worstDelta: 0 };
+  if (canvas === null || canvas === undefined) {
+    verdict.reason = "no atlas canvas was supplied";
+    return verdict;
+  }
+  if (canvas.width !== canvas.height
+    || (canvas.width & (canvas.width - 1)) !== 0) {
+    verdict.reason = `the atlas must be square and a power of two, got ${canvas.width}x${canvas.height}`;
+    return verdict;
+  }
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (context === null) {
+    verdict.reason = "the atlas canvas cannot be read back for certification";
+    return verdict;
+  }
+  // Certify the exact bytes the shipping atlas uploads, so the gate cannot pass
+  // on a texture the renderer never samples.
+  const source = new Uint8ClampedArray(
+    context.getImageData(0, 0, canvas.width, canvas.height).data,
+  );
+  const mipLevelCount = Math.floor(Math.log2(canvas.width)) + 1;
+  // Contamination is a property of the padded layout, so both backends probe the
+  // same spread of tiles and the two verdicts stay comparable.
+  const probeTiles = spreadProbeTiles(ATLAS_TEXTURES.length, ATLAS_COLUMNS);
+  const observed = createMipmappedAtlasTexture(device, canvas.width, mipLevelCount, source);
+  if (observed === null) {
+    verdict.reason = "the WebGPU device cannot build an atlas texture for certification";
+    return verdict;
+  }
+  try {
+    return await probeAtlasMipmapGpu(
+      device, observed, canvas.width, mipLevelCount, source, levels, verdict, probeTiles,
+    );
+  } catch (error) {
+    verdict.reason = `the WebGPU atlas certification failed: ${String(error).slice(0, 160)}`;
+    return verdict;
+  } finally {
+    observed.destroy();
+  }
+}
+
+function createMipmappedAtlasTexture(device, size, mipLevelCount, pixels) {
+  if (typeof device.createRenderPipeline !== "function") return null;
+  const texture = device.createTexture({
+    size: [size, size, 1],
+    format: "rgba8unorm",
+    mipLevelCount,
+    usage: textureUsage("TEXTURE_BINDING") | textureUsage("COPY_DST")
+      | textureUsage("RENDER_ATTACHMENT") | textureUsage("COPY_SRC"),
+  });
+  device.queue.writeTexture(
+    { texture },
+    pixels,
+    { bytesPerRow: size * 4, rowsPerImage: size },
+    { width: size, height: size, depthOrArrayLayers: 1 },
+  );
+  generateAtlasMipmaps(device, texture, mipLevelCount);
+  return texture;
+}
+
+// The isolation reference is a full-size atlas that holds one tile and zeroes
+// everything else, mipmapped the same way. If the observed cell differs from it,
+// another tile's material reached into this one.
+function buildIsolationReference(device, size, mipLevelCount, source, cell) {
+  const isolated = new Uint8Array(size * size * 4);
+  const origin = atlasCellOrigin(cell.tile);
+  const stride = ATLAS_TILE_STRIDE * 4;
+  for (let row = 0; row < ATLAS_TILE_STRIDE; row += 1) {
+    const from = ((origin.y + row) * ATLAS_WIDTH + origin.x) * 4;
+    isolated.set(source.subarray(from, from + stride), (origin.y + row) * size * 4 + origin.x * 4);
+  }
+  return createMipmappedAtlasTexture(device, size, mipLevelCount, isolated);
+}
+
+async function probeAtlasMipmapGpu(
+  device, texture, size, mipLevelCount, source, levels, verdict, probeTiles,
+) {
+  const contaminated = [];
+  let worstDelta = 0;
+  for (const tile of probeTiles) {
+    const cell = { tile };
+    const reference = buildIsolationReference(device, size, mipLevelCount, source, cell);
+    if (reference === null) {
+      verdict.reason = "the WebGPU device cannot build an isolation reference";
+      return verdict;
+    }
+    try {
+      for (const level of levels) {
+        const geometry = atlasMipLevelGeometry(ATLAS_TILE_GUTTER, ATLAS_TILE_SIZE, level);
+        if (geometry.size < 1) continue;
+        const cellPixels = readAtlasCell(device, texture, cell, geometry, level);
+        const expectedPixels = readAtlasCell(device, reference, cell, geometry, level);
+        const delta = maxChannelDelta(cellPixels, expectedPixels);
+        if (delta > worstDelta) worstDelta = delta;
+        if (foreignTileContamination(
+          { size: geometry.size, pixels: cellPixels },
+          { size: geometry.size, pixels: expectedPixels },
+        )) {
+          contaminated.push({ tile: cell.tile, level, maxDelta: delta });
+        }
+      }
+    } finally {
+      reference.destroy();
+    }
+  }
+  return { ...verdict, safe: contaminated.length === 0, reason: null, contaminated, worstDelta };
+}
+
+async function readAtlasCell(device, texture, cell, geometry, level) {
+  const factor = 2 ** level;
+  const origin = atlasCellOrigin(cell.tile);
+  // `geometry.size` is already the whole padded cell at this level, so the cell
+  // starts at the scaled cell origin with no extra gutter inset.
+  const x = Math.floor(origin.x / factor);
+  const y = Math.floor(origin.y / factor);
+  const stride = bytesPerRow(geometry.size);
+  const buffer = device.createBuffer({
+    size: stride * geometry.size,
+    usage: bufferUsage("MAP_READ") | bufferUsage("COPY_DST"),
+  });
+  try {
+    const encoder = device.createCommandEncoder();
+    encoder.copyTextureToBuffer(
+      { texture, mipLevel: level, origin: { x, y, z: 0 } },
+      { buffer, bytesPerRow: stride, rowsPerImage: geometry.size },
+      { width: geometry.size, height: geometry.size, depthOrArrayLayers: 1 },
+    );
+    device.queue.submit([encoder.finish()]);
+    await buffer.mapAsync(mapMode());
+    const mapped = new Uint8Array(buffer.getMappedRange());
+    const rowBytes = geometry.size * 4;
+    const pixels = new Uint8Array(rowBytes * geometry.size);
+    for (let row = 0; row < geometry.size; row += 1) {
+      pixels.set(mapped.subarray(row * stride, row * stride + rowBytes), row * rowBytes);
+    }
+    buffer.unmap();
+    return pixels;
+  } finally {
+    buffer.destroy();
+  }
+}
+
+// The atlas is a padded, power-of-two image, so it can take a mip chain like the
+// WebGL path. Mipmaps are only generated once the atlas has been certified free
+// of foreign tile contamination.
+function createAtlasTexture(device, canvas, mipmapSafe) {
   if (canvas === null || canvas === undefined) return createDefaultAtlas(device);
+  const mipLevelCount = mipmapSafe
+    ? Math.floor(Math.log2(Math.max(canvas.width, canvas.height))) + 1
+    : 1;
   const texture = device.createTexture({
     size: [canvas.width, canvas.height, 1],
     format: "rgba8unorm",
+    mipLevelCount,
     usage: textureUsage("TEXTURE_BINDING") | textureUsage("COPY_DST") | textureUsage("RENDER_ATTACHMENT"),
   });
   device.queue.copyExternalImageToTexture(
@@ -410,8 +590,89 @@ function createAtlasTexture(device, canvas) {
     { texture },
     { width: canvas.width, height: canvas.height, depthOrArrayLayers: 1 },
   );
+  if (mipmapSafe && mipLevelCount > 1) generateAtlasMipmaps(device, texture, mipLevelCount);
   return texture;
 }
+
+// `copyExternalImageToTexture` can only write mip level 0, so the chain is
+// built by rendering each level from the one before it. This is the same box
+// filter the WebGL path's `generateMipmap` applies.
+function generateAtlasMipmaps(device, texture, mipLevelCount) {
+  const size = mipLevelCount
+    ?? (Math.floor(Math.log2(Math.max(texture.width, texture.height))) + 1);
+  if (size < 1 || typeof device.createRenderPipeline !== "function") return;
+  const format = "rgba8unorm";
+  const pipeline = device.createRenderPipeline({
+    layout: "auto",
+    vertex: {
+      module: device.createShaderModule({ code: ATLAS_MIPMAP_WGSL }),
+      entryPoint: "vs_main",
+    },
+    fragment: {
+      module: device.createShaderModule({ code: ATLAS_MIPMAP_WGSL }),
+      entryPoint: "fs_main",
+      targets: [{ format }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
+  const sampler = device.createSampler({
+    magFilter: "linear",
+    minFilter: "linear",
+    addressModeU: "clamp-to-edge",
+    addressModeV: "clamp-to-edge",
+  });
+  for (let level = 1; level < size; level += 1) {
+    const bindGroup = device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: sampler },
+        { binding: 1, resource: texture.createView({ baseMipLevel: level - 1, mipLevelCount: 1 }) },
+      ],
+    });
+    const encoder = device.createCommandEncoder();
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: texture.createView({ baseMipLevel: level, mipLevelCount: 1 }),
+        loadOp: "clear",
+        storeOp: "store",
+        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+      }],
+    });
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.draw(3, 1, 0, 0);
+    pass.end();
+    device.queue.submit([encoder.finish()]);
+  }
+}
+
+const ATLAS_MIPMAP_WGSL = `
+@group(0) @binding(0) var sourceSampler: sampler;
+@group(0) @binding(1) var sourceTexture: texture_2d<f32>;
+
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+  var positions = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>(3.0, -1.0),
+    vec2<f32>(-1.0, 3.0),
+  );
+  var output: VertexOutput;
+  output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+  output.uv = positions[vertexIndex] * 0.5 + 0.5;
+  return output;
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+  return textureSample(sourceTexture, sourceSampler, input.uv);
+}
+`;
 
 function createCloudTexture(device) {
   const texture = device.createTexture({
@@ -572,7 +833,10 @@ export async function createWebGpuTerrainRenderer({
     usage: bufferUsage("UNIFORM") | bufferUsage("COPY_DST"),
   }));
   device.pushErrorScope?.("validation");
-  const atlasTexture = createAtlasTexture(device, atlasCanvas);
+  // The gate has to decide before the shipping atlas is built, so an uncertified
+  // atlas can never reach the screen with a mip chain.
+  const atlasMipmapVerdict = await certifyAtlasMipmapsOnGpu(device, atlasCanvas);
+  const atlasTexture = createAtlasTexture(device, atlasCanvas, atlasMipmapVerdict.safe);
   const cloudTexture = createCloudTexture(device);
   const textureError = await device.popErrorScope?.();
   if (textureError) {
@@ -582,8 +846,10 @@ export async function createWebGpuTerrainRenderer({
   }
   const atlasSampler = device.createSampler({
     magFilter: "linear",
-    minFilter: "linear",
-    mipmapFilter: "nearest",
+    // Minification only sees the mip chain when the atlas was certified, so
+    // the filter has to match whether one exists.
+    minFilter: atlasMipmapVerdict.safe ? "linear" : "nearest",
+    mipmapFilter: atlasMipmapVerdict.safe ? "linear" : "nearest",
     addressModeU: "clamp-to-edge",
     addressModeV: "clamp-to-edge",
   });
@@ -633,7 +899,8 @@ export async function createWebGpuTerrainRenderer({
   let editUploads = 0;
   let resyncUploads = 0;
   let lastSubmit = createSubmitMetrics();
-  let lastPresentedTexture = null;
+  // A frame readback request waiting for the next render() to encode its copy.
+  let pendingCapture = null;
 
   function storeChunk(key, opaqueSource, waterSource) {
     const previous = terrain.get(key);
@@ -767,9 +1034,12 @@ export async function createWebGpuTerrainRenderer({
   }
 
   /**
-   * Read a real region of the last presented frame back to JavaScript. This
-   * copies the swap-chain texture into a mappable buffer, so the gate measures
-   * pixels the GPU actually produced instead of trusting the pipeline.
+   * Read a real region of the presented frame back to JavaScript.
+   *
+   * The copy must be encoded in the *same* command buffer as the render pass:
+   * a canvas texture's contents are only valid until the frame is presented, so
+   * copying it in a later submission reads back an empty texture. This arms a
+   * capture request, waits for the next frame to encode it, then maps the copy.
    */
   async function readFramePixels(x, y, width, height) {
     if (!readbackSupport.supported) {
@@ -783,38 +1053,60 @@ export async function createWebGpuTerrainRenderer({
       || left + pixelWidth > canvas.width || bottom + pixelHeight > canvas.height) {
       throw new RangeError("frame pixel region is outside the canvas");
     }
+    // Callers address the frame the way WebGL `readPixels` does, with the origin
+    // at the bottom left, so the copy has to start at the mirrored row.
+    const top = readbackRowTop(canvas.height, bottom, pixelHeight);
     const stride = bytesPerRow(pixelWidth);
     const buffer = device.createBuffer({
       size: stride * pixelHeight,
       usage: bufferUsage("MAP_READ") | bufferUsage("COPY_DST"),
     });
+    const request = {
+      left,
+      bottom,
+      top,
+      width: pixelWidth,
+      height: pixelHeight,
+      stride,
+      buffer,
+      resolve: null,
+      reject: null,
+    };
+    const done = new Promise((resolve, reject) => {
+      request.resolve = resolve;
+      request.reject = reject;
+    });
+    const previous = pendingCapture;
+    pendingCapture = request;
+    if (previous !== null) {
+      // A superseded request would otherwise wait forever for a frame.
+      pendingCapture = request;
+      previous.reject(new Error("WebGPU frame readback was superseded by a newer request"));
+    }
     try {
-      const encoder = device.createCommandEncoder();
-      encoder.copyTextureToBuffer(
-        { texture: lastPresentedTexture },
-        { buffer, bytesPerRow: stride, rowsPerImage: pixelHeight },
-        { width: pixelWidth, height: pixelHeight, depthOrArrayLayers: 1 },
-      );
-      device.queue.submit([encoder.finish()]);
+      // The game loop drives render(), which is what encodes the copy.
+      for (let attempt = 0; attempt < 240 && !request.captured; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 16));
+      }
+      if (!request.captured) {
+        throw new Error("WebGPU frame readback timed out waiting for a rendered frame");
+      }
       await buffer.mapAsync(mapMode());
       const mapped = new Uint8Array(buffer.getMappedRange());
-      // WebGPU hands back the raw bytes; the gate only needs RGBA order, which
-      // is what the copy produced because the target is rgba8/bgra8 with no
-      // channel swizzle, so the rows are trimmed back to the region width.
       const rowBytes = pixelWidth * FRAME_READBACK_BYTES_PER_PIXEL;
       const pixels = new Uint8Array(rowBytes * pixelHeight);
       for (let row = 0; row < pixelHeight; row += 1) {
-        pixels.set(mapped.subarray(row * stride, row * stride + rowBytes), row * rowBytes);
+        const source = row * stride;
+        const target = readbackTargetRow(pixelHeight, row) * rowBytes;
+        pixels.set(mapped.subarray(source, source + rowBytes), target);
       }
+      if (format.startsWith("bgra")) swapRedBlue(pixels);
       return { left, bottom, width: pixelWidth, height: pixelHeight, pixels };
     } finally {
+      if (pendingCapture === request) pendingCapture = null;
       buffer.unmap?.();
       buffer.destroy();
     }
-  }
-
-  function mapMode() {
-    return (globalThis.GPUMapMode?.READ ?? MAP_READ);
   }
 
   function render(frame) {
@@ -833,9 +1125,6 @@ export async function createWebGpuTerrainRenderer({
     if ((dynamic?.vertexCount ?? 0) > 0) metrics.drawCalls += 1;
     const encoder = device.createCommandEncoder();
     const presented = canvasContext.getCurrentTexture();
-    // Hold on to the presented texture so a readback can copy from the exact
-    // frame the submit produced.
-    lastPresentedTexture = presented;
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
         view: presented.createView(),
@@ -863,6 +1152,22 @@ export async function createWebGpuTerrainRenderer({
     drawLayer(pass, shadowPipeline, shadow?.buffer ?? null, shadow?.vertexCount ?? 0, 2);
     drawLayer(pass, dynamicPipeline, dynamic?.buffer ?? null, dynamic?.vertexCount ?? 0, 3);
     pass.end();
+    // The readback copy has to be part of this submission. A canvas texture is
+    // only valid until the frame is presented, so copying it afterwards would
+    // read back an empty texture instead of the frame just drawn.
+    const capture = pendingCapture;
+    if (capture !== null) {
+      encoder.copyTextureToBuffer(
+        { texture: presented, origin: { x: capture.left, y: capture.top, z: 0 } },
+        {
+          buffer: capture.buffer,
+          bytesPerRow: capture.stride,
+          rowsPerImage: capture.height,
+        },
+        { width: capture.width, height: capture.height, depthOrArrayLayers: 1 },
+      );
+      capture.captured = true;
+    }
     device.queue.submit([encoder.finish()]);
   }
 
@@ -889,6 +1194,7 @@ export async function createWebGpuTerrainRenderer({
     render,
     readFramePixels,
     getReadbackSupport: () => ({ ...readbackSupport }),
+    getAtlasMipmapVerdict: () => ({ ...atlasMipmapVerdict }),
     destroy,
     getStats: () => ({
       backend: "webgpu",

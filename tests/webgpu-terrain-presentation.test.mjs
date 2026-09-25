@@ -314,6 +314,45 @@ assert.match(fragmentSource, /textureSampleLevel\(cloudTexture, cloudSampler/);
 assert.match(fragmentSource, /smoothstep\(0\.54, 0\.72, causticPattern\)/);
 assert.doesNotMatch(fragmentSource, /filmicToneMap/);
 
+// A block-scoped `var color` or `var alpha` inside the material branch shadows
+// the function-scope pair, so the final return keeps shipping the unshaded seed
+// value. That made the whole three-stage material contract, the water shading and
+// the atlas alpha dead code on the WebGPU path, and it rendered as a flat
+// near-white frame while every other assertion in this file still passed. The
+// branches must assign, never re-declare.
+for (const name of ["color", "alpha"]) {
+  const declarations = fragmentSource.match(new RegExp(`var ${name}\\s*=`, "g")) ?? [];
+  assert.equal(
+    declarations.length,
+    1,
+    `the WGSL fragment must declare \`var ${name}\` exactly once, found ${declarations.length}`,
+  );
+  assert.equal(
+    (fragmentSource.match(new RegExp(`^\\s*var ${name}\\b`, "gm")) ?? []).length,
+    1,
+    `the single \`var ${name}\` must sit at fragment scope, not inside a branch`,
+  );
+}
+assert.doesNotMatch(
+  fragmentSource,
+  /var color = litColor/,
+  "the shaded result must assign the fragment-scope color, not shadow it",
+);
+assert.doesNotMatch(
+  fragmentSource,
+  /var alpha = textureColor\.a/,
+  "the atlas alpha must assign the fragment-scope alpha, not shadow it",
+);
+// The material branch is the only producer of the shaded color, so the value the
+// function returns has to come from it.
+const shadedAssignment = fragmentSource.indexOf("color = litColor");
+const finalReturn = fragmentSource.lastIndexOf("mix(clamp(color, vec3<f32>(0.0)");
+assert.ok(shadedAssignment >= 0, "the material branch must assign the shaded color");
+assert.ok(shadedAssignment < finalReturn, "the shaded color must be assigned before it is returned");
+const alphaAssignment = fragmentSource.indexOf("alpha = textureColor.a");
+const finalAlpha = fragmentSource.lastIndexOf("alpha * (1.0 - input.aerialFog)");
+assert.ok(alphaAssignment >= 0 && alphaAssignment < finalAlpha);
+
 // Phase 6: the WebGPU path must be able to hand a real frame back, and must
 // say so explicitly when it cannot. A readback path that only proves the
 // pipeline compiles is not a visible-validation gate.
@@ -323,7 +362,24 @@ assert.match(rendererSource, /mapAsync/, "the readback must map the copied buffe
 assert.match(rendererSource, /bytesPerRow/, "the readback must respect the 256-byte row alignment");
 assert.match(rendererSource, /COPY_SRC/, "the swap chain must be configured for copying");
 assert.match(rendererSource, /MAP_READ/, "the readback buffer must be mappable");
-assert.match(rendererSource, /lastPresentedTexture = presented/, "the readback must target the frame just submitted");
+// The copy is encoded from the same command buffer as the render pass, so it
+// reads the texture that pass wrote rather than a presented-and-recycled one.
+const renderBodyForCapture = rendererSource.slice(rendererSource.indexOf("function render(frame)"));
+assert.ok(
+  renderBodyForCapture.indexOf("pass.end()")
+    < renderBodyForCapture.indexOf("encoder.copyTextureToBuffer"),
+  "the readback copy must be encoded after the render pass in the same encoder",
+);
+assert.ok(
+  renderBodyForCapture.indexOf("encoder.copyTextureToBuffer")
+    < renderBodyForCapture.indexOf("device.queue.submit"),
+  "the readback copy must be part of the submitted command buffer",
+);
+assert.match(
+  renderBodyForCapture,
+  /const presented = canvasContext\.getCurrentTexture\(\)/,
+  "the readback must target the texture the render pass drew into",
+);
 assert.match(gameSource, /readFramePixelsAsync/, "the bridge must expose the async readback");
 assert.match(gameSource, /getFrameReadbackSupport/, "the bridge must report readback support");
 assert.doesNotMatch(
@@ -451,5 +507,46 @@ assert.match(WEBGPU_SKY_SHADER, /sunDisk/);
 assert.match(WEBGPU_SKY_SHADER, /starField/);
 assert.match(WEBGPU_SKY_SHADER, /horizonHaze/);
 assert.match(WEBGPU_SKY_SHADER, /frame\.sunDirection\.xyz/);
+
+// The WebGPU path builds its own atlas texture, so the Foreign Tile Contamination
+// gate has to run on the WebGPU device. It used to be certified only in the WebGL
+// boot path, which left the WebGPU atlas reporting "not probed" and shipping
+// without the mip chain the WebGL backend already had.
+assert.match(
+  rendererSource,
+  /await certifyAtlasMipmapsOnGpu\(device, atlasCanvas\)/,
+  "the WebGPU path must certify the atlas on its own device",
+);
+assert.match(rendererSource, /getAtlasMipmapVerdict/, "the WebGPU verdict must be reportable");
+assert.match(gameSource, /gpuRenderer\.getAtlasMipmapVerdict\(\)/, "the game must read the verdict");
+assert.match(
+  rendererSource,
+  /const atlasMipmapVerdict = await certifyAtlasMipmapsOnGpu[\s\S]*?createAtlasTexture\(device, atlasCanvas, atlasMipmapVerdict\.safe\)/,
+  "the gate must decide before the shipping atlas is built",
+);
+// The gate is only real if it can await its readback and compare against an
+// isolation reference; a synchronous stub would have to report "unsafe" forever.
+assert.match(rendererSource, /async function certifyAtlasMipmapsOnGpu/);
+assert.match(rendererSource, /spreadProbeTiles\(ATLAS_TEXTURES\.length, ATLAS_COLUMNS\)/,
+  "both backends must probe the same tile spread");
+assert.match(rendererSource, /buildIsolationReference/);
+assert.match(rendererSource, /foreignTileContamination\(/);
+assert.match(rendererSource, /maxChannelDelta\(/);
+assert.match(rendererSource, /await buffer\.mapAsync\(/, "the gate must await its own readback");
+assert.doesNotMatch(
+  rendererSource,
+  /the WebGPU mip chain needs an async readback to certify/,
+  "the gate must no longer give up instead of awaiting",
+);
+// The readback has to report the frame the caller asked for, in the caller's
+// orientation and channel order, or a scene probe scores the wrong pixels.
+assert.match(rendererSource, /readbackRowTop\(canvas\.height, bottom, pixelHeight\)/);
+assert.match(rendererSource, /readbackTargetRow\(pixelHeight, row\)/);
+assert.match(rendererSource, /if \(format\.startsWith\("bgra"\)\) swapRedBlue\(pixels\)/);
+assert.match(
+  rendererSource,
+  /copyTextureToBuffer\([\s\S]*?origin: \{ x: capture\.left, y: capture\.top, z: 0 \}/,
+  "the copy must start at the requested region, not at the texture origin",
+);
 
 console.log("webgpu terrain presentation ok");

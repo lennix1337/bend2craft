@@ -11,6 +11,7 @@ import {
   loadOptions,
   randomSeedText,
   RENDERER_MODES,
+  runtimeRendererMode,
   saveJson,
   saveOptions,
   sanitizeOptions,
@@ -30,13 +31,16 @@ function memoryStore(entries = {}) {
 assert.equal(DEFAULT_RENDER_DISTANCE, 2);
 assert.equal(MIN_RENDER_DISTANCE, 2);
 assert.equal(MAX_RENDER_DISTANCE, 6);
-assert.equal(DEFAULT_RENDERER, RENDERER_MODES.AUTO);
+assert.equal(DEFAULT_RENDERER, RENDERER_MODES.WEBGL);
+assert.equal(runtimeRendererMode(RENDERER_MODES.AUTO), RENDERER_MODES.WEBGL);
+assert.equal(runtimeRendererMode(RENDERER_MODES.WEBGPU), RENDERER_MODES.WEBGPU);
+assert.equal(runtimeRendererMode(RENDERER_MODES.WEBGL), RENDERER_MODES.WEBGL);
 assert.deepEqual(createDefaultOptions(), {
   fov: 75,
   sensitivity: 1,
   showCoords: true,
   renderDistance: 2,
-  renderer: "auto",
+  renderer: "webgl",
   controls: DEFAULT_CONTROLS,
 });
 assert.deepEqual(sanitizeOptions({ fov: 200, sensitivity: -1, renderDistance: 99 }), {
@@ -44,7 +48,7 @@ assert.deepEqual(sanitizeOptions({ fov: 200, sensitivity: -1, renderDistance: 99
   sensitivity: 0.5,
   showCoords: true,
   renderDistance: 6,
-  renderer: "auto",
+  renderer: "webgl",
   controls: DEFAULT_CONTROLS,
 });
 assert.deepEqual(sanitizeOptions({ fov: "wide" }), createDefaultOptions());
@@ -54,7 +58,7 @@ assert.deepEqual(loadOptions(memoryStore({ "bend2craft-options": "{\"fov\":90}" 
   sensitivity: 1,
   showCoords: true,
   renderDistance: 2,
-  renderer: "auto",
+  renderer: "webgl",
   controls: DEFAULT_CONTROLS,
 });
 assert.equal(sanitizeOptions({ renderDistance: MIN_RENDER_DISTANCE - 1 }).renderDistance, MIN_RENDER_DISTANCE);

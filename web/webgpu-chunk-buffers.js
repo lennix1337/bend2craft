@@ -1,6 +1,25 @@
 export const TERRAIN_VERTEX_STRIDE_FLOATS = 13;
 export const TERRAIN_VERTEX_STRIDE_BYTES = TERRAIN_VERTEX_STRIDE_FLOATS * Float32Array.BYTES_PER_ELEMENT;
 
+// The culler needs a per-chunk box, and the packed buffer already holds every
+// position. Reading the bounds back from the packed data keeps the stride
+// knowledge in this module instead of duplicating it in the renderer.
+export function packedLayerBounds(packed, empty) {
+  const bounds = empty();
+  if (packed === null || packed === undefined || packed.vertexCount === 0) return bounds;
+  const { data } = packed;
+  for (let vertex = 0; vertex < packed.vertexCount; vertex += 1) {
+    const base = vertex * TERRAIN_VERTEX_STRIDE_FLOATS;
+    bounds.minX = Math.min(bounds.minX, data[base]);
+    bounds.minY = Math.min(bounds.minY, data[base + 1]);
+    bounds.minZ = Math.min(bounds.minZ, data[base + 2]);
+    bounds.maxX = Math.max(bounds.maxX, data[base]);
+    bounds.maxY = Math.max(bounds.maxY, data[base + 1]);
+    bounds.maxZ = Math.max(bounds.maxZ, data[base + 2]);
+  }
+  return bounds;
+}
+
 function isNumericArray(value) {
   return Array.isArray(value) || ArrayBuffer.isView(value);
 }
@@ -59,6 +78,23 @@ export function packTerrainLayer(layer) {
     strideBytes: TERRAIN_VERTEX_STRIDE_BYTES,
     quadCount: Number(layer.quadCount ?? vertexCount / 6),
   };
+}
+
+/**
+ * Decide how a chunk publication must be applied. The WebGPU backend keeps one
+ * buffer per chunk, so an edit that leaves the resident key set untouched can
+ * be applied in place, while a streaming change has to retire buffers and is a
+ * full resync. Ordering is ignored because streaming reorders the resident map.
+ */
+export function classifyChunkUpdate(residentKeys, incomingKeys) {
+  if (residentKeys === null || residentKeys === undefined) return "resync";
+  const resident = new Set(residentKeys);
+  const incoming = new Set(incomingKeys);
+  if (resident.size !== incoming.size) return "resync";
+  for (const key of incoming) {
+    if (!resident.has(key)) return "resync";
+  }
+  return "edit";
 }
 
 export function packTerrainChunks(chunks) {

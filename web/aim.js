@@ -39,3 +39,16 @@ export function rayHitBox(origin, direction, box, maxDistance) {
   }
   return near;
 }
+
+export function firstAimedMob(origin, direction, mobs, maxDistance) {
+  let target = null;
+  let targetDistance = maxDistance;
+  for (const mob of mobs) {
+    if (!mob.alive) continue;
+    const distance = rayHitBox(origin, direction, mobBox(mob), targetDistance);
+    if (distance === null) continue;
+    target = mob;
+    targetDistance = distance;
+  }
+  return target;
+}

@@ -1,16 +1,34 @@
+const AO_MERGE_EPSILON = 0.3;
+
+function sameAo(a, b) {
+  if (a === b) return true;
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  return a.every((value, index) => Math.abs(value - b[index]) <= AO_MERGE_EPSILON);
+}
+
+function materialSignature(quad) {
+  return `${quad.light ?? ""}:${quad.tile ?? ""}:${Array.isArray(quad.ao) ? quad.ao.join(",") : ""}`;
+}
+
 function sameMaterial(a, b) {
-  return a.faceIndex === b.faceIndex && a.fixed === b.fixed && a.block === b.block && a.light === b.light;
+  if (a.block === 4 || b.block === 4) return false;
+  return a.faceIndex === b.faceIndex
+    && a.fixed === b.fixed
+    && a.block === b.block
+    && a.light === b.light
+    && a.tile === b.tile
+    && sameAo(a.ao, b.ao);
 }
 
 function mergePass(quads, horizontal) {
   const sorted = [...quads].sort((a, b) => {
     const fields = horizontal
-      ? ["faceIndex", "fixed", "block", "v", "height", "u"]
-      : ["faceIndex", "fixed", "block", "u", "width", "v"];
+      ? ["faceIndex", "fixed", "block", "light", "tile", "v", "height", "u"]
+      : ["faceIndex", "fixed", "block", "light", "tile", "u", "width", "v"];
     for (const field of fields) {
       if (a[field] !== b[field]) return a[field] - b[field];
     }
-    return 0;
+    return materialSignature(a).localeCompare(materialSignature(b));
   });
   const merged = [];
   for (const quad of sorted) {

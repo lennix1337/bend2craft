@@ -17,7 +17,6 @@ import {
   touchWorld,
 } from "./profiles.js";
 import {
-  createDefaultOptions,
   createWorldConfig,
   DEFAULT_RENDER_DISTANCE,
   MAX_RENDER_DISTANCE,
@@ -29,6 +28,8 @@ import {
   worldModeLabel,
 } from "./settings.js";
 import { clearTransactional } from "./persistent-save.js";
+import { continueTarget } from "./menu-navigation.js";
+import { nextFocusTarget, setShellInert } from "./modal-focus.js";
 
 function element(id) {
   const node = document.getElementById(id);
@@ -42,17 +43,34 @@ function formatDate(timestamp) {
 }
 
 function playUrl(profileId, worldId) {
-  return `${window.location.pathname}?play=1&profile=${encodeURIComponent(profileId)}&world=${encodeURIComponent(worldId)}`;
+  const test = new URLSearchParams(window.location.search).get("test") === "1" ? "&test=1" : "";
+  return `${window.location.pathname}?play=1&profile=${encodeURIComponent(profileId)}&world=${encodeURIComponent(worldId)}${test}`;
 }
 
 export function runMenu() {
+  document.body.dataset.mode = "menu";
   const menu = element("menu");
+  const gameShell = document.getElementById("game-shell");
   menu.hidden = false;
+  const syncMenuIsolation = () => {
+    if (gameShell !== null) setShellInert(gameShell, menu);
+  };
+  const trapMenuFocus = (event) => {
+    if (event.key !== "Tab") return;
+    const screen = [...menu.querySelectorAll("[data-screen]")].find((node) => !node.hidden);
+    if (screen === undefined) return;
+    const target = nextFocusTarget(screen, document.activeElement, event.shiftKey);
+    event.preventDefault();
+    target?.focus({ preventScroll: true });
+  };
+  document.addEventListener("keydown", trapMenuFocus, true);
+  syncMenuIsolation();
   // The game HUD belongs to playing sessions only.
   for (const id of [
     "hud",
     "hotbar",
     "held-item-view",
+    "selected",
     "help",
     "crosshair",
     "mining-progress",
@@ -62,26 +80,79 @@ export function runMenu() {
     "chest-toggle",
     "inventory-panel",
     "furnace-panel",
+    "chest-panel",
+    "world-loading",
   ]) {
     const node = document.getElementById(id);
     if (node !== null) node.hidden = true;
   }
   const screens = [...menu.querySelectorAll("[data-screen]")];
-  const showScreen = (id) => {
-    for (const screen of screens) screen.hidden = screen.id !== id;
+  const showScreen = (id, focus = true) => {
+    let activeScreen = null;
+    for (const screen of screens) {
+      const active = screen.id === id;
+      screen.hidden = !active;
+      screen.setAttribute("aria-hidden", String(!active));
+      if (active) activeScreen = screen;
+    }
+    syncMenuIsolation();
+    menu.setAttribute("aria-busy", String(id === "screen-loading"));
+    if (focus && activeScreen !== null) {
+      window.requestAnimationFrame(() => {
+        const target = activeScreen.querySelector("input:not([hidden]), select:not([hidden]), button:not([hidden])");
+        target?.focus({ preventScroll: true });
+      });
+    }
   };
 
   let doc = loadProfilesDoc(window.localStorage);
-  let options = loadOptions(window.localStorage);
   let selectedProfileId = doc.activeProfileId;
   let selectedWorldId = null;
   let optionsReturn = "screen-title";
+  let navigatingToWorld = false;
 
   const persistProfiles = () => saveProfilesDoc(window.localStorage, doc);
-  const persistOptions = () => {
-    options = loadOptions(window.localStorage);
-    return saveOptions(window.localStorage, options);
-  };
+
+  function updateTitle() {
+    const target = continueTarget(doc);
+    const button = element("continue-world-button");
+    const startButton = element("title-start-button");
+    if (target === null) {
+      button.hidden = true;
+      startButton.textContent = "Create Your First World";
+      startButton.classList.add("primary");
+      element("title-world-name").textContent = "Start a new world";
+      element("title-world-meta").textContent = "Create a player, choose a seed, and begin exploring.";
+      return;
+    }
+    const profile = getProfile(doc, target.profileId);
+    const world = getWorld(doc, target.profileId, target.worldId);
+    if (profile === null || world === null) return;
+    button.hidden = false;
+    button.setAttribute("aria-label", `Enter ${world.name} as ${profile.name}`);
+    startButton.textContent = "Choose Another World";
+    startButton.classList.remove("primary");
+    element("title-world-name").textContent = world.name;
+    element("title-world-meta").textContent = `${profile.name} · ${worldModeLabel(world.mode)} · seed ${world.seed}`;
+  }
+
+  function beginWorldNavigation(profileId, worldId, worldName) {
+    if (navigatingToWorld) return;
+    navigatingToWorld = true;
+    element("menu-loading-world-name").textContent = worldName;
+    const progress = element("menu-loading-progress");
+    const setProgress = (label) => {
+      progress.setAttribute("aria-valuetext", label);
+    };
+    setProgress("Opening world");
+    showScreen("screen-loading", false);
+    element("screen-loading").focus({ preventScroll: true });
+    window.setTimeout(() => setProgress("Generating terrain"), 90);
+    window.setTimeout(() => setProgress("Preparing play space"), 210);
+    window.setTimeout(() => {
+      window.location.href = playUrl(profileId, worldId);
+    }, 320);
+  }
 
   function renderProfiles() {
     const list = element("profile-list");
@@ -171,8 +242,8 @@ export function runMenu() {
     doc = touchWorld(doc, selectedProfileId, selectedWorldId);
     doc = touchProfile(doc, selectedProfileId);
     persistProfiles();
-    showScreen("screen-loading");
-    window.location.href = playUrl(selectedProfileId, selectedWorldId);
+    updateTitle();
+    beginWorldNavigation(selectedProfileId, selectedWorldId, world.name);
   }
 
   function renderOptions() {
@@ -199,7 +270,19 @@ export function runMenu() {
     const button = event.target.closest("[data-action]");
     if (button === null) return;
     const action = button.dataset.action;
-    if (action === "goto-profiles") {
+    if (action === "continue-world") {
+      const target = continueTarget(doc);
+      if (target === null) return;
+      const world = getWorld(doc, target.profileId, target.worldId);
+      if (world === null) return;
+      selectedProfileId = target.profileId;
+      selectedWorldId = target.worldId;
+      doc = touchWorld(doc, selectedProfileId, selectedWorldId);
+      doc = touchProfile(doc, selectedProfileId);
+      persistProfiles();
+      updateTitle();
+      beginWorldNavigation(selectedProfileId, selectedWorldId, world.name);
+    } else if (action === "goto-profiles") {
       renderProfiles();
       showScreen("screen-profiles");
     } else if (action === "goto-options") {
@@ -254,6 +337,7 @@ export function runMenu() {
       doc = deleteProfile(doc, selectedProfileId);
       persistProfiles();
       selectedProfileId = doc.activeProfileId;
+      updateTitle();
       renderProfiles();
     } else if (action === "goto-create-world") {
       if (selectedProfileId === null) return;
@@ -284,8 +368,8 @@ export function runMenu() {
       doc = touchProfile(touchWorld(created.doc, selectedProfileId, created.world.id), selectedProfileId);
       persistProfiles();
       selectedWorldId = created.world.id;
-      showScreen("screen-loading");
-      window.location.href = playUrl(selectedProfileId, selectedWorldId);
+      updateTitle();
+      beginWorldNavigation(selectedProfileId, selectedWorldId, created.world.name);
     } else if (action === "play-world") {
       playSelectedWorld();
     } else if (action === "delete-world") {
@@ -301,6 +385,7 @@ export function runMenu() {
       doc = deleteWorld(doc, selectedProfileId, selectedWorldId);
       persistProfiles();
       selectedWorldId = null;
+      updateTitle();
       renderWorlds();
     } else if (action === "toggle-coords") {
       const fresh = { ...loadOptions(window.localStorage), showCoords: !loadOptions(window.localStorage).showCoords };
@@ -338,5 +423,6 @@ export function runMenu() {
   const active = getActiveProfile(doc);
   if (active !== null) selectedProfileId = active.id;
   element("input-seed").value = "";
+  updateTitle();
   showScreen("screen-title");
 }

@@ -1,11 +1,112 @@
 import { TEXTURE_PASS } from "../assets/generated/textures/fallback-style.js";
 
 export { TEXTURE_PASS };
-export const ATLAS_COLUMNS = 5;
-export const ATLAS_ROWS = 10;
-export const ATLAS_TILE_SIZE = 16;
+export const ATLAS_COLUMNS = 8;
+export const ATLAS_ROWS = 8;
+export const ATLAS_TILE_SIZE = 32;
+// Mip levels average 2x2 texels, so a tile with no padding blends into its
+// neighbour as soon as the surface is minified. A tile of 32 texels with a
+// 16-texel gutter keeps its interior free of foreign material while
+// 2^(level-1) <= 16, which certifies mip levels 1..4. Past level 4 a tile is
+// already well under a pixel, so the residual blend is not visible.
+export const ATLAS_TILE_GUTTER = 16;
+export const ATLAS_TILE_STRIDE = ATLAS_TILE_SIZE + 2 * ATLAS_TILE_GUTTER;
+export const ATLAS_MIPMAP_SAFE_LEVELS = Object.freeze([1, 2, 3, 4]);
+export const ATLAS_CAPACITY = ATLAS_COLUMNS * ATLAS_ROWS;
+export const ATLAS_WIDTH = ATLAS_COLUMNS * ATLAS_TILE_STRIDE;
+export const ATLAS_HEIGHT = ATLAS_ROWS * ATLAS_TILE_STRIDE;
 
-// Materials use authored 8x8 or 16x16 pixel-art patterns enlarged into atlas tiles.
+/**
+ * Geometry of a tile's padded cell at one mip level. Texels are discrete, so
+ * both the interior and the gutter are floored: that keeps the reported cell
+ * from claiming texels the level does not have, which is what makes a level
+ * correctly report itself as unprobeable once it is too small to certify.
+ */
+export function atlasMipLevelGeometry(gutter, tileSize, level) {
+  const factor = 2 ** level;
+  const interior = Math.max(1, Math.floor(tileSize / factor));
+  const padding = Math.max(0, Math.floor(gutter / factor));
+  return { interior, padding, size: interior + 2 * padding, factor };
+}
+
+/** Top-left pixel of a tile's padded cell inside the atlas. */
+export function atlasCellOrigin(tile) {
+  const id = Math.max(0, Math.min(ATLAS_CAPACITY - 1, Math.trunc(Number(tile)) || 0));
+  return { x: (id % ATLAS_COLUMNS) * ATLAS_TILE_STRIDE, y: Math.floor(id / ATLAS_COLUMNS) * ATLAS_TILE_STRIDE };
+}
+
+/** Inner UV rect of a tile, inset by the gutter so filtering stays inside it. */
+export function atlasTileUV(tile) {
+  const { x, y } = atlasCellOrigin(tile);
+  return [
+    (x + ATLAS_TILE_GUTTER) / ATLAS_WIDTH,
+    (y + ATLAS_TILE_GUTTER) / ATLAS_HEIGHT,
+    (x + ATLAS_TILE_GUTTER + ATLAS_TILE_SIZE) / ATLAS_WIDTH,
+    (y + ATLAS_TILE_GUTTER + ATLAS_TILE_SIZE) / ATLAS_HEIGHT,
+  ];
+}
+
+/**
+ * Default per-channel tolerance for a mip readback comparison. Mip filtering
+ * and the RGBA8 round trip both round, so an exact match is not expected; two
+ * levels is well below any visible material difference.
+ */
+export const ATLAS_MIPMAP_TOLERANCE = 2;
+
+/**
+ * Foreign Tile Contamination verdict. `observed` is a cell read back from the
+ * full atlas at one mip level, and `reference` is the same cell read back from
+ * an isolated copy of that tile alone. If any texel differs beyond the
+ * tolerance, another tile's material reached into this one, which is exactly
+ * the defect the gutter exists to prevent.
+ */
+export function foreignTileContamination(observed, reference, tolerance = ATLAS_MIPMAP_TOLERANCE) {
+  if (observed === null || observed === undefined) return true;
+  if (reference === null || reference === undefined) return true;
+  const observedSize = Number(observed.size);
+  const referenceSize = Number(reference.size);
+  if (!Number.isInteger(observedSize) || observedSize < 1) return true;
+  if (observedSize !== referenceSize) return true;
+  const observedPixels = observed.pixels;
+  const referencePixels = reference.pixels;
+  const count = observedSize * observedSize * 4;
+  if (!observedPixels || !referencePixels) return true;
+  if (observedPixels.length < count || referencePixels.length < count) return true;
+  for (let index = 0; index < count; index += 1) {
+    if (Math.abs(observedPixels[index] - referencePixels[index]) > tolerance) return true;
+  }
+  return false;
+}
+
+/** Largest per-channel difference between two same-sized RGBA readbacks. */
+export function maxChannelDelta(observed, reference) {
+  const count = observed.length;
+  let worst = 0;
+  for (let index = 0; index < count; index += 1) {
+    const delta = Math.abs(observed[index] - reference[index]);
+    if (delta > worst) worst = delta;
+  }
+  return worst;
+}
+
+/**
+ * Certify that every mip level the renderer can select matches the isolated
+ * tile. An unprobed or unusable level is treated as unsafe, so adding a level
+ * without measuring it can never silently enable mipmaps.
+ */
+export function isAtlasMipmapSafe(pairs, tolerance = ATLAS_MIPMAP_TOLERANCE) {
+  if (!Array.isArray(pairs) || pairs.length === 0) return false;
+  return pairs.every((pair) => foreignTileContamination(pair?.observed, pair?.reference, tolerance) === false);
+}
+
+const ATLAS_TINT_BLOCKS = Object.freeze({
+  21: 3,
+  22: 5,
+  36: 22,
+  37: 23,
+});
+
+// Materials use authored pixel-art patterns rendered into a power-of-two atlas.
 // A dot leaves the material base color visible; other characters name palette colors.
 const BLOCK_TEXTURE_SPECS = [
   {
@@ -27,185 +128,188 @@ const BLOCK_TEXTURE_SPECS = [
   },
   {
     palette: {
-      base: "#b8bdbb",
-      l: "#dfe2de",
-      s: "#858b89",
-      d: "#696f6e",
+      base: "#7f8583",
+      l: "#a6aaa5",
+      s: "#626765",
+      d: "#4c5251",
     },
     pattern: [
-      "....ss......s...",
-      "...sss....ss....",
       "................",
-      "..s......l......",
-      ".ss.....ll......",
-      "...............s",
-      "......s.........",
-      ".....ss.........",
-      "..........l.....",
-      "..s.............",
-      "........s.......",
-      "....l.......s...",
-      ".s...........ss.",
-      "...............l",
-      "...ss...........",
-      "......d.........",
+      "....ssss........",
+      "...ssssss..ll...",
+      "..ssssss..lll...",
+      "..ssss....lll...",
+      "...........ll...",
+      "....dd....s.....",
+      "...dddd...ss....",
+      "..ddddd..ssss...",
+      "..ddddd.ssssss..",
+      "...ddd...sssss..",
+      "....d.....ss....",
+      "........ll......",
+      "......lll..ss...",
+      ".....lll...ss...",
+      "................",
     ],
   },
   {
     palette: {
-      base: "#95613f",
-      l: "#bd8053",
-      s: "#70462f",
-      r: "#7f5034",
+      base: "#6d503b",
+      l: "#856b50",
+      s: "#594333",
+      d: "#49362b",
+      r: "#6b503d",
     },
     pattern: [
-      "..s.............",
-      "...ss...........",
-      "........r.......",
-      ".............l..",
-      "....r...........",
-      "........s.......",
-      ".l..............",
-      "......s.........",
-      "...........r....",
-      "..ss............",
-      "........l.......",
-      "....s...........",
-      ".............r..",
-      ".r..............",
-      ".......l........",
-      "....s...........",
+      "................",
+      "....ss.....ll...",
+      "...sss...slll...",
+      "....ss..sslll...",
+      ".........ssss...",
+      "..rr...ss.......",
+      ".rrr..ss...rr...",
+      "..rr..ss...rrr..",
+      "....ss..........",
+      "..rr...ss..dd...",
+      ".rrr..ss..ddd...",
+      "..rr....s..dd...",
+      ".......ss.......",
+      "..ll...ss...rr..",
+      "..ll...ss..rrr..",
+      "................",
     ],
   },
   {
     palette: {
-      base: "#986442",
-      g: "#67aa43",
-      l: "#8dcc5d",
-      d: "#4f8135",
-      r: "#7d5033",
+      base: "#4e7545",
+      g: "#5c8c4b",
+      l: "#6f9e57",
+      d: "#416b3c",
+      b: "#765a43",
+      r: "#72563f",
     },
     pattern: [
       "gggggggggggggggg",
-      "gggglggggggggdgg",
-      "ggggggggdggggggg",
+      "glggggggggggdggg",
+      "gdlggggggggggdgg",
+      "gglgggggggggglgg",
+      "ggdgggggggggdggg",
+      "gddgggggggggdggg",
       "ggdggggggggggggg",
-      "gggggglggggggggg",
-      "ggggggggggdggggg",
-      "gglggggggggggdgg",
-      "ggggdggggggggggg",
-      "........r.......",
-      "..r......l......",
-      "......r.........",
-      "....r...........",
-      "...........r....",
-      ".r..............",
-      "......l.........",
-      "....r...........",
+      "gggggggggggggggg",
+      "..bbbbbbbbbb....",
+      ".bbbbrbbbbbbb...",
+      "bbbbrbbbbbbbbb..",
+      "..bbbbbrbbbbbb..",
+      ".bbbbbbbbbbbr...",
+      "..bbbbbbbbbbbb..",
+      "....bbbbbbbb....",
+      "................",
     ],
   },
   {
     palette: {
-      base: "#4b9a54",
-      l: "#8fd067",
-      s: "#397943",
-      h: "#c0df8f",
+      base: "#356b3c",
+      l: "#4c7d45",
+      s: "#2d5b35",
+      h: "#5d8f4e",
     },
     pattern: [
-      "..ll......l.....",
-      ".l....ss....l...",
-      "......s.........",
-      "..ss....h.......",
-      "...........l....",
-      ".s......ss......",
-      "....h.......s...",
-      "........l.......",
-      "..l....s........",
-      ".......ss.......",
-      ".s........h.....",
+      "..ll....hh..ll..",
+      ".lhh....ll..hh..",
+      "..ss....ss..ss..",
+      ".s......s.......",
+      "hh..ll....ss..ll",
+      "h..l.....s...h..",
+      "..ss..hh....ss..",
+      ".s..h...s...h...",
+      "ll..hh....ss..ll",
+      "l...h....s..h...",
+      "..ss..hh....ss..",
+      ".s..h...s...h...",
+      "hh..ll....ss..ll",
+      "h..l.....s..h...",
+      "..ss..hh....ss..",
+      "................",
+    ],
+  },
+  {
+    palette: {
+      base: "#795438",
+      l: "#806044",
+      s: "#684631",
+      d: "#805a3d",
+      k: "#735039",
+    },
+    pattern: [
+      "ssssssssssssssss",
+      "slssslksslssslss",
+      "slssslssslksslss",
+      "slssslssslssslks",
+      "slssslssllksslss",
+      "slsslksslssslsss",
+      "slssslksslssslss",
+      "slssslssslksslss",
+      "slssslssslssslks",
+      "slssslksslssslss",
+      "slssslssllksslss",
+      "slsslksslssslsss",
+      "slssslksslssslss",
+      "slssslssslksslss",
+      "ssssssssssssssss",
+      "ssssssssssssssss",
+    ],
+  },
+  {
+    palette: {
+      base: "#b99a62",
+      l: "#d0b878",
+      s: "#a48752",
+      g: "#bda66d",
+    },
+    pattern: [
+      "................",
+      "....ll....ss....",
+      "...lll...sss....",
+      "....ll....ss....",
+      "..........ss....",
+      "....gg..........",
+      "...ggg....ll....",
+      "....gg.....ll...",
+      "..........gg....",
+      "....ss....ggg...",
+      "...sss....gg....",
+      "....ss.....gg...",
       "....ll..........",
+      "...lll....ss....",
+      "....ll....ss....",
+      "................",
+    ],
+  },
+  {
+    palette: {
+      base: "#397f9b",
+      w: "#4f9bad",
+      s: "#2e6b88",
+      g: "#68b1b4",
+    },
+    pattern: [
+      "................",
+      "......w.........",
+      "..w.......s.....",
+      "..........w.....",
+      ".....s..........",
+      "................",
       "..........s.....",
-      "..h......l......",
-      ".ss.........l...",
-      "......l.........",
-    ],
-  },
-  {
-    palette: {
-      base: "#a77646",
-      l: "#d3a56b",
-      s: "#6c4328",
-      k: "#8b542f",
-    },
-    pattern: [
-      "ss..ss......s...",
-      "s...s.......s...",
-      ".l..s....l..s...",
-      "s...s.......s...",
-      "s...ss......s...",
-      "s...s.......s...",
-      "ss..l....s..s...",
-      "s...s.......s...",
-      "s...s.......s...",
-      ".s..s....l..s...",
-      "s...s.......s...",
-      "s...s.......s...",
-      "s...k....s..s...",
-      "s...s.......s...",
-      "ss..s.......s...",
-      "s...s.......s...",
-    ],
-  },
-  {
-    palette: {
-      base: "#d5bb72",
-      l: "#f0d993",
-      s: "#b09858",
-      g: "#c3a661",
-    },
-    pattern: [
-      "......s.........",
-      ".l..............",
-      ".............g..",
-      "....s...........",
+      "....w...........",
+      "......w.........",
+      "................",
+      "..s.......w.....",
+      "..............s.",
+      "................",
+      ".....w..........",
       "..........s.....",
-      ".g..............",
-      "...............s",
-      ".......l........",
-      "..s.............",
-      "........g.......",
-      ".............s..",
-      "....l...........",
-      "........s.......",
-      ".g..............",
-      "..........l.....",
-      "...s............",
-    ],
-  },
-  {
-    palette: {
-      base: "#5d9fc2",
-      w: "#addbe1",
-      s: "#347ba5",
-      g: "#d8f5ef",
-    },
-    pattern: [
       "................",
-      "..wwwwwwwwwwww..",
-      "................",
-      "......s.........",
-      ".......s........",
-      "................",
-      ".wwwwwwwwwww....",
-      "....g...........",
-      "................",
-      "...........s....",
-      "..wwwwwwwwww....",
-      "................",
-      "....s...........",
-      "................",
-      ".wwwwwwwwwwww...",
-      "......g.........",
     ],
   },
   {
@@ -556,36 +660,39 @@ const BLOCK_TEXTURE_SPECS = [
   },
   {
     palette: {
-      base: "#5da24a",
-      l: "#8dcc5d",
-      s: "#4f8135",
-      d: "#3f7a34",
+      base: "#4e7545",
+      g: "#4e7545",
+      l: "#6f9e57",
+      h: "#7cab63",
+      s: "#5b864b",
+      d: "#416b3c",
     },
     pattern: [
-      "lls....l........",
-      "...l......s.....",
-      "........l.......",
-      ".s....d.........",
-      "......l.........",
-      "..........s.....",
-      "..l.............",
-      "........d.......",
-      ".....s..........",
-      "...........l....",
-      ".d..............",
-      ".......s........",
-      "....l...........",
-      "..............d.",
-      "...s............",
-      ".........l......",
+      "gggggggggggggggg",
+      "gglgggggggggglgg",
+      "gglggggggggggdgg",
+      "ggdggggggggggdgg",
+      "ggdggggllllggdgg",
+      "ggdgglhhgglhhdgg",
+      "ggdggggllllggdgg",
+      "ggdgggggggggdggg",
+      "gggggggggggggggg",
+      "gggglllggggggdgg",
+      "ggghhllggggggdgg",
+      "gggglllgggggdggg",
+      "gggggggggggdddgg",
+      "gggggggggggggggg",
+      "gggggggggggggggg",
+      "gggggggggggggggg",
     ],
   },
   {
     palette: {
-      base: "#a77646",
-      l: "#d3a56b",
-      s: "#6c4328",
-      k: "#8b542f",
+      base: "#795438",
+      l: "#806044",
+      s: "#684631",
+      d: "#805a3d",
+      k: "#735039",
     },
     pattern: [
       "....ssssssss....",
@@ -965,7 +1072,7 @@ export function blockTexture(value) {
 }
 
 export function atlasTile(block) {
-  const id = Math.max(0, Math.min(ATLAS_COLUMNS * ATLAS_ROWS - 1, Number(block) || 0));
+  const id = Math.max(0, Math.min(ATLAS_TEXTURES.length - 1, Number(block) || 0));
   return { column: id % ATLAS_COLUMNS, row: Math.floor(id / ATLAS_COLUMNS) };
 }
 
@@ -984,7 +1091,7 @@ export function blockFaceTile(block, faceIndex) {
   if (id === 25) return 27;
   if (id === 26) return 28;
   if (id === 27) return 29;
-  return Math.max(0, Math.min(ATLAS_COLUMNS * ATLAS_ROWS - 1, id));
+  return Math.max(0, Math.min(ATLAS_TEXTURES.length - 1, id));
 }
 
 function variantParity(x, z) {
@@ -997,20 +1104,17 @@ function pickVariant(base, variant, x, z) {
 
 export function blockFaceTileAt(block, faceIndex, x = 0, z = 0) {
   const id = Number(block) || 0;
-  if (id === 1) return pickVariant(1, 30, x, z);
-  if (id === 2) return pickVariant(2, 31, x, z);
+  if (id === 1) return 1;
+  if (id === 2) return 2;
   if (id === 3) {
-    if (faceIndex === 0) return pickVariant(21, 38, x, z);
+    if (faceIndex === 0) return 21;
     if (faceIndex === 1) return 2;
-    return pickVariant(3, 32, x, z);
+    return 3;
   }
-  if (id === 4) return pickVariant(4, 33, x, z);
-  if (id === 5) {
-    if (faceIndex === 0 || faceIndex === 1) return 22;
-    return pickVariant(5, 34, x, z);
-  }
-  if (id === 6) return pickVariant(6, 35, x, z);
-  if (id === 7) return pickVariant(7, 39, x, z);
+  if (id === 4) return 4;
+  if (id === 5) return faceIndex === 0 || faceIndex === 1 ? 22 : 5;
+  if (id === 6) return 6;
+  if (id === 7) return 7;
   if (id === 22) return pickVariant(25, 36, x, z);
   if (id === 23) return pickVariant(26, 37, x, z);
   if (id === 25) return 27;
@@ -1019,18 +1123,20 @@ export function blockFaceTileAt(block, faceIndex, x = 0, z = 0) {
   return blockFaceTile(id, faceIndex);
 }
 
-export function atlasUV(block) {
-  const { column, row } = atlasTile(block);
-  const inset = 0.5 / ATLAS_TILE_SIZE;
-  const u0 = (column + inset) / ATLAS_COLUMNS;
-  const u1 = (column + 1 - inset) / ATLAS_COLUMNS;
-  const v0 = (row + inset) / ATLAS_ROWS;
-  const v1 = (row + 1 - inset) / ATLAS_ROWS;
+// `atlasUV` takes an atlas tile slot, which is what `blockFaceTileAt` returns
+// and what `atlasTile` already resolves.
+export function atlasUV(tile) {
+  const [u0, v0, u1, v1] = atlasTileUV(tile);
   return [u0, v0, u1, v0, u1, v1, u0, v1];
 }
 
 function colorCss(color) {
   return `rgb(${Math.round(color[0] * 255)}, ${Math.round(color[1] * 255)}, ${Math.round(color[2] * 255)})`;
+}
+
+function materialNoise(seed, x, y) {
+  const value = Math.sin(seed * 17.13 + x * 12.9898 + y * 78.233) * 43758.5453;
+  return value - Math.floor(value);
 }
 
 function colorLuminance(color) {
@@ -1114,38 +1220,89 @@ function drawTexture(context, x, y, texture, opacity = 1) {
     }
   }
   context.globalAlpha = textureAlpha;
+  for (let pixelY = 0; pixelY < ATLAS_TILE_SIZE; pixelY += 2) {
+    for (let pixelX = 0; pixelX < ATLAS_TILE_SIZE; pixelX += 2) {
+      const cluster = materialNoise(texture.id, Math.floor(pixelX / 4), Math.floor(pixelY / 4));
+      const grain = materialNoise(texture.id + 31, pixelX, pixelY);
+      if (cluster < 0.18 && grain < 0.56) {
+        context.globalAlpha = textureAlpha * TEXTURE_PASS.noiseShadowAlpha * 0.7;
+        context.fillStyle = shadow;
+        context.fillRect(x + pixelX, y + pixelY, 1, 1);
+      } else if (cluster > 0.82 && grain > 0.44) {
+        context.globalAlpha = textureAlpha * TEXTURE_PASS.noiseHighlightAlpha * 0.7;
+        context.fillStyle = highlight;
+        context.fillRect(x + pixelX, y + pixelY, 1, 1);
+      }
+    }
+  }
+  context.globalAlpha = textureAlpha;
   drawEdgeLighting(context, x, y, texture);
   context.globalAlpha = previousAlpha;
 }
 
+// Bleed a tile's own material into its padding. Without this, the mip chain
+// averages the transparent gap with the neighbouring material, which is the
+// foreign tile contamination the gutter exists to prevent.
+function bleedTileGutter(context, x, y, texture) {
+  const centerX = x + ATLAS_TILE_SIZE / 2;
+  const centerY = y + ATLAS_TILE_SIZE / 2;
+  for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+    const edgeX = dx < 0 ? x : dx > 0 ? x + ATLAS_TILE_SIZE - 1 : centerX - 0.5;
+    const edgeY = dy < 0 ? y : dy > 0 ? y + ATLAS_TILE_SIZE - 1 : centerY - 0.5;
+    const stripX = dx < 0 ? x - ATLAS_TILE_GUTTER : dx > 0 ? x + ATLAS_TILE_SIZE : x;
+    const stripY = dy < 0 ? y - ATLAS_TILE_GUTTER : dy > 0 ? y + ATLAS_TILE_SIZE : y;
+    context.drawImage(context.canvas ?? context, edgeX, edgeY, 1, 1,
+      stripX, stripY,
+      dx < 0 ? ATLAS_TILE_GUTTER : dx > 0 ? ATLAS_TILE_GUTTER : ATLAS_TILE_SIZE,
+      dy < 0 ? ATLAS_TILE_GUTTER : dy > 0 ? ATLAS_TILE_GUTTER : ATLAS_TILE_SIZE);
+  }
+  // The corners are filled from the nearest edge so no transparent pixel is
+  // left inside the padded cell.
+  for (const [cornerX, cornerY, sourceX, sourceY] of [
+    [x - ATLAS_TILE_GUTTER, y - ATLAS_TILE_GUTTER, x, y],
+    [x + ATLAS_TILE_SIZE, y - ATLAS_TILE_GUTTER, x + ATLAS_TILE_SIZE - 1, y],
+    [x - ATLAS_TILE_GUTTER, y + ATLAS_TILE_SIZE, x, y + ATLAS_TILE_SIZE - 1],
+    [x + ATLAS_TILE_SIZE, y + ATLAS_TILE_SIZE, x + ATLAS_TILE_SIZE - 1, y + ATLAS_TILE_SIZE - 1],
+  ]) {
+    context.drawImage(context.canvas ?? context, sourceX, sourceY, 1, 1,
+      cornerX, cornerY, ATLAS_TILE_GUTTER, ATLAS_TILE_GUTTER);
+  }
+}
+
 export function createAtlasCanvas(blockColors) {
   const canvas = document.createElement("canvas");
-  canvas.width = ATLAS_COLUMNS * ATLAS_TILE_SIZE;
-  canvas.height = ATLAS_ROWS * ATLAS_TILE_SIZE;
+  canvas.width = ATLAS_WIDTH;
+  canvas.height = ATLAS_HEIGHT;
   const context = canvas.getContext("2d");
   if (context === null) throw new Error("2D canvas is required to create the texture atlas.");
 
   context.imageSmoothingEnabled = false;
-  for (let block = 0; block < ATLAS_COLUMNS * ATLAS_ROWS; block += 1) {
-    const { column, row } = atlasTile(block);
-    const x = column * ATLAS_TILE_SIZE;
-    const y = row * ATLAS_TILE_SIZE;
+  for (let block = 0; block < ATLAS_CAPACITY; block += 1) {
+    const { x: cellX, y: cellY } = atlasCellOrigin(block);
+    const x = cellX + ATLAS_TILE_GUTTER;
+    const y = cellY + ATLAS_TILE_GUTTER;
     const texture = ATLAS_TEXTURES[block];
-    if (texture === undefined) throw new Error(`Missing atlas texture ${block}.`);
     context.globalAlpha = 1;
     context.globalCompositeOperation = "source-over";
+    if (texture === undefined) {
+      context.clearRect(x, y, ATLAS_TILE_SIZE, ATLAS_TILE_SIZE);
+      continue;
+    }
     drawTexture(context, x, y, texture, block === 7 || block === 24 ? 0.78 : 1);
     context.strokeStyle = TEXTURE_PASS.outline;
     context.strokeRect(x + 0.5, y + 0.5, ATLAS_TILE_SIZE - 1, ATLAS_TILE_SIZE - 1);
 
-    if (blockColors?.[block] !== undefined) {
+    const tintBlock = ATLAS_TINT_BLOCKS[block] ?? block;
+    if (blockColors?.[tintBlock] !== undefined) {
       context.globalCompositeOperation = "multiply";
-      context.fillStyle = colorCss(blockColors[block]);
+      context.fillStyle = colorCss(blockColors[tintBlock]);
       context.globalAlpha = 0.08;
       context.fillRect(x, y, ATLAS_TILE_SIZE, ATLAS_TILE_SIZE);
       context.globalAlpha = 1;
       context.globalCompositeOperation = "source-over";
     }
+    // Bleed after the tint so the padding carries the final material color.
+    bleedTileGutter(context, x, y, texture);
   }
   // Some Chromium canvas-to-WebGL uploads can expose the first six source
   // tiles as transparent even though the initial draw painted them. Repaint
@@ -1153,8 +1310,14 @@ export function createAtlasCanvas(blockColors) {
   context.globalAlpha = 1;
   context.globalCompositeOperation = "source-over";
   for (let block = 0; block < 6; block += 1) {
-    const { column, row } = atlasTile(block);
-    drawTexture(context, column * ATLAS_TILE_SIZE, row * ATLAS_TILE_SIZE, BLOCK_TEXTURES[block]);
+    const { x: cellX, y: cellY } = atlasCellOrigin(block);
+    drawTexture(
+      context,
+      cellX + ATLAS_TILE_GUTTER,
+      cellY + ATLAS_TILE_GUTTER,
+      BLOCK_TEXTURES[block],
+    );
+    bleedTileGutter(context, cellX + ATLAS_TILE_GUTTER, cellY + ATLAS_TILE_GUTTER, BLOCK_TEXTURES[block]);
   }
   context.globalAlpha = 1;
   context.globalCompositeOperation = "source-over";
@@ -1162,15 +1325,31 @@ export function createAtlasCanvas(blockColors) {
   return canvas;
 }
 
-export function createTextureAtlas(gl, blockColors) {
+export function createTextureAtlas(gl, blockColors, { mipmaps = false, mipmapSafe = false } = {}) {
   const canvas = createAtlasCanvas(blockColors);
   const texture = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, texture);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  // Mipmaps only run once the padded atlas has been certified free of foreign
+  // tile contamination; an unproven atlas keeps the deterministic LINEAR path.
+  const hasMipmaps = mipmaps && mipmapSafe && typeof gl.generateMipmap === "function";
+  const minFilter = hasMipmaps && gl.LINEAR_MIPMAP_LINEAR !== undefined
+    ? gl.LINEAR_MIPMAP_LINEAR
+    : gl.LINEAR;
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, minFilter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  if (hasMipmaps) gl.generateMipmap(gl.TEXTURE_2D);
+  const anisotropy = typeof gl.getExtension === "function"
+    ? gl.getExtension("EXT_texture_filter_anisotropic")
+    : null;
+  if (anisotropy && typeof gl.texParameterf === "function") {
+    const maximum = typeof gl.getParameter === "function"
+      ? Number(gl.getParameter(anisotropy.MAX_TEXTURE_MAX_ANISOTROPY_EXT))
+      : 1;
+    gl.texParameterf(gl.TEXTURE_2D, anisotropy.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(4, maximum));
+  }
   ATLAS_SOURCE_CANVASES.set(texture, canvas);
   gl.bindTexture(gl.TEXTURE_2D, null);
   return texture;

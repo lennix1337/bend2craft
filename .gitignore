@@ -3,3 +3,5 @@ dist/
 .bend/
 node_modules/
 .dev/
+# Local design-review scratch: screenshots and agent surface dumps, not source.
+.impeccable/

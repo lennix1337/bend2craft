@@ -2,6 +2,7 @@ import { chromium } from "playwright";
 
 const baseUrl = process.argv[2] ?? "http://127.0.0.1:3000";
 const durationMs = Math.max(1000, Number(process.argv[3] ?? 2500));
+const renderDistance = Math.max(2, Math.min(6, Number(process.env.RENDER_DISTANCE ?? 2)));
 const browser = await chromium.launch({
   headless: true,
   args: ["--enable-unsafe-webgpu", "--use-angle=swiftshader"],
@@ -16,15 +17,15 @@ async function run(renderer) {
   });
   page.on("pageerror", (error) => errors.push(String(error)));
   try {
-    await page.addInitScript(({ rendererValue }) => {
+    await page.addInitScript(({ rendererValue, renderDistanceValue }) => {
       window.localStorage.setItem("bend2craft-options", JSON.stringify({
         fov: 75,
         sensitivity: 1,
         showCoords: true,
-        renderDistance: 2,
+        renderDistance: renderDistanceValue,
         renderer: rendererValue,
       }));
-    }, { rendererValue: renderer });
+    }, { rendererValue: renderer, renderDistanceValue: renderDistance });
     await page.goto(`${baseUrl}/?play=1&renderer=${renderer}&seed=1337`, {
       waitUntil: "networkidle",
       timeout: 30000,
@@ -63,6 +64,7 @@ async function run(renderer) {
       requestAnimationFrame(sample);
     }), durationMs);
     const diagnostics = await page.evaluate(() => window.__bend2craft.getFrameDiagnostics());
+    const submit = await page.evaluate(() => window.__bend2craft.glBufferSizes?.() ?? null);
     const sortedSamples = [...frameSamples].sort((a, b) => a - b);
     const percentile = (fraction) => sortedSamples[Math.min(
       sortedSamples.length - 1,
@@ -72,6 +74,8 @@ async function run(renderer) {
     return {
       renderer,
       actualRenderer: diagnostics.renderer,
+      rendererName: diagnostics.rendererName,
+      shaderQuality: diagnostics.shaderQuality,
       durationMs,
       sampleCount: frameSamples.length,
       fps: 1000 / averageFrameMs,
@@ -80,8 +84,21 @@ async function run(renderer) {
       p99FrameMs: percentile(0.99),
       maxFrameMs: Math.max(...frameSamples),
       activeChunks: diagnostics.activeChunks,
+      renderDistance,
       terrainQuads: diagnostics.terrainQuads,
       meshRebuilds: diagnostics.meshRebuilds,
+      // Chunk culling accounting. WebGL has no per-chunk submit, so the GPU
+      // backend reports the resident and visible split that the culler decided.
+      culling: submit?.backend === "webgpu"
+        ? {
+          residentChunks: submit.residentChunks,
+          visibleChunks: submit.visibleChunks,
+          culledChunks: submit.culledChunks,
+          drawCalls: submit.drawCalls,
+          submittedVertices: submit.submittedVertices,
+          submittedVertexBytes: submit.submittedVertexBytes,
+        }
+        : null,
       errors,
     };
   } finally {
@@ -113,6 +130,17 @@ try {
         reason: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+  const runtimeErrors = results.flatMap((result) => result.errors ?? []);
+  if (runtimeErrors.length > 0) {
+    throw new Error(`Renderer benchmark reported browser errors: ${runtimeErrors.join(" | ")}`);
+  }
+  const softwareFallbackMissed = results.some((result) => (
+    /swiftshader|llvmpipe|basic render/i.test(result.rendererName ?? "")
+    && result.shaderQuality !== 0
+  ));
+  if (softwareFallbackMissed) {
+    throw new Error("Software renderer did not select the compiled fallback shader permutation.");
   }
   console.log(JSON.stringify({ webgpuSupport, results }));
 } finally {

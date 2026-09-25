@@ -121,11 +121,22 @@ export function buildChunkMeshes({
   return meshes;
 }
 
-export function buildChunkMeshBatch({ existingMeshes = [], merge = true, ...options }) {
+export function buildChunkMeshBatch({
+  existingMeshes = [],
+  merge = true,
+  perChunkOnly = false,
+  ...options
+}) {
   const meshes = buildChunkMeshes(options);
+  const activeKeys = [...new Set(options.activeKeys)];
+  const active = new Set(activeKeys);
+  // The WebGPU backend uploads one buffer per chunk, so composing a single
+  // whole-world vertex array would be a global rebuild on every block edit.
+  if (perChunkOnly) {
+    return { meshes, blockCount: null, quads: null, vertexData: null, activeKeys, perChunkOnly: true };
+  }
   const byKey = new Map(existingMeshes.map((mesh) => [mesh.key, mesh]));
   for (const mesh of meshes) byKey.set(mesh.key, mesh);
-  const active = new Set(options.activeKeys);
   const allMeshes = [...byKey.values()].filter((mesh) => active.has(mesh.key));
   const quads = [];
   let blockCount = 0;
@@ -141,6 +152,7 @@ export function buildChunkMeshBatch({ existingMeshes = [], merge = true, ...opti
     vertexData: merge
       ? buildTerrainVertexArrays(mergedQuads, options.daylight ?? 1)
       : composeVertexData(allMeshes),
-    activeKeys: [...active],
+    activeKeys,
+    perChunkOnly: false,
   };
 }

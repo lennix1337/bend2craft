@@ -14,6 +14,8 @@
     "bench:fluid-reaction": "bash scripts/run-bun.sh benchmarks/fluid-reaction.mjs",
     "bench:fire": "bash scripts/run-bun.sh benchmarks/fire-step.mjs",
     "bench:chunks": "bash scripts/run-bun.sh benchmarks/chunk-generation.mjs",
+    "bench:chunk-culling": "bash scripts/run-bun.sh benchmarks/chunk-culling.mjs",
+    "bench:chunk-edit": "bash scripts/run-bun.sh benchmarks/chunk-edit.mjs",
     "bench:render-distance": "bash scripts/run-bun.sh benchmarks/render-distance.mjs",
     "bench:entities": "bash scripts/run-bun.sh benchmarks/entities-step.mjs",
     "bench:horizon": "bash scripts/run-bun.sh benchmarks/horizon-grid.mjs",
@@ -28,6 +30,7 @@
     "browser:lighting-smoke": "bash scripts/dev-smoke.sh --lighting",
     "browser:streaming-smoke": "bash scripts/dev-smoke.sh --streaming",
     "browser:webgpu-smoke": "bash scripts/dev-smoke.sh --webgpu",
-    "build": "BEND_NO_TELEMETRY=1 bash scripts/run-bun.sh vendor/bend/bend2/main.ts web/index.html -o dist && bash scripts/run-bun.sh scripts/build-worker.ts dist"
+    "browser:visual-quality": "bash scripts/dev-smoke.sh --visual-quality",
+    "build": "bash scripts/run-bun.sh scripts/clean-output.mjs dist && BEND_NO_TELEMETRY=1 bash scripts/run-bun.sh vendor/bend/bend2/main.ts web/index.html -o dist && bash scripts/run-bun.sh scripts/build-worker.ts dist"
   }
 }

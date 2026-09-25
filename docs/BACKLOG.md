@@ -14,6 +14,16 @@ Status markers:
 - [x] `npm run verify` covers Bend checks, proofs, regression tests, static build and `git diff --check`.
 - [x] Browser smoke covers chunk hydration, interaction, persistence, negative coordinates, inventory UI, shaped crafting, chest storage, equipment/offhand and item drops.
 
+## P0 — combat, culling and material contract
+
+- [x] Bend owns melee line-of-sight: a hostile cannot damage a player across a solid cell, and the eye ray runs at eye height so a one-block step is not mistaken for cover.
+- [x] Bend owns the melee attack cone: a hostile must be facing the player, with a wider cone for the brute. A dead mob never contributes damage on a later tick.
+- [x] Per-chunk frustum culling on the WebGPU terrain path, reporting visible chunks, culled chunks, draw calls and submitted vertex bytes.
+- [x] A block edit re-uploads only the edited chunk instead of composing a whole-world vertex array on the per-chunk backend.
+- [x] Padded atlas with a per-tile gutter, and mipmaps enabled only after a Foreign Tile Contamination probe passes against the real GPU mip chain.
+- [x] Material response split into albedo, lighting and material stages with parity between the WebGL and WGSL sources, plus water depth tinting carried in the material band.
+- [x] The WebGPU gate reads a real presented frame back out of the swap chain and probes the scene; an unavailable backend is marked skipped with an explicit diagnostic.
+
 ## P0 — movement and survival
 
 - [x] Sneak with Shift and sprint with Ctrl.
@@ -36,7 +46,7 @@ Status markers:
 - [x] Chunk streaming keeps desired/active/pending state separate and supports render distances 2–6.
 - [x] Edited blocks, entities and simulation state are persisted in the seed-scoped save.
 - [~] Larger `max_y`: the current world remains at `20`; benchmark and decide a larger height without regressing browser frame time.
-- [~] Finalize a reproducible save/load chunk benchmark and p95/p99 streaming budget on target hardware.
+- [~] Finalize a reproducible save/load chunk benchmark and p95/p99 streaming budget on target hardware; default render distance 2 is the smooth baseline, while distance 6 remains an explicit stress setting.
 
 ## P1 — faithful world
 
@@ -87,7 +97,7 @@ Status markers:
 - [ ] Add multiplayer/LAN transport and authoritative synchronization.
 - [ ] Add achievements and advancement tracking.
 - [ ] Add a boss encounter and boss health presentation.
-- [~] Add a dedicated XP bar; current XP is tracked and shown as a level in the HUD.
+- [x] Add a dedicated XP bar; current XP is tracked and shown as a level in the HUD.
 
 ## Verification and release gates
 

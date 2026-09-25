@@ -1,7 +1,72 @@
+import { CLOUD_TEXTURE_SIZE, createCloudTextureData } from "./cloud-texture.js";
 import {
   TERRAIN_VERTEX_STRIDE_BYTES,
+  classifyChunkUpdate,
   packTerrainLayer,
+  packedLayerBounds,
 } from "./webgpu-chunk-buffers.js";
+import {
+  COPY_SRC,
+  FRAME_READBACK_BYTES_PER_PIXEL,
+  MAP_READ,
+  bytesPerRow,
+  describeFrameReadbackSupport,
+} from "./webgpu-frame-readback.js";
+import {
+  createSubmitMetrics,
+  emptyBounds,
+  extractClipPlanes,
+  mergeBounds,
+  selectVisibleChunks,
+} from "./chunk-frustum.js";
+import {
+  SURFACE_MATERIAL_FIRE,
+  SURFACE_MATERIAL_LAVA,
+  SURFACE_MATERIAL_WATER,
+} from "./surface-materials.js";
+import {
+  AERIAL_FOG_HEIGHT_FALLOFF,
+  AERIAL_FOG_MIN_DENSITY,
+  FIRE_ALPHA,
+  FIRE_PULSE_AMPLITUDE,
+  FIRE_PULSE_SPEED,
+  FIRE_PULSE_SPATIAL_FREQUENCY,
+  LAVA_ALPHA,
+  LAVA_PULSE_AMPLITUDE,
+  LAVA_PULSE_SPEED,
+  LAVA_PULSE_SPATIAL_FREQUENCY,
+  MINING_FRACTURE_PROGRESS,
+  MATERIAL_DETAIL_STRENGTH,
+  MATERIAL_ROUGHNESS_MAX,
+  MATERIAL_ROUGHNESS_MIN,
+  MATERIAL_SPECULAR_POWER,
+  MATERIAL_SPECULAR_STRENGTH,
+  MOON_FILL_STRENGTH,
+  NIGHT_AMBIENT_G,
+  NIGHT_AMBIENT_R,
+  NIGHT_AMBIENT_STRENGTH,
+  TERRAIN_FOG_START,
+  TERRAIN_MATERIAL_VARIATION_MAX,
+  TERRAIN_MATERIAL_VARIATION_MIN,
+  TERRAIN_VARIATION_SEED,
+  TERRAIN_VARIATION_X,
+  TERRAIN_VARIATION_Z,
+  WATER_CAUSTIC_STRENGTH,
+  WATER_CAUSTIC_THRESHOLD_END,
+  WATER_CAUSTIC_THRESHOLD_START,
+  WATER_DARK_R,
+  WATER_DARK_G,
+  WATER_DARK_B,
+  WATER_DEPTH_FLOOR_R,
+  WATER_DEPTH_TINT_STRENGTH,  WATER_LIGHT_R,
+  WATER_LIGHT_G,
+  WATER_LIGHT_B,
+  WATER_FOAM_THRESHOLD,
+  WATER_FRESNEL_POWER,
+  WATER_NORMAL_STRENGTH,
+  WATER_FOAM_STRENGTH,
+  WATER_SPECULAR_POWER,
+} from "./terrain-presentation.js";
 
 const BUFFER_USAGE = {
   COPY_DST: 0x0008,
@@ -14,20 +79,28 @@ const TEXTURE_USAGE = {
   RENDER_ATTACHMENT: 0x0010,
 };
 const SHADER_STAGE = { VERTEX: 0x1, FRAGMENT: 0x2 };
-const FRAME_UNIFORM_BYTES = 128;
+const FRAME_UNIFORM_BYTES = 224;
 
-const SHADER = `
+export const WEBGPU_TERRAIN_SHADER = `
 struct Frame {
   viewProjection: mat4x4<f32>,
   camera: vec4<f32>,
   skyColor: vec4<f32>,
   params: vec4<f32>,
   fog: vec4<f32>,
+  skyHorizon: vec4<f32>,
+  cameraRight: vec4<f32>,
+  cameraUp: vec4<f32>,
+  cameraForward: vec4<f32>,
+  sunDirection: vec4<f32>,
+  sunColor: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var atlasSampler: sampler;
 @group(0) @binding(2) var atlasTexture: texture_2d<f32>;
+@group(0) @binding(3) var cloudSampler: sampler;
+@group(0) @binding(4) var cloudTexture: texture_2d<f32>;
 
 struct VertexInput {
   @location(0) position: vec3<f32>,
@@ -43,15 +116,23 @@ struct VertexOutput {
   @location(1) uv: vec2<f32>,
   @location(2) worldPosition: vec3<f32>,
   @location(3) tileRect: vec4<f32>,
+  @location(4) fog: f32,
+  @location(5) material: f32,
+  @location(6) viewDirection: vec3<f32>,
+  @location(7) aerialFog: f32,
 };
 
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
   var position = input.position;
-  let pass = frame.params.z;
-  if (pass > 0.5 && pass < 1.5 && input.material < 1.5) {
+  let surfacePass = frame.params.z;
+  if (surfacePass > 0.5 && surfacePass < 1.5 && input.material >= ${SURFACE_MATERIAL_WATER} && input.material < ${SURFACE_MATERIAL_LAVA}) {
     position.y += 0.028 * sin(frame.params.y * 1.6 + position.x * 0.38 + position.z * 0.27)
       + 0.012 * sin(frame.params.y * 2.7 - position.z * 0.19 + position.x * 0.11);
+  }
+  if (surfacePass < 0.5 && input.material >= ${SURFACE_MATERIAL_FIRE} && input.material < ${SURFACE_MATERIAL_FIRE + 1}) {
+    position.x += 0.025 * sin(frame.params.y * 1.2 + position.x * 0.4 + position.z * 0.27);
+    position.z += 0.018 * cos(frame.params.y * 1.05 + position.z * 0.32 + position.x * 0.18);
   }
   var output: VertexOutput;
   output.position = frame.viewProjection * vec4<f32>(position, 1.0);
@@ -59,41 +140,213 @@ fn vs_main(input: VertexInput) -> VertexOutput {
   output.uv = input.uv;
   output.worldPosition = position;
   output.tileRect = input.tileRect;
+  output.fog = clamp((distance(position, frame.camera.xyz) - ${TERRAIN_FOG_START}) / frame.fog.x, 0.0, 1.0);
+  output.material = input.material;
+  output.viewDirection = position - frame.camera.xyz;
+  let heightAttenuation = exp(-max(position.y - frame.camera.y, 0.0) * ${AERIAL_FOG_HEIGHT_FALLOFF.toFixed(3)});
+  output.aerialFog = clamp(output.fog * (${AERIAL_FOG_MIN_DENSITY.toFixed(2)} + ${(1 - AERIAL_FOG_MIN_DENSITY).toFixed(2)} * heightAttenuation), 0.0, 1.0);
   return output;
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-  let pass = frame.params.z;
+  let surfacePass = frame.params.z;
   let miningPass = input.tileRect.x < -0.5;
+  let localUv = fract(input.uv);
+  let atlasUv = mix(input.tileRect.xy, input.tileRect.zw, localUv);
+  let textureColor = textureSample(atlasTexture, atlasSampler, atlasUv);
   var color = input.color * frame.params.x;
   var alpha = 1.0;
   if (miningPass) {
     let fractureUv = input.uv * 4.0 + floor(frame.params.w * 6.0);
     let fractureA = 1.0 - smoothstep(0.0, 0.045, abs(fractureUv.x + fractureUv.y) - 0.5);
     let fractureB = 1.0 - smoothstep(0.0, 0.045, abs(fractureUv.x - fractureUv.y) - 0.5);
+    let fracture = max(fractureA, fractureB) * step(${MINING_FRACTURE_PROGRESS}, frame.params.w);
     color = vec3<f32>(0.04, 0.045, 0.04);
-    alpha = 0.14 + max(fractureA, fractureB) * 0.72;
-  } else if (pass > 1.5 && pass < 2.5) {
+    alpha = 0.14 + fracture * 0.72;
+  } else if (surfacePass > 1.5 && surfacePass < 2.5) {
     color = vec3<f32>(0.015, 0.02, 0.018);
     let shadowUv = input.uv * 2.0 - 1.0;
-    alpha = 0.28 * (1.0 - smoothstep(0.38, 1.0, length(shadowUv)));
+    alpha = 0.28 * (1.0 - smoothstep(0.38, 1.0, length(shadowUv))) * (1.0 - input.fog * 0.65);
   } else {
-    let localUv = fract(input.uv);
-    let atlasUv = mix(input.tileRect.xy, input.tileRect.zw, localUv);
-    let textureColor = textureSample(atlasTexture, atlasSampler, atlasUv);
-    color *= textureColor.rgb;
-    alpha = textureColor.a;
-    if (pass > 0.5 && pass < 1.5 && input.material < 1.5) {
-      let rippleA = 0.5 + 0.5 * sin(frame.params.y * 1.8 + input.worldPosition.x * 0.42 + input.worldPosition.z * 0.28);
-      let rippleB = 0.5 + 0.5 * sin(frame.params.y * 2.7 - input.worldPosition.z * 0.19 + input.worldPosition.x * 0.11);
-      let shimmer = 0.65 * rippleA + 0.35 * rippleB;
-      color = mix(vec3<f32>(0.035, 0.23, 0.42), vec3<f32>(0.18, 0.68, 0.78), shimmer) * frame.params.x;
-      alpha = 0.76;
+    let materialVariation = fract(sin(dot(floor(input.worldPosition.xz), vec2<f32>(${TERRAIN_VARIATION_X}, ${TERRAIN_VARIATION_Z}))) * ${TERRAIN_VARIATION_SEED});
+    // Stage 1 - albedo: the material sample plus its authored variation, with
+    // no lighting folded in yet.
+    let surfaceRoughness = ${MATERIAL_ROUGHNESS_MIN} + (${MATERIAL_ROUGHNESS_MAX} - ${MATERIAL_ROUGHNESS_MIN}) * materialVariation;
+    let detailAmplitude = ${MATERIAL_DETAIL_STRENGTH} * (0.5 + 0.5 * surfaceRoughness);
+    let detail = 1.0 + detailAmplitude * (clamp(textureColor.r, 0.0, 1.0) * 2.0 - 1.0);
+    let albedo = input.color * textureColor.rgb * mix(${TERRAIN_MATERIAL_VARIATION_MIN}, ${TERRAIN_MATERIAL_VARIATION_MAX}, materialVariation) * detail;
+    // Stage 2 - lighting: the day/ambient model over the albedo.
+    let coolLight = vec3<f32>(0.95, 0.99, 1.06);
+    let warmLight = vec3<f32>(1.05, 1.01, 0.94);
+    var litColor = albedo * mix(coolLight, warmLight, frame.params.x) * frame.params.x;
+    litColor += frame.skyHorizon.rgb * 0.012 * (0.35 + frame.params.x * 0.65);
+    let moonFill = vec3<f32>(0.1, 0.14, 0.23) * (1.0 - frame.params.x) * ${MOON_FILL_STRENGTH};
+    litColor += moonFill * albedo;
+    let nightAmbient = (1.0 - smoothstep(0.18, 0.55, frame.params.x)) * ${NIGHT_AMBIENT_STRENGTH};
+    litColor += vec3<f32>(${NIGHT_AMBIENT_R}, ${NIGHT_AMBIENT_G}, 0.09) * nightAmbient;
+    // Stage 3 - material lobe: a roughness-controlled specular highlight.
+    let materialView = normalize(-input.viewDirection);
+    let materialFacing = max(dot(vec3<f32>(0.0, 1.0, 0.0), materialView), 0.0);
+    let materialSpecular = ${MATERIAL_SPECULAR_STRENGTH.toFixed(3)} * pow(materialFacing, ${MATERIAL_SPECULAR_POWER.toFixed(1)}) * (1.0 - surfaceRoughness);
+    var color = litColor + frame.sunColor.rgb * materialSpecular * smoothstep(-0.08, 0.08, frame.sunDirection.y);
+    var alpha = textureColor.a;
+    if (surfacePass > 0.5 && surfacePass < 1.5 && input.material >= ${SURFACE_MATERIAL_WATER} && input.material < ${SURFACE_MATERIAL_LAVA}) {
+      let phaseA = frame.params.y * 1.8 + input.worldPosition.x * 0.42 + input.worldPosition.z * 0.28;
+      let phaseB = frame.params.y * 2.7 - input.worldPosition.z * 0.19 + input.worldPosition.x * 0.11;
+      let phaseC = frame.params.y * 1.15 + input.worldPosition.x * 0.31 - input.worldPosition.z * 0.23;
+      let rippleA = 0.5 + 0.5 * sin(phaseA);
+      let rippleB = 0.5 + 0.5 * sin(phaseB);
+      let rippleC = 0.5 + 0.5 * sin(phaseC);
+      let shimmer = rippleA * 0.5 + rippleB * 0.3 + rippleC * 0.2;
+      let waterSlope = vec2<f32>(
+        cos(phaseA) * 0.42 * 0.028 + cos(phaseB) * 0.11 * 0.012 + cos(phaseC) * 0.07,
+        cos(phaseA) * 0.28 * 0.028 - cos(phaseB) * 0.19 * 0.012 - cos(phaseC) * 0.05
+      );
+      let waterNormal = normalize(vec3<f32>(-waterSlope.x * ${WATER_NORMAL_STRENGTH.toFixed(1)}, 1.0, -waterSlope.y * ${WATER_NORMAL_STRENGTH.toFixed(1)}));
+      let viewDirection = normalize(-input.viewDirection);
+      let facing = max(dot(waterNormal, viewDirection), 0.0);
+      let fresnel = pow(1.0 - facing, ${WATER_FRESNEL_POWER.toFixed(1)});
+      let sunVisibility = smoothstep(-0.08, 0.08, frame.sunDirection.y);
+      let specular = pow(max(dot(reflect(-frame.sunDirection.xyz, waterNormal), viewDirection), 0.0), ${WATER_SPECULAR_POWER.toFixed(1)});
+      let waveHeight = (shimmer - 0.5) * 0.5;
+      let foam = smoothstep(${WATER_FOAM_THRESHOLD.toFixed(2)}, 0.98, shimmer) * (0.25 + fresnel * 0.75);
+      let causticUv = input.worldPosition.xz * 0.055 + vec2<f32>(frame.params.y * 0.006, -frame.params.y * 0.004);
+      let causticPattern = textureSampleLevel(cloudTexture, cloudSampler, causticUv, 0.0).r;
+      let caustic = smoothstep(${WATER_CAUSTIC_THRESHOLD_START.toFixed(2)}, ${WATER_CAUSTIC_THRESHOLD_END.toFixed(2)}, causticPattern)
+        * ${WATER_CAUSTIC_STRENGTH.toFixed(2)}
+        * (0.35 + facing * 0.65);
+      let darkWater = vec3<f32>(${WATER_DARK_R}, ${WATER_DARK_G}, ${WATER_DARK_B});
+      let lightWater = vec3<f32>(${WATER_LIGHT_R}, ${WATER_LIGHT_G}, ${WATER_LIGHT_B});
+      // The material band carries the sampled column depth, so a deep ocean
+      // darkens toward a bounded floor without a second vertex attribute.
+      let waterDepth = clamp(input.material - ${SURFACE_MATERIAL_WATER.toFixed(1)}, 0.0, 1.0);
+      let deepWater = vec3<f32>(${WATER_DEPTH_FLOOR_R.toFixed(3)}, ${(WATER_DARK_G * 0.5).toFixed(3)}, ${(WATER_DARK_B * 0.6).toFixed(3)});
+      let depthAlbedo = mix(textureColor.rgb * lightWater, deepWater, waterDepth * ${WATER_DEPTH_TINT_STRENGTH.toFixed(2)});
+      let shallowWater = mix(darkWater, depthAlbedo, 0.24);
+      let waterTone = clamp(0.18 + facing * 0.48 + waveHeight * 0.38, 0.0, 1.0);
+      var waterColor = mix(darkWater, shallowWater, waterTone);
+      waterColor = mix(waterColor, frame.skyHorizon.rgb, 0.08 + fresnel * 0.34);
+      waterColor += frame.sunColor.rgb * specular * 0.96 * sunVisibility;
+      waterColor += vec3<f32>(0.16, 0.72, 0.64) * caustic;
+      let foamFade = 1.0 - smoothstep(28.0, 72.0, length(input.viewDirection));
+      waterColor += vec3<f32>(0.32, 0.78, 0.78) * foam * foamFade * ${WATER_FOAM_STRENGTH.toFixed(2)};
+      color = waterColor * mix(vec3<f32>(0.72, 0.84, 1.0), vec3<f32>(1.0), frame.params.x);
+      alpha = 0.7 + fresnel * 0.12 + foam * 0.1;
+    } else if (surfacePass > 0.5 && surfacePass < 1.5 && input.material >= ${SURFACE_MATERIAL_LAVA} && input.material < ${SURFACE_MATERIAL_FIRE}) {
+      color *= 1.0 + ${LAVA_PULSE_AMPLITUDE} * sin(frame.params.y * ${LAVA_PULSE_SPEED} + input.worldPosition.x * ${LAVA_PULSE_SPATIAL_FREQUENCY});
+      alpha = max(alpha, ${LAVA_ALPHA});
+    } else if (surfacePass > 0.5 && surfacePass < 1.5 && input.material >= ${SURFACE_MATERIAL_FIRE} && input.material < ${SURFACE_MATERIAL_FIRE + 1}) {
+      color *= 1.0 + ${FIRE_PULSE_AMPLITUDE} * sin(frame.params.y * ${FIRE_PULSE_SPEED} + input.worldPosition.y * ${FIRE_PULSE_SPATIAL_FREQUENCY});
+      alpha = max(alpha, ${FIRE_ALPHA});
     }
   }
-  let fog = clamp((distance(input.worldPosition, frame.camera.xyz) - 24.0) / frame.fog.x, 0.0, 1.0);
-  return vec4<f32>(mix(color, frame.skyColor.rgb, fog), alpha * (1.0 - fog));
+  let fogColor = mix(frame.skyHorizon.rgb, frame.skyColor.rgb, 0.58);
+  return vec4<f32>(mix(clamp(color, vec3<f32>(0.0), vec3<f32>(1.0)), fogColor, input.aerialFog), alpha * (1.0 - input.aerialFog));
+}
+`;
+
+export const WEBGPU_SKY_SHADER = `
+struct Frame {
+  viewProjection: mat4x4<f32>,
+  camera: vec4<f32>,
+  skyColor: vec4<f32>,
+  params: vec4<f32>,
+  fog: vec4<f32>,
+  skyHorizon: vec4<f32>,
+  cameraRight: vec4<f32>,
+  cameraUp: vec4<f32>,
+  cameraForward: vec4<f32>,
+  sunDirection: vec4<f32>,
+  sunColor: vec4<f32>,
+};
+
+@group(0) @binding(0) var<uniform> frame: Frame;
+@group(0) @binding(3) var cloudSampler: sampler;
+@group(0) @binding(4) var cloudTexture: texture_2d<f32>;
+
+fn hash31(point: vec3<f32>) -> f32 {
+  return fract(sin(dot(point, vec3<f32>(127.1, 311.7, 74.7))) * 43758.5453123);
+}
+
+fn filmicToneMap(color: vec3<f32>) -> vec3<f32> {
+  return clamp(max(color, vec3<f32>(0.0)) * 1.08, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+struct SkyVertexOutput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) ndc: vec2<f32>,
+};
+
+@vertex
+fn sky_vs(@builtin(vertex_index) vertexIndex: u32) -> SkyVertexOutput {
+  var positions = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>(3.0, -1.0),
+    vec2<f32>(-1.0, 3.0),
+  );
+  var output: SkyVertexOutput;
+  output.position = vec4<f32>(positions[vertexIndex], 1.0, 1.0);
+  output.ndc = positions[vertexIndex];
+  return output;
+}
+
+@fragment
+fn sky_fs(input: SkyVertexOutput) -> @location(0) vec4<f32> {
+  let skyRay = normalize(
+    frame.cameraForward.xyz
+    + frame.cameraRight.xyz * input.ndc.x * frame.fog.y * frame.fog.z
+    + frame.cameraUp.xyz * input.ndc.y * frame.fog.z
+  );
+  let vertical = clamp(skyRay.y * 0.5 + 0.5, 0.0, 1.0);
+  var skyColor = mix(frame.skyHorizon.rgb, frame.skyColor.rgb, smoothstep(0.0, 0.86, vertical));
+  let horizonBase = 1.0 - clamp(abs(skyRay.y), 0.0, 1.0);
+  let horizonHaze = horizonBase * horizonBase * horizonBase;
+  skyColor = mix(skyColor, frame.skyHorizon.rgb, horizonHaze * 0.36);
+
+  let night = 1.0 - smoothstep(0.18, 0.62, frame.params.x);
+  var starField = 0.0;
+  if (night > 0.01) {
+    let starCell = floor(skyRay * 460.0);
+    let starLocal = fract(skyRay * 460.0).xy - vec2<f32>(0.5);
+    let starPoint = 1.0 - smoothstep(0.025, 0.14, length(starLocal));
+    starField = step(0.9962, hash31(starCell)) * starPoint * night;
+  }
+
+  let cloudPlane = skyRay.xz * 0.72 + vec2<f32>(skyRay.y * 0.11, -skyRay.y * 0.08);
+  let wind = vec2<f32>(frame.params.y * 0.004, frame.params.y * 0.0016);
+  let broadCloud = textureSample(cloudTexture, cloudSampler, cloudPlane * 1.35 + wind).r;
+  let cloudDetail = textureSample(cloudTexture, cloudSampler, cloudPlane * 2.4 - wind * 1.7 + vec2<f32>(0.17, 0.31)).r;
+  var cloudNoise = smoothstep(0.54, 0.72, broadCloud * 0.78 + cloudDetail * 0.22);
+  cloudNoise = cloudNoise * smoothstep(0.0, 0.1, skyRay.y);
+
+  let sunDot = max(dot(skyRay, frame.sunDirection.xyz), 0.0);
+  let sunVisibility = smoothstep(-0.08, 0.06, frame.sunDirection.y);
+  let sunDisk = smoothstep(0.99925, 0.99982, sunDot) * sunVisibility;
+  let sunHalo = pow(sunDot, 24.0) * 0.16;
+  skyColor += frame.sunColor.rgb * (sunDisk * 1.55 + sunHalo) * sunVisibility;
+
+  if (night > 0.01) {
+    let moonDot = max(dot(skyRay, -frame.sunDirection.xyz), 0.0);
+    let moonDisk = smoothstep(0.9986, 0.99945, moonDot) * night;
+    let moonHalo = pow(moonDot, 48.0) * 0.12 * night;
+    skyColor += vec3<f32>(0.72, 0.82, 1.0) * (moonDisk * 0.9 + moonHalo);
+  }
+
+  if (cloudNoise > 0.001) {
+    let twilight = 1.0 - smoothstep(0.08, 0.48, abs(frame.sunDirection.y));
+    let cloudShadow = mix(vec3<f32>(0.055, 0.075, 0.13), vec3<f32>(0.44, 0.53, 0.6), frame.params.x);
+    var cloudLight = mix(vec3<f32>(0.12, 0.15, 0.24), vec3<f32>(1.0, 0.95, 0.84), frame.params.x);
+    cloudLight = mix(cloudLight, vec3<f32>(1.0, 0.5, 0.27), twilight * 0.34);
+    let cloudLightMix = smoothstep(0.48, 0.74, broadCloud);
+    let cloudColor = mix(cloudShadow, cloudLight, cloudLightMix);
+    skyColor = mix(skyColor, cloudColor, cloudNoise * 0.62);
+  }
+  skyColor += vec3<f32>(starField * (1.0 - cloudNoise));
+
+  let belowHorizon = 1.0 - smoothstep(-0.2, 0.0, skyRay.y);
+  skyColor = mix(skyColor, frame.skyHorizon.rgb * 0.72, belowHorizon * 0.48);
+  return vec4<f32>(filmicToneMap(skyColor), 1.0);
 }
 `;
 
@@ -134,7 +387,7 @@ function createDefaultAtlas(device) {
   const texture = device.createTexture({
     size: [1, 1, 1],
     format: "rgba8unorm",
-    usage: textureUsage("TEXTURE_BINDING") | textureUsage("COPY_DST"),
+    usage: textureUsage("TEXTURE_BINDING") | textureUsage("COPY_DST") | textureUsage("RENDER_ATTACHMENT"),
   });
   device.queue.writeTexture(
     { texture },
@@ -150,7 +403,7 @@ function createAtlasTexture(device, canvas) {
   const texture = device.createTexture({
     size: [canvas.width, canvas.height, 1],
     format: "rgba8unorm",
-    usage: textureUsage("TEXTURE_BINDING") | textureUsage("COPY_DST"),
+    usage: textureUsage("TEXTURE_BINDING") | textureUsage("COPY_DST") | textureUsage("RENDER_ATTACHMENT"),
   });
   device.queue.copyExternalImageToTexture(
     { source: canvas },
@@ -158,6 +411,32 @@ function createAtlasTexture(device, canvas) {
     { width: canvas.width, height: canvas.height, depthOrArrayLayers: 1 },
   );
   return texture;
+}
+
+function createCloudTexture(device) {
+  const texture = device.createTexture({
+    size: [CLOUD_TEXTURE_SIZE, CLOUD_TEXTURE_SIZE, 1],
+    format: "rgba8unorm",
+    usage: textureUsage("TEXTURE_BINDING") | textureUsage("COPY_DST"),
+  });
+  device.queue.writeTexture(
+    { texture },
+    createCloudTextureData(),
+    { bytesPerRow: CLOUD_TEXTURE_SIZE * 4, rowsPerImage: CLOUD_TEXTURE_SIZE },
+    { width: CLOUD_TEXTURE_SIZE, height: CLOUD_TEXTURE_SIZE, depthOrArrayLayers: 1 },
+  );
+  return texture;
+}
+
+async function validateDevicePresentation(device, format) {
+  if (typeof globalThis.createImageBitmap !== "function" || typeof document === "undefined") return true;
+  const probeCanvas = document.createElement("canvas");
+  probeCanvas.width = 1;
+  probeCanvas.height = 1;
+  const probeContext = probeCanvas.getContext("webgpu");
+  if (probeContext === null) return false;
+  probeContext.configure({ device, format, alphaMode: "opaque" });
+  return validateCanvasPresentation(probeCanvas, probeContext, device);
 }
 
 async function validateCanvasPresentation(canvas, canvasContext, device) {
@@ -189,8 +468,8 @@ async function validateCanvasPresentation(canvas, canvasContext, device) {
   }
 }
 
-function createPipeline(device, layout, module, format, depthFormat, blend, depthWriteEnabled) {
-  return device.createRenderPipeline({
+async function createPipeline(device, layout, module, format, depthFormat, blend, depthWriteEnabled) {
+  const descriptor = {
     layout,
     vertex: {
       module,
@@ -217,13 +496,39 @@ function createPipeline(device, layout, module, format, depthFormat, blend, dept
         } : undefined,
       }],
     },
-    primitive: { topology: "triangle-list", cullMode: "back" },
+    // Keep parity with the WebGL fallback until every greedy/dynamic face
+    // has a certified winding contract; back-face culling can remove terrain.
+    primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled,
       depthCompare: "less",
     },
-  });
+  };
+  return typeof device.createRenderPipelineAsync === "function"
+    ? device.createRenderPipelineAsync(descriptor)
+    : device.createRenderPipeline(descriptor);
+}
+
+async function createSkyPipeline(device, layout, module, format, depthFormat) {
+  const descriptor = {
+    layout,
+    vertex: { module, entryPoint: "sky_vs" },
+    fragment: {
+      module,
+      entryPoint: "sky_fs",
+      targets: [{ format }],
+    },
+    primitive: { topology: "triangle-list" },
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: false,
+      depthCompare: "less-equal",
+    },
+  };
+  return typeof device.createRenderPipelineAsync === "function"
+    ? device.createRenderPipelineAsync(descriptor)
+    : device.createRenderPipeline(descriptor);
 }
 
 export async function createWebGpuTerrainRenderer({
@@ -240,41 +545,84 @@ export async function createWebGpuTerrainRenderer({
   const adapter = await gpu.requestAdapter();
   if (adapter === null) throw new Error("No WebGPU adapter was returned.");
   const device = await adapter.requestDevice();
-  const canvasContext = context ?? canvas.getContext("webgpu");
-  if (canvasContext === null) throw new Error("WebGPU canvas context is unavailable.");
   const format = gpu.getPreferredCanvasFormat?.() ?? "bgra8unorm";
-  canvasContext.configure({ device, format, alphaMode: "opaque" });
-  if (!await validateCanvasPresentation(canvas, canvasContext, device)) {
-    throw new Error("WebGPU presentation is unavailable; refusing a blank canvas.");
-  }
   const depthFormat = "depth24plus";
   let depthTexture = null;
   let depthSize = "";
-  const shaderModule = device.createShaderModule({ code: SHADER });
+  if (!await validateDevicePresentation(device, format)) {
+    throw new Error("WebGPU presentation is unavailable; refusing a blank canvas.");
+  }
+  const shaderModule = device.createShaderModule({ code: WEBGPU_TERRAIN_SHADER });
+  const skyShaderModule = device.createShaderModule({ code: WEBGPU_SKY_SHADER });
   const bindGroupLayout = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: shaderStage("VERTEX") | shaderStage("FRAGMENT"), buffer: { type: "uniform" } },
     { binding: 1, visibility: shaderStage("FRAGMENT"), sampler: { type: "filtering" } },
     { binding: 2, visibility: shaderStage("FRAGMENT"), texture: { sampleType: "float" } },
+    { binding: 3, visibility: shaderStage("FRAGMENT"), sampler: { type: "filtering" } },
+    { binding: 4, visibility: shaderStage("FRAGMENT"), texture: { sampleType: "float" } },
   ] });
   const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
-  const opaquePipeline = createPipeline(device, pipelineLayout, shaderModule, format, depthFormat, false, true);
-  const alphaPipeline = createPipeline(device, pipelineLayout, shaderModule, format, depthFormat, true, false);
-  const dynamicPipeline = createPipeline(device, pipelineLayout, shaderModule, format, depthFormat, true, true);
-  const shadowPipeline = createPipeline(device, pipelineLayout, shaderModule, format, depthFormat, true, false);
+  const skyPipeline = await createSkyPipeline(device, pipelineLayout, skyShaderModule, format, depthFormat);
+  const opaquePipeline = await createPipeline(device, pipelineLayout, shaderModule, format, depthFormat, false, true);
+  const alphaPipeline = await createPipeline(device, pipelineLayout, shaderModule, format, depthFormat, true, false);
+  const dynamicPipeline = await createPipeline(device, pipelineLayout, shaderModule, format, depthFormat, true, true);
+  const shadowPipeline = await createPipeline(device, pipelineLayout, shaderModule, format, depthFormat, true, false);
   const frameBuffers = Array.from({ length: 4 }, () => device.createBuffer({
     size: FRAME_UNIFORM_BYTES,
     usage: bufferUsage("UNIFORM") | bufferUsage("COPY_DST"),
   }));
+  device.pushErrorScope?.("validation");
   const atlasTexture = createAtlasTexture(device, atlasCanvas);
-  const atlasSampler = device.createSampler({ magFilter: "nearest", minFilter: "nearest", mipmapFilter: "nearest" });
+  const cloudTexture = createCloudTexture(device);
+  const textureError = await device.popErrorScope?.();
+  if (textureError) {
+    atlasTexture.destroy();
+    cloudTexture.destroy();
+    throw new Error(`WebGPU texture upload failed: ${textureError.message}`);
+  }
+  const atlasSampler = device.createSampler({
+    magFilter: "linear",
+    minFilter: "linear",
+    mipmapFilter: "nearest",
+    addressModeU: "clamp-to-edge",
+    addressModeV: "clamp-to-edge",
+  });
+  const cloudSampler = device.createSampler({
+    magFilter: "linear",
+    minFilter: "linear",
+    addressModeU: "repeat",
+    addressModeV: "repeat",
+  });
   const bindGroups = frameBuffers.map((frameBuffer) => device.createBindGroup({
     layout: bindGroupLayout,
     entries: [
       { binding: 0, resource: { buffer: frameBuffer } },
       { binding: 1, resource: atlasSampler },
       { binding: 2, resource: atlasTexture.createView() },
+      { binding: 3, resource: cloudSampler },
+      { binding: 4, resource: cloudTexture.createView() },
     ],
   }));
+  const canvasContext = context ?? canvas.getContext("webgpu");
+  if (canvasContext === null) throw new Error("WebGPU canvas context is unavailable.");
+  // The swap chain must be configured for copying before a real frame can be
+  // read back, otherwise the gate would only ever prove the pipeline compiles.
+  canvasContext.configure({
+    device,
+    format,
+    alphaMode: "opaque",
+    usage: textureUsage("RENDER_ATTACHMENT") | textureUsage("COPY_SRC"),
+  });
+  // A device can still refuse the usage request, so the verdict comes from the
+  // real context rather than from an assumption.
+  const readbackSupport = describeFrameReadbackSupport({
+    hasCopySource: typeof canvasContext.getCurrentTexture === "function"
+      && (globalThis.GPUTextureUsage === undefined
+        || (globalThis.GPUTextureUsage.COPY_SRC ?? COPY_SRC) !== 0),
+    hasMapRead: typeof device.createBuffer === "function"
+      && (globalThis.GPUBufferUsage === undefined
+        || (globalThis.GPUBufferUsage.MAP_READ ?? MAP_READ) !== 0),
+  });
   const terrain = new Map();
   let dynamic = null;
   let shadow = null;
@@ -282,6 +630,80 @@ export async function createWebGpuTerrainRenderer({
   let uploadedWaterVertices = 0;
   let terrainBufferUploads = 0;
   let terrainBufferReuses = 0;
+  let editUploads = 0;
+  let resyncUploads = 0;
+  let lastSubmit = createSubmitMetrics();
+  let lastPresentedTexture = null;
+
+  function storeChunk(key, opaqueSource, waterSource) {
+    const previous = terrain.get(key);
+    if (previous !== undefined
+      && previous.opaqueSource === opaqueSource
+      && previous.waterSource === waterSource) {
+      terrainBufferReuses += 1;
+      uploadedOpaqueVertices += previous.opaqueVertices;
+      uploadedWaterVertices += previous.waterVertices;
+      return false;
+    }
+    const opaque = packTerrainLayer(opaqueSource);
+    const water = packTerrainLayer(waterSource);
+    terrain.set(key, {
+      opaque: replaceBuffer(previous?.opaque, opaque),
+      water: replaceBuffer(previous?.water, water),
+      opaqueSource,
+      waterSource,
+      opaqueVertices: opaque.vertexCount,
+      waterVertices: water.vertexCount,
+      strideBytes: TERRAIN_VERTEX_STRIDE_BYTES,
+      bounds: mergeBounds(
+        packedLayerBounds(opaque, emptyBounds),
+        packedLayerBounds(water, emptyBounds),
+      ),
+    });
+    terrainBufferUploads += 1;
+    uploadedOpaqueVertices += opaque.vertexCount;
+    uploadedWaterVertices += water.vertexCount;
+    return true;
+  }
+
+  // Streaming resync: the resident set may have changed, so retire the buffers
+  // of chunks that left the active window before applying the rest.
+  function uploadTerrain(chunks) {
+    const incoming = new Set(chunks.map((chunk) => String(chunk.key)));
+    for (const [key, buffers] of terrain) {
+      if (!incoming.has(key)) {
+        buffers.opaque?.destroy();
+        buffers.water?.destroy();
+        terrain.delete(key);
+      }
+    }
+    uploadedOpaqueVertices = 0;
+    uploadedWaterVertices = 0;
+    for (const chunk of chunks) {
+      if (storeChunk(String(chunk.key), chunk.vertexData?.opaque ?? null, chunk.vertexData?.water ?? null)) {
+        resyncUploads += 1;
+      }
+    }
+  }
+
+  // Edit path: the resident set is unchanged, so only the chunks whose vertex
+  // data actually changed are re-uploaded. No buffer is retired and no chunk is
+  // touched twice.
+  function updateChunks(chunks) {
+    const mode = classifyChunkUpdate([...terrain.keys()], chunks.map((chunk) => String(chunk.key)));
+    if (mode === "resync") {
+      uploadTerrain(chunks);
+      return mode;
+    }
+    uploadedOpaqueVertices = 0;
+    uploadedWaterVertices = 0;
+    for (const chunk of chunks) {
+      if (storeChunk(String(chunk.key), chunk.vertexData?.opaque ?? null, chunk.vertexData?.water ?? null)) {
+        editUploads += 1;
+      }
+    }
+    return mode;
+  }
 
   function ensureDepthTexture() {
     const key = `${canvas.width}x${canvas.height}`;
@@ -300,47 +722,6 @@ export async function createWebGpuTerrainRenderer({
     return createVertexBuffer(device, packed);
   }
 
-  function uploadTerrain(chunks) {
-    const incoming = new Set(chunks.map((chunk) => String(chunk.key)));
-    for (const [key, buffers] of terrain) {
-      if (!incoming.has(key)) {
-        buffers.opaque?.destroy();
-        buffers.water?.destroy();
-        terrain.delete(key);
-      }
-    }
-    uploadedOpaqueVertices = 0;
-    uploadedWaterVertices = 0;
-    for (const chunk of chunks) {
-      const key = String(chunk.key);
-      const opaqueSource = chunk.vertexData?.opaque ?? null;
-      const waterSource = chunk.vertexData?.water ?? null;
-      const previous = terrain.get(key);
-      if (previous !== undefined
-        && previous.opaqueSource === opaqueSource
-        && previous.waterSource === waterSource) {
-        terrainBufferReuses += 1;
-        uploadedOpaqueVertices += previous.opaqueVertices;
-        uploadedWaterVertices += previous.waterVertices;
-        continue;
-      }
-      const opaque = packTerrainLayer(opaqueSource);
-      const water = packTerrainLayer(waterSource);
-      const buffers = {
-        opaque: replaceBuffer(previous?.opaque, opaque),
-        water: replaceBuffer(previous?.water, water),
-        opaqueSource,
-        waterSource,
-        opaqueVertices: opaque.vertexCount,
-        waterVertices: water.vertexCount,
-      };
-      terrain.set(key, buffers);
-      terrainBufferUploads += 1;
-      uploadedOpaqueVertices += buffers.opaqueVertices;
-      uploadedWaterVertices += buffers.waterVertices;
-    }
-  }
-
   function uploadDynamic({ dynamic: dynamicLayer = null, shadow: shadowLayer = null } = {}) {
     const packedDynamic = createPackedDynamicLayer(dynamicLayer);
     const packedShadow = createPackedDynamicLayer(shadowLayer);
@@ -356,7 +737,24 @@ export async function createWebGpuTerrainRenderer({
     values.set([frame.camera[0], frame.camera[1], frame.camera[2], 1], 16);
     values.set([frame.skyColor[0], frame.skyColor[1], frame.skyColor[2], 1], 20);
     values.set([frame.daylight ?? 1, frame.time ?? 0, mode, frame.miningProgress ?? 0], 24);
-    values.set([frame.fogDistance ?? 120, 0, 0, 0], 28);
+    values.set([
+      frame.fogDistance ?? 120,
+      frame.aspect ?? 1,
+      frame.tanHalfFov ?? 1,
+      0,
+    ], 28);
+    const horizon = frame.skyHorizon ?? frame.skyColor;
+    const cameraRight = frame.cameraRight ?? [1, 0, 0];
+    const cameraUp = frame.cameraUp ?? [0, 1, 0];
+    const cameraForward = frame.cameraForward ?? [0, 0, -1];
+    const sunDirection = frame.sunDirection ?? [0, 1, 0];
+    const sunColor = frame.sunColor ?? [1, 0.94, 0.76];
+    values.set([horizon[0], horizon[1], horizon[2], 1], 32);
+    values.set([cameraRight[0], cameraRight[1], cameraRight[2], 0], 36);
+    values.set([cameraUp[0], cameraUp[1], cameraUp[2], 0], 40);
+    values.set([cameraForward[0], cameraForward[1], cameraForward[2], 0], 44);
+    values.set([sunDirection[0], sunDirection[1], sunDirection[2], 0], 48);
+    values.set([sunColor[0], sunColor[1], sunColor[2], 1], 52);
     device.queue.writeBuffer(frameBuffers[mode], 0, values);
   }
 
@@ -368,16 +766,79 @@ export async function createWebGpuTerrainRenderer({
     pass.draw(vertexCount, 1, 0, 0);
   }
 
+  /**
+   * Read a real region of the last presented frame back to JavaScript. This
+   * copies the swap-chain texture into a mappable buffer, so the gate measures
+   * pixels the GPU actually produced instead of trusting the pipeline.
+   */
+  async function readFramePixels(x, y, width, height) {
+    if (!readbackSupport.supported) {
+      throw new Error(`WebGPU frame readback is unavailable: ${readbackSupport.reason}`);
+    }
+    const left = Math.trunc(Number(x));
+    const bottom = Math.trunc(Number(y));
+    const pixelWidth = Math.trunc(Number(width));
+    const pixelHeight = Math.trunc(Number(height));
+    if (left < 0 || bottom < 0 || pixelWidth < 1 || pixelHeight < 1
+      || left + pixelWidth > canvas.width || bottom + pixelHeight > canvas.height) {
+      throw new RangeError("frame pixel region is outside the canvas");
+    }
+    const stride = bytesPerRow(pixelWidth);
+    const buffer = device.createBuffer({
+      size: stride * pixelHeight,
+      usage: bufferUsage("MAP_READ") | bufferUsage("COPY_DST"),
+    });
+    try {
+      const encoder = device.createCommandEncoder();
+      encoder.copyTextureToBuffer(
+        { texture: lastPresentedTexture },
+        { buffer, bytesPerRow: stride, rowsPerImage: pixelHeight },
+        { width: pixelWidth, height: pixelHeight, depthOrArrayLayers: 1 },
+      );
+      device.queue.submit([encoder.finish()]);
+      await buffer.mapAsync(mapMode());
+      const mapped = new Uint8Array(buffer.getMappedRange());
+      // WebGPU hands back the raw bytes; the gate only needs RGBA order, which
+      // is what the copy produced because the target is rgba8/bgra8 with no
+      // channel swizzle, so the rows are trimmed back to the region width.
+      const rowBytes = pixelWidth * FRAME_READBACK_BYTES_PER_PIXEL;
+      const pixels = new Uint8Array(rowBytes * pixelHeight);
+      for (let row = 0; row < pixelHeight; row += 1) {
+        pixels.set(mapped.subarray(row * stride, row * stride + rowBytes), row * rowBytes);
+      }
+      return { left, bottom, width: pixelWidth, height: pixelHeight, pixels };
+    } finally {
+      buffer.unmap?.();
+      buffer.destroy();
+    }
+  }
+
+  function mapMode() {
+    return (globalThis.GPUMapMode?.READ ?? MAP_READ);
+  }
+
   function render(frame) {
     ensureDepthTexture();
     writeFrame(frame, 0);
     writeFrame(frame, 1);
     writeFrame(frame, 2);
     writeFrame(frame, 3);
+    // Cull per chunk before the pass is encoded. A chunk that only touches the
+    // frustum edge is kept, so culling can never pop terrain that is on screen.
+    const planes = extractClipPlanes(frame.viewProjection);
+    const { visible, metrics } = selectVisibleChunks(terrain.values(), planes);
+    lastSubmit = metrics;
+    metrics.drawCalls += 1; // the sky triangle
+    if ((shadow?.vertexCount ?? 0) > 0) metrics.drawCalls += 1;
+    if ((dynamic?.vertexCount ?? 0) > 0) metrics.drawCalls += 1;
     const encoder = device.createCommandEncoder();
+    const presented = canvasContext.getCurrentTexture();
+    // Hold on to the presented texture so a readback can copy from the exact
+    // frame the submit produced.
+    lastPresentedTexture = presented;
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
-        view: canvasContext.getCurrentTexture().createView(),
+        view: presented.createView(),
         clearValue: {
           r: frame.skyColor[0],
           g: frame.skyColor[1],
@@ -394,8 +855,11 @@ export async function createWebGpuTerrainRenderer({
         depthStoreOp: "store",
       },
     });
-    for (const buffers of terrain.values()) drawLayer(pass, opaquePipeline, buffers.opaque, buffers.opaqueVertices, 0);
-    for (const buffers of terrain.values()) drawLayer(pass, alphaPipeline, buffers.water, buffers.waterVertices, 1);
+    for (const chunk of visible) drawLayer(pass, opaquePipeline, chunk.opaque, chunk.opaqueVertices, 0);
+    pass.setPipeline(skyPipeline);
+    pass.setBindGroup(0, bindGroups[0]);
+    pass.draw(3, 1, 0, 0);
+    for (const chunk of visible) drawLayer(pass, alphaPipeline, chunk.water, chunk.waterVertices, 1);
     drawLayer(pass, shadowPipeline, shadow?.buffer ?? null, shadow?.vertexCount ?? 0, 2);
     drawLayer(pass, dynamicPipeline, dynamic?.buffer ?? null, dynamic?.vertexCount ?? 0, 3);
     pass.end();
@@ -411,6 +875,7 @@ export async function createWebGpuTerrainRenderer({
     shadow?.buffer?.destroy();
     depthTexture?.destroy();
     atlasTexture.destroy();
+    cloudTexture.destroy();
     for (const frameBuffer of frameBuffers) frameBuffer.destroy();
     device.destroy?.();
   }
@@ -419,8 +884,11 @@ export async function createWebGpuTerrainRenderer({
     kind: "webgpu",
     adapterName: adapter.name ?? null,
     uploadTerrain,
+    updateChunks,
     uploadDynamic,
     render,
+    readFramePixels,
+    getReadbackSupport: () => ({ ...readbackSupport }),
     destroy,
     getStats: () => ({
       backend: "webgpu",
@@ -429,9 +897,17 @@ export async function createWebGpuTerrainRenderer({
       waterVertices: uploadedWaterVertices,
       terrainBufferUploads,
       terrainBufferReuses,
+      editUploads,
+      resyncUploads,
       dynamicVertices: dynamic?.vertexCount ?? 0,
       shadowVertices: shadow?.vertexCount ?? 0,
       vertexStrideBytes: TERRAIN_VERTEX_STRIDE_BYTES,
+      residentChunks: lastSubmit.totalChunks,
+      visibleChunks: lastSubmit.visibleChunks,
+      culledChunks: lastSubmit.culledChunks,
+      drawCalls: lastSubmit.drawCalls,
+      submittedVertices: lastSubmit.submittedVertices,
+      submittedVertexBytes: lastSubmit.submittedVertexBytes,
     }),
   };
 }

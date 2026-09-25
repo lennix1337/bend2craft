@@ -235,12 +235,14 @@ def head_in_water(
   is_water(region_block(blocks, origin_x, origin_y, origin_z, width, height, depth,
     floor_nat(x), floor_nat(F32.add(y, fraction(162, 100))), floor_nat(z)))
 
+# The feet cell controls swim buoyancy; using the upper body would stop the
+# upward impulse before the player can clear a one-block shoreline.
 def body_in_water(
   blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat, +x: F32, +y: F32, +z: F32
 ) -> Bool:
   is_water(region_block(blocks, origin_x, origin_y, origin_z, width, height, depth,
-    floor_nat(x), floor_nat(F32.add(y, fraction(4, 10))), floor_nat(z)))
+    floor_nat(x), floor_nat(y), floor_nat(z)))
 
 def poison_duration() -> F32:
   10.0
@@ -273,13 +275,19 @@ def tick_survival(state: State, +dt: F32, +sprinting: Bool) -> State:
   +well_fed = Bool.and(F32.is_ge(next_hunger, 18.0), Bool.and(F32.is_lt(after_poison, 20.0), Bool.not(poisoned)))
   +regen = choose_f32(well_fed, F32.mul(dt, fraction(1, 4)), 0.0)
   +regen_drain = choose_f32(well_fed, F32.mul(dt, fraction(3, 10)), 0.0)
-  +next_health = clamp_f32(F32.add(after_poison, regen), 0.0, 20.0)
+  +already_dead = F32.is_le(health, 0.0)
+  +next_health = choose_f32(already_dead, health, clamp_f32(F32.add(after_poison, regen), 0.0, 20.0))
   +final_hunger = clamp_f32(F32.sub(next_hunger, regen_drain), 0.0, 20.0)
   State{x, y, z, yaw, pitch, velocity_y, grounded, next_health, final_hunger, air, fall, clamped_poison}
 
+def alive(state: State) -> Bool:
+  State{+x, +y, +z, +yaw, +pitch, +velocity_y, grounded, +health, +hunger, +air, +fall, +poison} = state
+  F32.is_gt(health, 0.0)
+
 def damage(state: State, +amount: F32) -> State:
   State{+x, +y, +z, +yaw, +pitch, +velocity_y, grounded, +health, +hunger, +air, +fall, +poison} = state
-  +next_health = clamp_f32(F32.sub(health, amount), 0.0, 20.0)
+  +already_dead = F32.is_le(health, 0.0)
+  +next_health = choose_f32(already_dead, health, clamp_f32(F32.sub(health, amount), 0.0, 20.0))
   State{x, y, z, yaw, pitch, velocity_y, grounded, next_health, hunger, air, fall, poison}
 
 def lava_contact(blocks: List<&2, U32>) -> Bool:
@@ -338,7 +346,8 @@ def step.values(
   +next_z = choose_f32(z_blocked, z, candidate_z)
   +jumping = Bool.and(held(keys, 16), Bool.or(grounded, in_water))
   +surface_kick = Bool.and(in_water, Bool.and(moving, Bool.not(held(keys, 16))))
-  +jump_velocity = choose_f32(jumping, choose_f32(in_water, 3.5, fraction(70, 10)), velocity_y)
+  # Preserve the land-jump impulse while swimming so the feet can clear a bank.
+  +jump_velocity = choose_f32(jumping, fraction(70, 10), velocity_y)
   +kick_up = F32.add(velocity_y, F32.mul(8.0, dt))
   +kick = choose_f32(F32.is_lt(kick_up, 1.0), kick_up, 1.0)
   +rise = choose_f32(jumping, jump_velocity, choose_f32(surface_kick, kick, velocity_y))

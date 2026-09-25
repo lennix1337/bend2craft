@@ -6,9 +6,9 @@ Repository: https://github.com/lennix1337/bend2craft
 
 ## Architecture
 
-Bend 2 is the source of truth for global terrain, block IDs, bulk chunks, inventory/crafting transitions, player physics, collision, raycast and edit validation. The browser layer asks Bend for chunk/state results, keeps only derived caches and view models, captures input, handles browser APIs and renders visible faces with WebGPU when available, falling back to WebGL. It must not call `World.block` once per cell during normal chunk loading or duplicate domain formulas in JavaScript. Chunk terrain/light generation runs in dedicated bundled workers during development/build, while the main thread only hydrates caches and renders. In the browser target, Bend 2.0.19's JavaScript evaluator remains sequential; native C/Metal/CUDA targets can use Bend's `!` parallel calls and `--threads`/`--gpu`, but those flags do not turn the browser bundle into a native Bend runtime. WebGPU accelerates browser presentation and buffer uploads, not Bend's JavaScript evaluator.
+Bend 2 is the source of truth for global terrain, block IDs, bulk chunks, inventory/crafting transitions, player physics, collision, raycast and edit validation. The browser layer asks Bend for chunk/state results, keeps only derived caches and view models, captures input, handles browser APIs and renders visible faces with the verified WebGL path by default; WebGPU is an explicit opt-in presentation path. It must not call `World.block` once per cell during normal chunk loading or duplicate domain formulas in JavaScript. Chunk terrain/light generation runs in dedicated bundled workers during development/build, while the main thread only hydrates caches and renders. In the browser target, Bend 2.0.19's JavaScript evaluator remains sequential; native C/Metal/CUDA targets can use Bend's `!` parallel calls and `--threads`/`--gpu`, but those flags do not turn the browser bundle into a native Bend runtime. WebGPU accelerates browser presentation and buffer uploads, not Bend's JavaScript evaluator.
 
-The renderer can be controlled from Options → Graphics API (`Auto`, `WebGPU` or `WebGL fallback`) or with the `renderer` query parameter. `Auto` selects WebGPU only after a real adapter probe. WebGPU uploads interleaved per-chunk terrain buffers and keeps dynamic entity buffers separate, so a dirty chunk does not require rebuilding one global GPU buffer. The browser smoke suite includes a WebGPU path when the browser exposes an adapter; otherwise it records the capability as unavailable instead of claiming GPU acceleration.
+The renderer can be controlled from Options → Graphics API (`Auto`, `WebGPU` or `WebGL fallback`) or with the `renderer` query parameter. `Auto` uses the verified WebGL path so a blocked browser GPU probe cannot freeze world entry; WebGPU is explicit opt-in and still requires a real adapter/presentation probe. WebGPU uploads interleaved per-chunk terrain buffers and keeps dynamic entity buffers separate, so a dirty chunk does not require rebuilding one global GPU buffer. The browser smoke suite includes a WebGPU path when the browser exposes an adapter; otherwise it records the capability as unavailable instead of claiming GPU acceleration.
 
 `npm run bench:bend-native` compiles a small Bend `!` fork/join workload to the native runtime and measures `--threads` values separately from the browser benchmark. On the validation machine, the WSL environment exposes an NVIDIA GeForce RTX 4070 SUPER, but GPU execution is deliberately reported as `unverified`; the browser game still runs the JavaScript Bend target and does not silently route authoritative state through a native process.
 
@@ -34,7 +34,8 @@ The Bend 2 compiler is pinned as the `vendor/bend` submodule. Bend 2's JavaScrip
 - Bend-owned health and hunger survival loop with visible HUD values.
 - Fall damage, full-hunger regeneration, drowning air, and Bend-owned rotten-flesh poison.
 - Rotten flesh, wheat, bread and apples can be eaten through the Bend2 hunger transition (`G`).
-- Deterministic Bend-owned mobs with distinct passive, hostile, skittish and brute movement, player damage and `F` melee attacks.
+- Deterministic Bend-owned mobs with distinct passive, hostile, skittish and brute movement, player damage, aimed left-click combat and `F` melee attacks.
+- Exposed hostile mobs burn during daylight and drop through the same authoritative death path.
 - Wooden, stone, iron and diamond swords, bows, arrows, shields and kill XP with Bend-owned damage/durability rules.
 - Night mob respawn, distance despawn and death inventory drops.
 - Mob state is spawned once for the world and preserved while the active chunk window streams; crossing chunks no longer respawns mobs or drops.
@@ -56,7 +57,7 @@ The Bend 2 compiler is pinned as the `vendor/bend` submodule. Bend 2's JavaScrip
 - Dedicated entity materials, refined first-person hand/held-item geometry and public character-view API.
 - Bend2 bulk sky/cave light levels and dynamic torch point light feed face shading without per-cell bridge calls.
 - Standalone Bend2 light flood-fill primitive with walls, alternate routes and bounded propagation tests.
-- Distance fog, face shading and a lightweight day/night presentation cycle; the Options screen controls FOV, mouse sensitivity, coordinates and render distance.
+- Distance fog, face shading, a painterly water shader (animated wave normals, shifting water tones, foam crests, Fresnel sky response, and sun glints), and a lightweight day/night presentation cycle; the Options screen controls FOV, mouse sensitivity, coordinates and render distance.
 - Seed-scoped local save/load for player, inventory and Bend-owned block edits.
 - First-person camera, WASD movement, mouse look and jumping.
 - AABB collision, block raycast, block removal and block placement.
@@ -122,7 +123,7 @@ The current greedy meshing benchmark over the nine active chunks preserves all `
 
 The reference seed `1337` now materializes `597` Bend-owned village blocks in the `48 x 48` world. The village anchor is deterministic, remains inside the generated world, and includes a furnace at `(25, 9, 27)` for a stable contract proof.
 
-The reproducible `bench:villagers` run builds the `28 x 26` walkability grid from the current Bend-owned edit state in `238.7 ms` and resolves 30 bounded BFS routes in `916.4 ms` (`30.5 ms` per route). The browser therefore runs the authoritative villager transition once per second instead of once per render frame.
+The reproducible `bench:villagers` run builds the `28 x 26` walkability grid from the current Bend-owned edit state in `238.7 ms` and resolves 30 bounded BFS routes in `916.4 ms` (`30.5 ms` per route). In the browser, that grid is now built by a dedicated worker path-grid job, so the synchronous path cost no longer blocks world entry; the authoritative villager transition still runs once per second.
 
 The incremental chunk cache now rebuilds only the edited chunk and boundary neighbors: one interior edit measured `4.97 ms` versus `15.43 ms` for rebuilding all nine chunks (`3.11x` faster). The boundary merge pass reduces the cached result to `3,307` terrain quads versus `3,275` for one global greedy pass, leaving only 32 extra quads.
 
@@ -136,9 +137,9 @@ The Bend2 horizon LOD samples a `65 x 65` height grid at the default distance an
 
 The reproducible `bench:render-distance` mesh workload scales from `25` chunks at distance `2` to `81` and `169` chunks at distances `4` and `6`. On the validation machine, the synthetic full-window mesh pass measured `105.8 ms`, `233.7 ms` and `437.0 ms`; the UI therefore keeps `2` as the safe default and lets players opt into farther terrain.
 
-The browser streaming smoke at distance `6` now uses up to four chunk workers and sends only each dirty chunk's 3x3 mesh neighborhood instead of the whole active window. The same `169`-chunk workload reached `pendingChunks: 0` in `6.9–7.9 s` with `357–359` mesh rebuilds, versus `12.92 s` and `684` rebuilds in the two-worker/full-window baseline.
+The browser streaming smoke at distance `6` uses up to four chunk workers, sends only each dirty chunk's 3x3 mesh neighborhood, batches mesh targets at 64, and defers the WebGL global buffer upload until the current mesh job is complete. The latest runs reached `pendingChunks: 0` in `5.8–6.7 s` with 169 active chunks; the default WebGL smoke holds 60 FPS after boot.
 
-The reproducible `bench:renderer-browser` run samples a warmed 2.5-second browser window at `1280 x 720` and reports frame-time p95/p99 plus the minimum FPS. The validation machine's headless SwiftShader browser exposes a WebGPU adapter but returns a transparent presentation surface, so the runtime probe correctly rejects WebGPU and `Auto` falls back to WebGL instead of shipping a blank canvas. Run `npm run browser:webgpu-smoke` and `npm run bench:renderer-browser` on target hardware; only compare WebGPU FPS after the smoke reports `renderer: "webgpu"` and a visible presentation.
+The reproducible `bench:renderer-browser` run samples a warmed 2.5-second browser window at `1280 x 720` and reports frame-time p95/p99 plus the minimum FPS. The default render distance is 2; `RENDER_DISTANCE=6 npm run bench:renderer-browser` is a separate high-distance stress run (the latest headless SwiftShader sample measured 15.78 FPS at 169 active chunks). The validation machine's headless SwiftShader browser exposes a WebGPU adapter but returns a transparent presentation surface, so the runtime probe correctly rejects WebGPU; `Auto` stays on WebGL instead of shipping a blank canvas. Run `npm run browser:webgpu-smoke` and `npm run bench:renderer-browser` on target hardware; only compare WebGPU FPS after the smoke reports `renderer: "webgpu"` and a visible presentation.
 
 Torches use Bend2 source lists with Manhattan attenuation from level `14`, a `32 x 32` bounded flood window around each source, and a dirty-cell patch on the loaded light cache when placed or removed. The patch recomputes only the affected same-height plane; browser smoke measured torch light `14` at the source and `0` behind an opaque neighbor.
 
@@ -182,8 +183,10 @@ npm run smoke:dev    # bounded readiness smoke; always cleans up its server
 npm run browser:smoke # Playwright browser smoke; requires a local browser binary
 npm run browser:lighting-smoke # verify sky light after mining a surface block
 npm run browser:streaming-smoke # measure radius-six chunk hydration and mesh readiness
-npm run build        # create the static bundle in dist/
+npm run build        # clean dist/ and create the current static bundle
 ```
+
+On Windows, double-click `Jogar-Bend2Craft.bat`. It builds the current bundle through WSL before serving, fails closed if the build is missing or invalid, serves with browser caching disabled, and opens the browser only after port `8080` is listening. Use `Jogar-Bend2Craft.bat --no-open` when launching manually.
 
 Open the URL printed by Bun in a Windows browser.
 
@@ -208,13 +211,14 @@ The same seed produces the same heights, trees and block layout. Different seeds
 
 - `WASD`: move
 - Mouse: look after clicking the canvas
-- `Space`: jump; keep it held to jump again as soon as you land
+- `Space`: jump or swim upward while held; keep it held to jump again as soon as you land
 - `1` through `9`: select a hotbar slot
 - `E`: open the inventory and wood crafting panel
 - Right-click a placed furnace or press `R` after selecting one to open its container
 - `G`: eat the selected food item
-- Left click: mine the targeted block; hard blocks require the correct pickaxe tier
+- Left click: attack the mob under the crosshair, or mine the targeted block when no mob is targeted; hard blocks require the correct pickaxe tier
 - Right click: place the selected block if the stack has items
+- `F`: attack/shoot the nearest valid target; a bow requires arrows
 - `Esc`: release the mouse pointer lock
 
 ## Development rules

@@ -7,6 +7,7 @@ assert.equal(Number(state.x), 2.5);
 assert.ok(Math.abs(Number(state.y) - 1.05) < 0.001);
 assert.equal(Number(state.health), 20);
 assert.equal(Number(state.hunger), 20);
+assert.equal(Player.alive(state), true);
 assert.equal(Player.solid(11), true);
 assert.equal(Player.solid(12), false);
 assert.equal(Player.solid(21), false);
@@ -54,6 +55,9 @@ assert.ok(Number(sprinted.hunger) < Number(walked.hunger));
 const damaged = Player.damage(state, 4.0);
 assert.equal(Number(damaged.health), 16);
 assert.equal(Number(damaged.hunger), 20);
+const dead = Player.damage(damaged, 100.0);
+assert.equal(Number(dead.health), 0);
+assert.equal(Player.alive(dead), false);
 assert.equal(Player.lava_contact({ $: "Con", head: 21, tail: { $: "Nil" } }), true);
 assert.equal(Player.lava_contact({ $: "Con", head: 0, tail: { $: "Nil" } }), false);
 const lavaDamaged = Player.lava_damage(state, 1.0);
@@ -110,6 +114,9 @@ assert.ok(Number(surfaced.air) > 0, "air must refill out of water");
 const wounded = Player.state_full(2.5, 1.05, 2.5, 0.0, 0.0, 0.0, true, 10.0, 20.0, 10.0, 0.0, 0.0);
 const healed = Player.tick_survival(wounded, 4.0, false);
 assert.ok(Number(healed.health) > 10, `regen expected, got ${Number(healed.health)}`);
+const deadForStep = Player.state_full(2.5, 1.05, 2.5, 0.0, 0.0, 0.0, true, 0.0, 20.0, 10.0, 0.0, 0.0);
+const deadAfterStep = Player.step(deadForStep, 0, 0.2, airBlocks, 0n, 0n, 0n, 5n, 6n, 5n, 2n, 2n, 1n);
+assert.equal(Number(deadAfterStep.health), 0, "a dead player must not regenerate through step");
 // Poison drains health and ticks down.
 const sick = Player.state_full(2.5, 1.05, 2.5, 0.0, 0.0, 0.0, true, 20.0, 20.0, 10.0, 0.0, 10.0);
 const poisoned = Player.tick_survival(sick, 2.0, false);
@@ -117,4 +124,32 @@ assert.ok(Number(poisoned.health) < 20, "poison must damage");
 assert.ok(Number(poisoned.poison) < 10, "poison timer must tick down");
 const dosed = Player.poison_tick(sick, 5.0);
 assert.equal(Number(dosed.poison), 15);
+// Swimming must remain active until the feet clear the water cell, otherwise a
+// one-block shore blocks horizontal movement while gravity cancels the jump.
+const shoreValues = [];
+for (let y = 0; y < 12; y += 1) {
+  for (let z = 0; z < 6; z += 1) {
+    for (let x = 0; x < 6; x += 1) {
+      shoreValues.push(y === 0 || (x >= 3 && y === 8) ? 1 : (x < 3 && y <= 7 ? 7 : 0));
+    }
+  }
+}
+let shoreBlocks = { $: "Nil" };
+for (let index = shoreValues.length - 1; index >= 0; index -= 1) {
+  shoreBlocks = { $: "Con", head: shoreValues[index], tail: shoreBlocks };
+}
+let shoreSwimmer = Player.state_full(2.5, 7.5, 2.5, 0.0, 0.0, 0.0, false, 20.0, 20.0, 10.0, 0.0, 0.0);
+let exitedShore = false;
+for (let index = 0; index < 240; index += 1) {
+  shoreSwimmer = Player.step(shoreSwimmer, 24, 1 / 60, shoreBlocks, 0n, 0n, 0n, 6n, 12n, 6n, 2n, 2n, 7n);
+  if (Number(shoreSwimmer.x) > 3.3 && Number(shoreSwimmer.y) >= 9) {
+    exitedShore = true;
+    break;
+  }
+}
+assert.ok(
+  exitedShore,
+  `swimmer must climb onto the shore, x=${Number(shoreSwimmer.x)} y=${Number(shoreSwimmer.y)}`,
+);
+
 console.log("bend player ok");

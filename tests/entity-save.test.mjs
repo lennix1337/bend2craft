@@ -36,4 +36,16 @@ const oldDropSave = {
 const migratedDrop = restoreEntities(oldDropSave, { $: "Nil" }, { $: "Nil" }).drops.head;
 assert.equal(migratedDrop.velocity_y, 0);
 assert.equal(migratedDrop.settled, false);
+const inconsistentMob = {
+  $: "Con",
+  head: { ...mobs.head, health: -1, alive: true },
+  tail: { $: "Nil" },
+};
+const normalizedDead = restoreEntities(
+  { entities: { $: "Entities", mobs: inconsistentMob, drops: { $: "Nil" } } },
+  { $: "Nil" },
+  { $: "Nil" },
+).mobs.head;
+assert.equal(Number(normalizedDead.health), 0, "saved dead health must be clamped during restore");
+assert.equal(normalizedDead.alive, false, "health and alive must agree after restore");
 console.log("entity save ok");

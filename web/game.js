@@ -63,6 +63,7 @@ import {
   eatFood,
   isHeadUnderwater,
   isInWater,
+  isPlayerAlive,
   isSneaking,
   isSprinting,
   mobRegion,
@@ -75,12 +76,17 @@ import {
 } from "./game-state.js";
 import { createChunkedWorld } from "./chunk-world.js";
 import { quadCorners } from "./greedy-mesh.js";
+import { canPatchHiddenTerrain, quadContainsCell } from "./terrain-edit-visibility.js";
 import { dropBoxes, faceYaw, mobBoxes, villagerBoxes } from "./mob-models.js";
-import { createAsyncChunkMeshCache } from "./mesh-cache.js";
+import { createAsyncChunkMeshCache, shouldPublishMeshSnapshot } from "./mesh-cache.js";
 import { createMeshRebuildScheduler } from "./mesh-rebuild-scheduler.js";
+import { villagerEditsChanged } from "./villager-simulation.js";
 import { sampleSignedSurfaceGrid } from "./horizon-grid.js";
-import { readAtlasTilePixels } from "./atlas-probe.js";
+import { certifyAtlasMipmaps, readAtlasTilePixels } from "./atlas-probe.js";
 import {
+  ATLAS_TILE_GUTTER,
+  ATLAS_TILE_SIZE,
+  atlasCellOrigin,
   atlasSourceCanvas,
   atlasUV,
   blockFaceTileAt,
@@ -91,19 +97,24 @@ import { drawItemTexture, itemTexture } from "./item-atlas.js";
 import { characterRenderDescriptor, heldItemPose } from "./character-view.js";
 import { cameraMotion } from "./visual-motion.js";
 import { cameraFov } from "./camera.js";
+import { firstAimedMob } from "./aim.js";
 import { createAudioMixer } from "./audio.js";
 import { createFrameMetrics, framePercentiles, formatDebugText, sampleFrame } from "./frame-metrics.js";
+import { CLOUD_TEXTURE_SIZE, createCloudTextureData } from "./cloud-texture.js";
 import { entityShadow } from "./entity-shadow.js";
-import { firstPersonHandParts } from "./first-person-hand.js";
+import { drawFirstPersonOverlay } from "./first-person-overlay.js";
+import { nextFocusTarget, setShellInert } from "./modal-focus.js";
 import { furnaceControlHidden } from "./hud-visibility.js";
-import { litEntityFaceColor, litFaceColor } from "./material-lighting.js";
+import { TERRAIN_FACE_SHADES, litEntityFaceColor, litFaceColor } from "./material-lighting.js";
 import { createMiningState, miningStateMatches } from "./mining-controller.js";
 import { miningProgress } from "./mining-progress.js";
 import {
-  SURFACE_MATERIAL_FIRE,
-  SURFACE_MATERIAL_LAVA,
-  SURFACE_MATERIAL_WATER,
-} from "./surface-materials.js";
+  WEBGL_SKY_FALLBACK_FRAGMENT_SHADER,
+  WEBGL_SKY_FRAGMENT_SHADER,
+  WEBGL_SKY_VERTEX_SHADER,
+  createWebglTerrainShaderSources,
+  isSoftwareRenderer,
+} from "./webgl-shaders.js";
 import { concatFloat32Arrays } from "./vertex-buffer-compose.js";
 import { skyPalette } from "./sky-palette.js";
 import { decodeSave } from "./save-state.js";
@@ -126,12 +137,16 @@ import {
   touchProfile,
   touchWorld,
 } from "./profiles.js";
-import { loadOptions, normalizeWorldMode, worldModeLabel } from "./settings.js";
+import { loadOptions, normalizeWorldMode, runtimeRendererMode, worldModeLabel } from "./settings.js";
 import { createWorkerScheduler } from "./worker-scheduler.js";
-import { chooseRenderer, probeWebGpu } from "./webgpu-capabilities.js";
+import { chooseRenderer, probeWebGpu, withTimeout } from "./webgpu-capabilities.js";
 import { createWebGpuTerrainRenderer } from "./webgpu-terrain-renderer.js";
 
 const canvas = document.getElementById("game");
+const gameShell = document.getElementById("game-shell");
+const worldLoadingEl = document.getElementById("world-loading");
+const loadingWorldNameEl = document.getElementById("loading-world-name");
+const loadingProgressEl = document.getElementById("loading-progress");
 const crosshairEl = document.getElementById("crosshair");
 const miningProgressEl = document.getElementById("mining-progress");
 const miningProgressFillEl = document.getElementById("mining-progress-fill");
@@ -141,9 +156,14 @@ const selectedEl = document.getElementById("selected");
 const statsEl = document.getElementById("stats");
 const debugOverlayEl = document.getElementById("debug-overlay");
 const vitalsEl = document.getElementById("vitals");
+const survivalAnnouncerEl = document.getElementById("survival-announcer");
 const heartsEl = document.getElementById("hearts");
 const hungerEl = document.getElementById("hunger");
 const airEl = document.getElementById("air");
+const xpHudEl = document.getElementById("xp-hud");
+const xpLevelEl = document.getElementById("xp-level");
+const xpTrackEl = document.getElementById("xp-track");
+const xpFillEl = document.getElementById("xp-fill");
 const damageFlashEl = document.getElementById("damage-flash");
 const blockHighlightEl = document.getElementById("block-highlight");
 const toastEl = document.getElementById("toast");
@@ -153,8 +173,9 @@ const pauseSubtitleEl = document.getElementById("pause-subtitle");
 const deathEl = document.getElementById("death");
 const deathStatsEl = document.getElementById("death-stats");
 const hotbarEl = document.getElementById("hotbar-slots");
+const firstPersonHandCanvasEl = document.getElementById("first-person-hand-canvas");
+const firstPersonHandContext = firstPersonHandCanvasEl?.getContext("2d") ?? null;
 const heldItemViewEl = document.getElementById("held-item-view");
-const heldItemCanvasEl = document.getElementById("held-item-canvas");
 const heldItemLabelEl = document.getElementById("held-item-label");
 const inventoryToggleEl = document.getElementById("inventory-toggle");
 const furnaceToggleEl = document.getElementById("furnace-toggle");
@@ -168,6 +189,7 @@ const chestSlotsEl = document.getElementById("chest-slots");
 const recipeListEl = document.getElementById("recipe-list");
 const shapedRecipeEl = document.getElementById("shaped-recipe");
 const craftingGridEl = document.getElementById("crafting-grid");
+const craftingOutputEl = document.getElementById("crafting-output");
 const shapedStatusEl = document.getElementById("shaped-status");
 const inventoryMessageEl = document.getElementById("inventory-message");
 const furnaceStatusEl = document.getElementById("furnace-status");
@@ -176,6 +198,7 @@ const lockHintEl = document.getElementById("lock-hint");
 const helpEl = document.getElementById("help");
 const errorEl = document.getElementById("error");
 const sessionParams = new URLSearchParams(window.location.search);
+const testMode = sessionParams.get("test") === "1";
 const options = loadOptions(window.localStorage);
 
 function resolveSession() {
@@ -222,10 +245,19 @@ const WORLD_NAME = session.worldName;
 const PROFILE_NAME = session.profileName;
 const WORLD_MODE = session.mode;
 const PEACEFUL = WORLD_MODE === "peaceful";
+const VILLAGER_SIMULATION_RADIUS = 16;
+const MESH_TARGET_BATCH_SIZE = 64;
+const MELEE_ATTACK_RANGE = 4.0;
+const RANGED_ATTACK_RANGE = 16.0;
+document.body.dataset.mode = "game";
+document.body.classList.remove("is-world-ready");
+if (worldLoadingEl !== null) worldLoadingEl.hidden = false;
+if (loadingWorldNameEl !== null) loadingWorldNameEl.textContent = `${WORLD_NAME} · seed ${seedLabel(SEED)}`;
 const pointerLock = createPointerLockController(
   () => document.pointerLockElement === canvas,
   () => canvas.requestPointerLock(),
 );
+const reducedMotionQuery = window.matchMedia?.("(prefers-reduced-motion: reduce)") ?? null;
 
 const BLOCK_COLORS = {
   1: [0.34, 0.38, 0.42],
@@ -249,8 +281,7 @@ const BLOCK_COLORS = {
   19: [0.92, 0.76, 0.24],
   20: [0.32, 0.24, 0.16],
 };
-const FACE_SHADES = [1.0, 0.52, 0.82, 0.7, 0.92, 0.62];
-
+const firstPersonAtlasCanvas = createAtlasCanvas(BLOCK_COLORS);
 const FACES = [
   { dir: [0, 1, 0], corners: [[0, 1, 0], [1, 1, 0], [1, 1, 1], [0, 1, 1]] },
   { dir: [0, -1, 0], corners: [[0, 0, 1], [1, 0, 1], [1, 0, 0], [0, 0, 0]] },
@@ -271,9 +302,46 @@ function showError(error) {
   throw error;
 }
 
+const modalPanels = [deathEl, pauseEl, inventoryPanelEl, furnacePanelEl, chestPanelEl];
+
+function activeModalPanel() {
+  return modalPanels.find((panel) => panel !== null && panel.hidden === false) ?? null;
+}
+
+function syncModalIsolation() {
+  if (gameShell !== null) setShellInert(gameShell, activeModalPanel());
+}
+
+function trapModalFocus(event) {
+  if (event.key !== "Tab") return;
+  const panel = activeModalPanel();
+  if (panel === null) return;
+  const target = nextFocusTarget(panel, document.activeElement, event.shiftKey);
+  event.preventDefault();
+  target?.focus({ preventScroll: true });
+}
+
+document.addEventListener("keydown", trapModalFocus, true);
+
+function setDialogVisibility(panel, toggle, open) {
+  if (panel === null) return;
+  panel.hidden = !open;
+  panel.setAttribute("aria-hidden", String(!open));
+  syncModalIsolation();
+  if (open) {
+    window.requestAnimationFrame(() => {
+      panel.querySelector("[data-close-inventory], [data-close-furnace], [data-close-chest]")?.focus({ preventScroll: true });
+    });
+  } else if (panel.contains(document.activeElement)) {
+    (toggle ?? canvas).focus({ preventScroll: true });
+  }
+}
+
 async function bootGame() {
 let gl = null;
 let program;
+let skyProgram;
+let skyPositionBuffer;
 let positionBuffer;
 let colorBuffer;
 let uvBuffer;
@@ -298,10 +366,27 @@ let tileLocation;
 let tileBuffer;
 let viewProjectionLocation;
 let cameraLocation;
-let skyColorLocation;
+let terrainSkyColorLocation;
+let terrainSkyHorizonColorLocation;
+let terrainSunDirectionLocation;
+let terrainSunColorLocation;
 let atlasLocation;
+let terrainCloudMapLocation;
 let shadowPassLocation;
 let miningProgressLocation;
+let skyPositionLocation;
+let skyCameraForwardLocation;
+let skyCameraRightLocation;
+let skyCameraUpLocation;
+let skyColorLocation;
+let skyHorizonColorLocation;
+let skySunDirectionLocation;
+let skySunColorLocation;
+let skyAspectLocation;
+let skyTanHalfFovLocation;
+let skyDaylightLocation;
+let skyTimeLocation;
+let skyCloudMapLocation;
 let terrainVertexCount = 0;
 let waterVertexCount = 0;
 let dynamicVertexCount = 0;
@@ -321,27 +406,58 @@ let skyCssTick = -1;
 let frameMetrics = createFrameMetrics();
 let debugVisible = false;
 let rendererKind = "webgl";
+let rendererName = "unknown";
+let shaderQuality = 1;
 let webgpuProbe = { supported: false, adapterName: null, reason: "not probed" };
 let gpuRenderer = null;
+let lastGpuChunkUpdate = null;
 let timeLocation;
 let daylightLocation;
 let surfacePassLocation;
 let atlasTexture = null;
+let atlasMipmapVerdict = { safe: false, reason: "not probed", levels: [], contaminated: [] };
+let cloudTexture = null;
+
+function daylightForTime(time) {
+  return 0.28 + 0.72 * (0.5 + 0.5 * Math.sin(Number(time) * 0.08));
+}
+
+function createWebglContext() {
+  const probeCanvas = document.createElement("canvas");
+  const probe = probeCanvas.getContext("webgl", { antialias: false });
+  const debugRendererInfo = probe?.getExtension?.("WEBGL_debug_renderer_info");
+  const probeName = String(debugRendererInfo
+    ? probe.getParameter(debugRendererInfo.UNMASKED_RENDERER_WEBGL)
+    : probe?.getParameter?.(probe.RENDERER) ?? "");
+  probe?.getExtension?.("WEBGL_lose_context")?.loseContext();
+  return canvas.getContext("webgl", {
+    antialias: !isSoftwareRenderer(probeName),
+    alpha: true,
+    preserveDrawingBuffer: true,
+  });
+}
+
+function configureWebglQuality() {
+  const debugRendererInfo = gl.getExtension("WEBGL_debug_renderer_info");
+  rendererName = String(debugRendererInfo
+    ? gl.getParameter(debugRendererInfo.UNMASKED_RENDERER_WEBGL)
+    : gl.getParameter(gl.RENDERER));
+  shaderQuality = isSoftwareRenderer(rendererName) ? 0 : 1;
+  if (testMode && sessionParams.get("quality") === "high") shaderQuality = 1;
+}
 
 try {
-  const requestedRenderer = sessionParams.get("renderer") ?? options.renderer ?? "auto";
+  const configuredRenderer = sessionParams.get("renderer") ?? options.renderer ?? "auto";
+  const requestedRenderer = runtimeRendererMode(configuredRenderer);
   webgpuProbe = requestedRenderer === "webgl"
-    ? { supported: false, adapterName: null, reason: "renderer=webgl" }
+    ? { supported: false, adapterName: null, reason: configuredRenderer === "auto" ? "renderer=auto-safe" : "renderer=webgl" }
     : await probeWebGpu(globalThis.navigator, canvas);
   rendererKind = chooseRenderer({ requested: requestedRenderer, webgpu: webgpuProbe });
   if (rendererKind === "webgl") {
     // Keep the last frame readable for browser compositors and visual smoke tests.
-    gl = canvas.getContext("webgl", {
-      antialias: false,
-      alpha: true,
-      preserveDrawingBuffer: true,
-    });
+    gl = createWebglContext();
     if (!gl) throw new Error("WebGL is not available in this browser.");
+    configureWebglQuality();
   }
   const audio = createAudioMixer();
 
@@ -408,10 +524,14 @@ try {
   };
   if (rendererKind === "webgpu") {
     try {
-      gpuRenderer = await createWebGpuTerrainRenderer({
-        canvas,
-        atlasCanvas: createAtlasCanvas(BLOCK_COLORS),
-      });
+      gpuRenderer = await withTimeout(
+        createWebGpuTerrainRenderer({
+          canvas,
+          atlasCanvas: createAtlasCanvas(BLOCK_COLORS),
+        }),
+        3000,
+        "WebGPU renderer initialization timed out.",
+      );
     } catch (error) {
       if (requestedRenderer !== "auto") throw error;
       rendererKind = "webgl";
@@ -419,12 +539,9 @@ try {
         ...webgpuProbe,
         reason: error instanceof Error ? error.message : String(error),
       };
-      gl = canvas.getContext("webgl", {
-        antialias: false,
-        alpha: true,
-        preserveDrawingBuffer: true,
-      });
+      gl = createWebglContext();
       if (!gl) throw new Error("WebGPU presentation failed and WebGL is unavailable.");
+      configureWebglQuality();
     }
   }
   let world;
@@ -446,6 +563,34 @@ try {
   );
   const chunkWorkerScheduler = createWorkerScheduler(chunkWorkers.length);
   const meshWorker = new Worker("/mesh-worker.js", { type: "module" });
+  let villagerPathWorker = null;
+  let villagerPathRequestId = 0;
+  let villagerPathLatestRequestId = 0;
+  let villagerPathPending = false;
+  let villagerPathRequestTimer = null;
+  let villagerPathWorkerRequests = 0;
+  let villagerPathWorkerResponses = 0;
+  let villagerPathWorkerRejects = 0;
+  function ensureVillagerPathWorker() {
+    if (villagerPathWorker !== null) return;
+    villagerPathWorker = new Worker("/chunk-worker.js", { type: "module" });
+    villagerPathWorker.onmessage = (event) => {
+      const message = event.data;
+      if (message?.type !== "pathGrid") return;
+      if (message.requestId !== villagerPathLatestRequestId) return;
+      villagerPathPending = false;
+      if (message.error !== undefined) {
+        villagerPathWorkerRejects += 1;
+        return;
+      }
+      villagerPathWorkerResponses += 1;
+      villagerPathGrid = message.grid;
+    };
+    villagerPathWorker.onerror = () => {
+      villagerPathPending = false;
+      villagerPathWorkerRejects += 1;
+    };
+  }
   const requestMeshBuild = (job) => {
     meshWorkerRequestCount += 1;
     const transferables = [];
@@ -496,6 +641,7 @@ try {
       if (ready.changed) {
         streamingMeshScheduler?.request();
       }
+      updateWorldLoading();
     } else {
       workerRejectCount += 1;
     }
@@ -630,97 +776,9 @@ try {
   let blockCount = 0;
 
   if (rendererKind === "webgl") {
-  const vertexSource = `
-    precision mediump float;
-    attribute vec3 aPosition;
-    attribute vec3 aColor;
-    attribute vec2 aUV;
-    attribute float aMaterial;
-    attribute vec4 aTileRect;
-    uniform mat4 uViewProjection;
-    uniform vec3 uCamera;
-    uniform float uTime;
-    uniform float uSurfacePass;
-    varying vec3 vColor;
-    varying vec2 vUV;
-    varying vec3 vWorldPosition;
-    varying float vMaterial;
-    varying vec4 vTileRect;
-    varying float vFog;
-    void main() {
-      vec3 position = aPosition;
-      if (uSurfacePass > 0.5 && aMaterial < ${SURFACE_MATERIAL_WATER + 0.5}) {
-        position.y += 0.028 * sin(uTime * 1.6 + position.x * 0.38 + position.z * 0.27)
-          + 0.012 * sin(uTime * 2.7 - position.z * 0.19 + position.x * 0.11);
-      }
-      if (uSurfacePass < 0.5 && aMaterial > 13.5 && aMaterial < 14.5) {
-        position.x += 0.025 * sin(uTime * 1.2 + position.x * 0.4 + position.z * 0.27);
-        position.z += 0.018 * cos(uTime * 1.05 + position.z * 0.32 + position.x * 0.18);
-      }
-      vColor = aColor;
-      vUV = aUV;
-      vWorldPosition = position;
-      vMaterial = aMaterial;
-      vTileRect = aTileRect;
-      vFog = clamp((distance(position, uCamera) - 24.0) / ${FOG_DISTANCE.toFixed(1)}, 0.0, 1.0);
-      gl_Position = uViewProjection * vec4(position, 1.0);
-    }
-  `;
-  const fragmentSource = `
-    precision mediump float;
-    varying vec3 vColor;
-    varying vec2 vUV;
-    varying vec3 vWorldPosition;
-    varying float vMaterial;
-    varying vec4 vTileRect;
-    varying float vFog;
-    uniform float uDaylight;
-    uniform vec3 uSkyColor;
-    uniform sampler2D uAtlas;
-    uniform float uTime;
-    uniform float uSurfacePass;
-    uniform float uShadowPass;
-    uniform float uMiningProgress;
-    void main() {
-      vec2 localUv = fract(vUV);
-      bool miningPass = vTileRect.x < -0.5;
-      vec2 tileUv = mix(vTileRect.xy, vTileRect.zw, localUv);
-      vec4 textureColor = miningPass ? vec4(1.0) : texture2D(uAtlas, tileUv);
-      float materialVariation = fract(sin(dot(floor(vWorldPosition.xz), vec2(12.9898, 78.233))) * 43758.5453);
-      vec3 texturedColor = vColor * uDaylight * textureColor.rgb * mix(0.985, 1.015, materialVariation);
-      float alpha = textureColor.a;
-      if (uShadowPass > 0.5) {
-        texturedColor = vec3(0.015, 0.02, 0.018);
-        vec2 shadowUv = vUV * 2.0 - 1.0;
-        float shadowDistance = length(shadowUv);
-        float softness = 1.0 - smoothstep(0.38, 1.0, shadowDistance);
-        alpha = 0.28 * softness * (1.0 - vFog * 0.65);
-      } else if (miningPass) {
-        vec2 fractureUv = vUV * 4.0 + floor(uMiningProgress * 6.0);
-        float fractureA = 1.0 - smoothstep(0.0, 0.045, abs(fractureUv.x + fractureUv.y) - 0.5);
-        float fractureB = 1.0 - smoothstep(0.0, 0.045, abs(fractureUv.x - fractureUv.y) - 0.5);
-        float fracture = max(fractureA, fractureB) * step(0.02, uMiningProgress);
-        texturedColor = vec3(0.04, 0.045, 0.04);
-        alpha = 0.14 + fracture * 0.72;
-      } else if (uSurfacePass > 0.5 && vMaterial < ${SURFACE_MATERIAL_WATER + 0.5}) {
-        float rippleA = 0.5 + 0.5 * sin(uTime * 1.8 + vWorldPosition.x * 0.42 + vWorldPosition.z * 0.28);
-        float rippleB = 0.5 + 0.5 * sin(uTime * 2.7 - vWorldPosition.z * 0.19 + vWorldPosition.x * 0.11);
-        float shimmer = 0.65 * rippleA + 0.35 * rippleB;
-        float crest = smoothstep(0.76, 0.98, shimmer);
-        texturedColor = mix(vec3(0.035, 0.23, 0.42), vec3(0.18, 0.68, 0.78), shimmer) * uDaylight;
-        texturedColor += vec3(0.16, 0.24, 0.22) * crest;
-        alpha = 0.76;
-      } else if (uSurfacePass > 0.5 && vMaterial < ${SURFACE_MATERIAL_LAVA + 0.5}) {
-        texturedColor *= 1.0 + 0.16 * sin(uTime * 2.4 + vWorldPosition.x * 0.5);
-        alpha = max(alpha, 0.86);
-      } else if (uSurfacePass > 0.5) {
-        texturedColor *= 1.0 + 0.25 * sin(uTime * 8.0 + vWorldPosition.y * 4.0);
-        alpha = max(alpha, 0.9);
-      }
-      float outputAlpha = mix(alpha, 0.0, vFog);
-      gl_FragColor = vec4(mix(texturedColor, uSkyColor, vFog), outputAlpha);
-    }
-  `;
+    const advancedTerrainSources = createWebglTerrainShaderSources(FOG_DISTANCE, { advancedWater: true });
+    const fallbackTerrainSources = createWebglTerrainShaderSources(FOG_DISTANCE, { advancedWater: false });
+    const terrainSources = shaderQuality >= 0.5 ? advancedTerrainSources : fallbackTerrainSources;
 
   function compileShader(type, source) {
     const shader = gl.createShader(type);
@@ -734,17 +792,58 @@ try {
     return shader;
   }
 
-  const vertexShader = compileShader(gl.VERTEX_SHADER, vertexSource);
-  const fragmentShader = compileShader(gl.FRAGMENT_SHADER, fragmentSource);
-  program = gl.createProgram();
-  gl.attachShader(program, vertexShader);
-  gl.attachShader(program, fragmentShader);
-  gl.linkProgram(program);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    throw new Error(`Failed to link the WebGL program: ${gl.getProgramInfoLog(program)}`);
+  function linkProgram(vertexShaderSource, fragmentShaderSource) {
+    const vertexShader = compileShader(gl.VERTEX_SHADER, vertexShaderSource);
+    let fragmentShader;
+    try {
+      fragmentShader = compileShader(gl.FRAGMENT_SHADER, fragmentShaderSource);
+    } catch (error) {
+      gl.deleteShader(vertexShader);
+      throw error;
+    }
+    const linkedProgram = gl.createProgram();
+    gl.attachShader(linkedProgram, vertexShader);
+    gl.attachShader(linkedProgram, fragmentShader);
+    gl.linkProgram(linkedProgram);
+    gl.deleteShader(vertexShader);
+    gl.deleteShader(fragmentShader);
+    if (!gl.getProgramParameter(linkedProgram, gl.LINK_STATUS)) {
+      const info = gl.getProgramInfoLog(linkedProgram);
+      gl.deleteProgram(linkedProgram);
+      throw new Error(`Failed to link the WebGL program: ${info}`);
+    }
+    return linkedProgram;
   }
-  gl.deleteShader(vertexShader);
-  gl.deleteShader(fragmentShader);
+
+  function createPermutedProgram(
+    vertexShaderSource,
+    fragmentShaderSource,
+    fallbackVertexShaderSource,
+    fallbackFragmentShaderSource,
+  ) {
+    try {
+      return {
+        program: linkProgram(vertexShaderSource, fragmentShaderSource),
+        usedFallback: false,
+      };
+    } catch (error) {
+      if (vertexShaderSource === fallbackVertexShaderSource
+        && fragmentShaderSource === fallbackFragmentShaderSource) throw error;
+      return {
+        program: linkProgram(fallbackVertexShaderSource, fallbackFragmentShaderSource),
+        usedFallback: true,
+      };
+    }
+  }
+
+  const terrainProgram = createPermutedProgram(
+    terrainSources.vertexSource,
+    terrainSources.fragmentSource,
+    fallbackTerrainSources.vertexSource,
+    fallbackTerrainSources.fragmentSource,
+  );
+  program = terrainProgram.program;
+  if (terrainProgram.usedFallback) shaderQuality = 0;
 
   positionBuffer = gl.createBuffer();
   colorBuffer = gl.createBuffer();
@@ -775,13 +874,70 @@ try {
   surfacePassLocation = gl.getUniformLocation(program, "uSurfacePass");
   shadowPassLocation = gl.getUniformLocation(program, "uShadowPass");
   miningProgressLocation = gl.getUniformLocation(program, "uMiningProgress");
-  skyColorLocation = gl.getUniformLocation(program, "uSkyColor");
+  terrainSkyColorLocation = gl.getUniformLocation(program, "uSkyColor");
+  terrainSkyHorizonColorLocation = gl.getUniformLocation(program, "uSkyHorizonColor");
+  terrainSunDirectionLocation = gl.getUniformLocation(program, "uSunDirection");
+  terrainSunColorLocation = gl.getUniformLocation(program, "uSunColor");
   atlasLocation = gl.getUniformLocation(program, "uAtlas");
-  atlasTexture = createTextureAtlas(gl, BLOCK_COLORS);
+  terrainCloudMapLocation = gl.getUniformLocation(program, "uCloudMap");
+  // Mipmaps stay off until the padded atlas is certified free of foreign tile
+  // contamination on a throwaway mip chain, so a bad atlas can never ship.
+  atlasMipmapVerdict = certifyAtlasMipmaps(gl, BLOCK_COLORS);
+  atlasTexture = createTextureAtlas(gl, BLOCK_COLORS, {
+    mipmaps: true,
+    mipmapSafe: atlasMipmapVerdict.safe,
+  });
   gl.useProgram(program);
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, atlasTexture);
   gl.uniform1i(atlasLocation, 0);
+  gl.uniform1i(terrainCloudMapLocation, 1);
+
+  const skyProgramAttempt = createPermutedProgram(
+    WEBGL_SKY_VERTEX_SHADER,
+    shaderQuality >= 0.5 ? WEBGL_SKY_FRAGMENT_SHADER : WEBGL_SKY_FALLBACK_FRAGMENT_SHADER,
+    WEBGL_SKY_VERTEX_SHADER,
+    WEBGL_SKY_FALLBACK_FRAGMENT_SHADER,
+  );
+  skyProgram = skyProgramAttempt.program;
+  if (skyProgramAttempt.usedFallback) shaderQuality = 0;
+  skyPositionBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, skyPositionBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  skyPositionLocation = gl.getAttribLocation(skyProgram, "aPosition");
+  skyCameraForwardLocation = gl.getUniformLocation(skyProgram, "uCameraForward");
+  skyCameraRightLocation = gl.getUniformLocation(skyProgram, "uCameraRight");
+  skyCameraUpLocation = gl.getUniformLocation(skyProgram, "uCameraUp");
+  skyColorLocation = gl.getUniformLocation(skyProgram, "uSkyColor");
+  skyHorizonColorLocation = gl.getUniformLocation(skyProgram, "uSkyHorizonColor");
+  skySunDirectionLocation = gl.getUniformLocation(skyProgram, "uSunDirection");
+  skySunColorLocation = gl.getUniformLocation(skyProgram, "uSunColor");
+  skyAspectLocation = gl.getUniformLocation(skyProgram, "uAspect");
+  skyTanHalfFovLocation = gl.getUniformLocation(skyProgram, "uTanHalfFov");
+  skyDaylightLocation = gl.getUniformLocation(skyProgram, "uDaylight");
+  skyTimeLocation = gl.getUniformLocation(skyProgram, "uTime");
+  skyCloudMapLocation = gl.getUniformLocation(skyProgram, "uCloudMap");
+  cloudTexture = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, cloudTexture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.RGBA,
+    CLOUD_TEXTURE_SIZE,
+    CLOUD_TEXTURE_SIZE,
+    0,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    createCloudTextureData(),
+  );
+  gl.useProgram(skyProgram);
+  gl.uniform1i(skyCloudMapLocation, 1);
+  gl.activeTexture(gl.TEXTURE0);
   }
 
   function blockColor(block, faceIndex, x, z, light = 15) {
@@ -789,7 +945,7 @@ try {
     // (Multiplying a colored tint here double-colors every surface.)
     const variation = (((x * 17 + z * 31) % 5) + 5) % 5 * 0.012;
     const top = block === 3 && faceIndex === 0;
-    const shade = FACE_SHADES[faceIndex] + (top ? variation : variation * 0.5);
+    const shade = TERRAIN_FACE_SHADES[faceIndex] + (top ? variation : variation * 0.5);
     return litFaceColor(faceIndex, 1, light, shade);
   }
 
@@ -893,11 +1049,14 @@ try {
   }
 
   function appendBox(positions, colors, uvs, tiles, part) {
-    const uv = atlasUV(part.tile);
-    const tileRect = [uv[0], uv[1], uv[4], uv[5]];
+    const uniformUv = part.faceTiles === undefined ? atlasUV(part.tile) : null;
     const localUv = [[0, 0], [1, 0], [1, 1], [0, 1]];
     for (let faceIndex = 0; faceIndex < FACES.length; faceIndex += 1) {
-      const color = litEntityFaceColor(part.tint, faceIndex, 1, FACE_SHADES[faceIndex]);
+      const uv = uniformUv ?? atlasUV(part.faceTiles[faceIndex]);
+      const tileRect = part.faceTiles !== undefined && faceIndex >= 2
+        ? [uv[0], uv[5], uv[4], uv[1]]
+        : [uv[0], uv[1], uv[4], uv[5]];
+      const color = litEntityFaceColor(part.tint, faceIndex, 1, TERRAIN_FACE_SHADES[faceIndex]);
       for (const cornerIndex of [0, 1, 2, 0, 2, 3]) {
         const corner = FACES[faceIndex].corners[cornerIndex];
         const [px, py, pz] = rotatePartPoint(
@@ -980,26 +1139,6 @@ try {
       appendShadow(shadowPositions, shadowColors, shadowUvs, drop);
       for (const part of dropBoxes(drop, time)) appendBox(positions, colors, uvs, tiles, part);
     }
-    const eye = [player.x, player.y + (isSneaking(held, options.controls) ? SNEAK_EYE_HEIGHT : EYE_HEIGHT), player.z];
-    const direction = cameraDirection(player);
-    const right = normalize(cross(direction, [0, 1, 0]));
-    const up = normalize(cross(right, direction));
-    const selectedBlock = blockForItem(selectedItem(inventory, selectedSlot));
-    const swing = Math.max(0, Math.min(1, (0.26 - (time - handSwingTime)) / 0.26));
-    for (const part of firstPersonHandParts({
-      eye,
-      direction,
-      right,
-      up,
-      cameraYaw: player.yaw,
-      cameraPitch: player.pitch,
-      time,
-      speed: visualSpeed,
-      grounded: player.grounded,
-      selectedBlock,
-      selectedItem: selectedItem(inventory, selectedSlot),
-      swing,
-    })) appendBox(positions, colors, uvs, tiles, part);
     appendMiningCrack(positions, colors, uvs, tiles);
     shadowVertexCount = shadowPositions.length / 3;
     shadowQuadCount = shadowVertexCount / 6;
@@ -1065,26 +1204,12 @@ try {
     }
   }
 
-  function quadContainsCell(quad, x, y, z) {
-    if (quad.faceIndex === 0 || quad.faceIndex === 1) {
-      return y === quad.y
-        && x >= quad.u && x < quad.u + quad.width
-        && z >= quad.v && z < quad.v + quad.height;
-    }
-    if (quad.faceIndex === 2 || quad.faceIndex === 3) {
-      return x === quad.x
-        && z >= quad.u && z < quad.u + quad.width
-        && y >= quad.v && y < quad.v + quad.height;
-    }
-    return z === quad.z
-      && x >= quad.u && x < quad.u + quad.width
-      && y >= quad.v && y < quad.v + quad.height;
-  }
-
   function patchHiddenTerrainGpu(terrain) {
     if (gpuRenderer !== null) return false;
     if (hiddenTerrainBlocks.size === 0 || terrain.vertexData === null) return false;
     const hidden = [...hiddenTerrainBlocks].map((key) => key.split(",").map(Number));
+    if (!canPatchHiddenTerrain(terrain.quads, hidden)) return false;
+    const containsHiddenCell = (quad) => hidden.some(([x, y, z]) => quadContainsCell(quad, x, y, z));
     let opaqueVertex = 0;
     let waterVertex = 0;
     let patched = false;
@@ -1093,7 +1218,7 @@ try {
       const vertexOffset = (quad.block === 7 || quad.block === 21 || quad.block === 24)
         ? waterVertex
         : opaqueVertex;
-      const shouldHide = hidden.some(([x, y, z]) => quadContainsCell(quad, x, y, z));
+      const shouldHide = containsHiddenCell(quad);
       if (shouldHide) {
         const positions = new Float32Array(18);
         for (let vertex = 0; vertex < 6; vertex += 1) {
@@ -1119,7 +1244,9 @@ try {
       terrainImmediateDirty = false;
     }
     terrainMeshCache.rebuildDirty();
+    if (!shouldPublishMeshSnapshot(rendererKind, terrainMeshCache.pending)) return;
     const terrain = terrainMeshCache.snapshot(merge);
+    if (terrain.chunks.some((chunk) => chunk.key === spawnChunkKey)) spawnMeshReady = true;
     if (!terrainMeshCache.pending && hiddenTerrainBlocks.size > 0) hiddenTerrainBlocks.clear();
     blockCount = terrain.blockCount;
     if (gpuRenderer !== null) {
@@ -1127,7 +1254,9 @@ try {
         ...(terrain.chunks ?? []),
         { key: "horizon", vertexData: horizonMesh },
       ];
-      gpuRenderer.uploadTerrain(chunks);
+      // An edit keeps the resident set and only replaces the chunks whose
+      // vertex data changed; streaming changes retire buffers and resync.
+      lastGpuChunkUpdate = gpuRenderer.updateChunks(chunks);
       terrainQuadCount = chunks.reduce((sum, chunk) => sum + (chunk.vertexData?.opaque?.quadCount ?? 0), 0);
       waterQuadCount = chunks.reduce((sum, chunk) => sum + (chunk.vertexData?.water?.quadCount ?? 0), 0);
       terrainVertexCount = chunks.reduce(
@@ -1310,6 +1439,7 @@ try {
 
   const spawnContract = World.spawn_cell(SEED);
   const spawnCell = [Number(spawnContract.x), Number(spawnContract.z)];
+  const spawnChunkKey = `${Math.floor(spawnCell[0] / Number(World.chunk_size()))},${Math.floor(spawnCell[1] / Number(World.chunk_size()))}`;
   const spawnHeight = Number(spawnContract.height);
   const player = createPlayer(spawnCell, spawnHeight);
   if (savedGame?.player !== null && typeof savedGame?.player === "object") {
@@ -1319,7 +1449,12 @@ try {
   let visualSample = { x: player.x, z: player.z, time: performance.now() };
   let visualSpeed = 0;
   world.loadAround(spawnCell[0], spawnCell[1], undefined, 9);
-  terrainMeshCache = createAsyncChunkMeshCache(world, requestMeshBuild);
+  terrainMeshCache = createAsyncChunkMeshCache(world, requestMeshBuild, null, {
+    maxTargetsPerJob: MESH_TARGET_BATCH_SIZE,
+    // The WebGPU backend uploads one buffer per chunk and never reads the
+    // merged snapshot, so the worker must not compose one on every edit.
+    perChunkOnly: rendererKind === "webgpu",
+  });
   const inventory = createInventory();
   if (Array.isArray(savedGame?.inventory) && savedGame.inventory.length === inventory.length) {
     inventory.splice(0, inventory.length, ...savedGame.inventory);
@@ -1352,7 +1487,35 @@ try {
   const mobFlash = new Map();
   let handSwingTime = -10;
   let villagerDomainState = restoreVillagers(savedGame, Villagers.spawn(SEED));
-  let villagerPathGrid = Villagers.path_grid(SEED, world.getEdits());
+  let villagerPathGrid = null;
+  function requestVillagerPathGrid() {
+    ensureVillagerPathWorker();
+    const requestId = ++villagerPathRequestId;
+    villagerPathLatestRequestId = requestId;
+    villagerPathPending = true;
+    villagerPathWorkerRequests += 1;
+    try {
+      villagerPathWorker.postMessage({
+        type: "pathGrid",
+        requestId,
+        seed: SEED,
+        edits: world.getEdits(),
+      });
+    } catch {
+      villagerPathPending = false;
+      villagerPathWorkerRejects += 1;
+    }
+  }
+  function scheduleVillagerPathGrid() {
+    villagerPathLatestRequestId += 1;
+    villagerPathGrid = null;
+    if (villagerPathRequestTimer !== null) return;
+    villagerPathRequestTimer = window.setTimeout(() => {
+      villagerPathRequestTimer = null;
+      requestVillagerPathGrid();
+    }, 0);
+  }
+  scheduleVillagerPathGrid();
   let villagers = [];
   let villagerTick = Number(savedGame?.villagerTick ?? 0);
   let dropDomainState = restoredEntities.drops;
@@ -1364,10 +1527,47 @@ try {
   let entityBucketStats = { mobBuckets: 0, activeMobBuckets: 0, dropBuckets: 0, activeDropBuckets: 0 };
   let moveFrameCalls = 0;
   let moveFrameActive = false;
+  let worldReady = false;
+  let spawnMeshReady = false;
+  let loadingProgressValue = -1;
+
+  function updateWorldLoading() {
+    if (worldReady) return;
+    const initialChunkTarget = Math.min(9, world.activeChunkCount() + world.pendingChunkCount());
+    const hydrated = Math.min(initialChunkTarget, world.activeChunkCount());
+    const meshReady = terrainMeshCache !== undefined
+      && terrainMeshCache !== null
+      && !terrainMeshCache.pending
+      && spawnMeshReady
+      && terrainQuadCount > 0 ? 16 : 0;
+    const progress = Math.min(100, Math.round((hydrated / Math.max(1, initialChunkTarget)) * 84 + meshReady));
+    if (loadingProgressEl !== null && progress !== loadingProgressValue) {
+      loadingProgressValue = progress;
+      loadingProgressEl.setAttribute("aria-valuenow", String(progress));
+      loadingProgressEl.firstElementChild?.style.setProperty("--loading-progress", String(progress / 100));
+    }
+    const spawnReady = playerSpawnReady
+      && world.isActive(Math.floor(player.x), Math.floor(player.z))
+      && terrainQuadCount > 0;
+    if (!spawnReady) return;
+    worldReady = true;
+    // Loading/mesh hydration is reported separately; active-play percentiles
+    // should not retain the first-frame stall from world bootstrap.
+    frameMetrics = createFrameMetrics();
+    if (loadingProgressEl !== null) {
+      loadingProgressEl.setAttribute("aria-valuenow", "100");
+      loadingProgressEl.firstElementChild?.style.setProperty("--loading-progress", "1");
+    }
+    document.body.classList.add("is-world-ready");
+    worldLoadingEl?.setAttribute("aria-busy", "false");
+    window.setTimeout(() => {
+      if (worldLoadingEl !== null) worldLoadingEl.hidden = true;
+    }, 420);
+  }
 
   function invalidateVillagerPath(x, y, z) {
     if (x < 17 || x >= 45 || z < 19 || z >= 45 || y > 10) return;
-    villagerPathGrid = Villagers.path_grid(SEED, world.getEdits());
+    scheduleVillagerPathGrid();
   }
 
   function editValues(edits) {
@@ -1871,6 +2071,9 @@ try {
       (mob) => ({ x: Number(mob.x), z: Number(mob.z) }),
       "mob",
     );
+    // The same per-mob block window drives movement and the melee line-of-sight
+    // query, so Bend reads one window per active mob per tick.
+    const activeRegions = mobRegionsFor(partition.active);
     mobDomainState = concatBendLists(
       Entities.step_world(
         partition.active,
@@ -1879,10 +2082,11 @@ try {
         dt,
         worldTime,
         BigInt(DOMAIN_COORDINATE_OFFSET),
-        mobRegionsFor(partition.active),
+        activeRegions,
       ),
       Entities.step_budgeted(partition.dormant, player.x, player.z, dt / 5, 32.0),
     );
+    return activeRegions;
   }
 
   function refreshMobs() {
@@ -1942,9 +2146,55 @@ try {
 
   function updateMobs(dt) {
     if (mobDomainState === null) return false;
-    stepMobsBudgeted(dt);
+    if (!isPlayerAlive(player)) {
+      showDeath();
+      return true;
+    }
+    const activeRegions = stepMobsBudgeted(dt);
+    const beforeSunlight = mobs;
     mobs = mobViews(mobDomainState);
-    const threat = Number(Entities.threat_damage(mobDomainState, player.x, player.z));
+    const sunlight = Entities.sunlight_damage(
+      mobDomainState,
+      world.getEdits(),
+      SEED,
+      daylight,
+      dt,
+      dropDomainState,
+    );
+    mobDomainState = sunlight.mobs;
+    dropDomainState = sunlight.drops;
+    mobs = mobViews(mobDomainState);
+    drops = dropViews(dropDomainState);
+    if (sunlight.hit) {
+      let solarKills = 0;
+      for (const previous of beforeSunlight) {
+        const current = mobs.find((mob) => String(mob.id) === String(previous.id));
+        if (previous.alive && current !== undefined && !current.alive) {
+          solarKills += 1;
+          killCount += 1;
+          xpState = Experience.award(xpState, Number(previous.kind ?? 2));
+        }
+      }
+      if (solarKills > 0) {
+        setInventoryMessage(`${solarKills} monster${solarKills === 1 ? "" : "s"} burned away in daylight.`);
+      }
+    }
+    // Re-bucket after sunlight so a mob killed by the sun cannot contribute
+    // damage on the same tick. Sunlight never moves a body, so the windows
+    // built for the movement step still line up with the surviving order.
+    const threatened = splitActiveEntityBuckets(
+      mobDomainState,
+      (mob) => ({ x: Number(mob.x), z: Number(mob.z) }),
+      "mob",
+    ).active;
+    const threat = Number(Entities.threat_damage(
+      threatened,
+      player.x,
+      player.y,
+      player.z,
+      BigInt(DOMAIN_COORDINATE_OFFSET),
+      activeRegions,
+    ));
     if (threat > 0) {
       const blocking = Equipment.blocks_damage(equipmentState)
         || itemId(selectedItem(inventory, selectedSlot)) === "shield";
@@ -1956,7 +2206,17 @@ try {
   }
 
   function updateVillagers(dt) {
-    villagerDomainState = Villagers.step(villagerDomainState, SEED, villagerPathGrid, BigInt(villagerTick), dt);
+    if (villagerPathGrid === null) return false;
+    villagerDomainState = Villagers.step_near(
+      villagerDomainState,
+      SEED,
+      villagerPathGrid,
+      BigInt(villagerTick),
+      dt,
+      player.x,
+      player.z,
+      VILLAGER_SIMULATION_RADIUS,
+    );
     villagerTick = (villagerTick + 1) % 24;
     villagers = villagerViews(villagerDomainState);
     const currentEdits = world.getEdits();
@@ -1964,12 +2224,13 @@ try {
     const doorResult = Villagers.update_doors_result(villagerDomainState, SEED, openedEdits, player.x, player.z);
     const nextEdits = Villagers.door_edits(doorResult);
     const changes = activeEditChanges(currentEdits, nextEdits);
-    if (changes.length > 0 && world.patchEdits(nextEdits, changes)) {
+    if (villagerEditsChanged(changes) && world.patchEdits(nextEdits, changes)) {
       world.loadAround(player.x, player.z);
       for (const change of changes) terrainMeshCache.invalidateBlock(change.x, change.z);
-      villagerPathGrid = Villagers.path_grid(SEED, nextEdits);
+      scheduleVillagerPathGrid();
+      return true;
     }
-    return true;
+    return false;
   }
 
   function tradeNearestVillager() {
@@ -2028,35 +2289,13 @@ try {
     return true;
   }
 
-  function attackNearestMob() {
+  function swingHand() {
     handSwingTime = worldTime;
-    if (heldItemViewEl !== null) {
-      heldItemViewEl.classList.remove("is-swinging");
-      void heldItemViewEl.offsetWidth;
-      heldItemViewEl.classList.add("is-swinging");
-      window.setTimeout(() => heldItemViewEl.classList.remove("is-swinging"), 260);
-    }
+  }
+
+  function attackMob(target, damage, selectedId) {
     if (mobDomainState === null) return false;
-    const selected = selectedItem(inventory, selectedSlot);
-    if (itemId(selected) === "bow") return shootArrow(selected);
-    let nearest = null;
-    let nearestDistance = 4 * 4;
-    for (const mob of mobs) {
-      if (!mob.alive) continue;
-      const dx = mob.x - player.x;
-      const dz = mob.z - player.z;
-      const distance = dx * dx + dz * dz;
-      if (distance < nearestDistance) {
-        nearest = mob;
-        nearestDistance = distance;
-      }
-    }
-    if (nearest === null) return false;
-    const selectedId = itemId(selected);
-    const damage = ["wooden_sword", "stone_sword", "iron_sword", "diamond_sword"].includes(selectedId)
-      ? weaponDamage(selected)
-      : handDamage();
-    const result = Entities.attack(mobDomainState, BigInt(nearest.id), damage, player.x, player.z, dropDomainState);
+    const result = Entities.attack(mobDomainState, BigInt(target.id), damage, player.x, player.y, player.z, MELEE_ATTACK_RANGE, dropDomainState);
     if (!result.hit) return false;
     audio.play("pop");
     spawnParticles("#f2c65d", 6);
@@ -2067,15 +2306,15 @@ try {
     mobs = mobViews(mobDomainState);
     dropDomainState = result.drops;
     drops = dropViews(dropDomainState);
-    const slain = mobs.find((mob) => String(mob.id) === String(nearest.id));
+    const slain = mobs.find((mob) => String(mob.id) === String(target.id));
     if (slain !== undefined && !slain.alive) {
       killCount += 1;
-      xpState = Experience.award(xpState, Number(nearest.kind ?? 2));
-      setInventoryMessage(`Mob slain (+${Number(Experience.xp_for_kind(Number(nearest.kind ?? 2)))} XP).`);
+      xpState = Experience.award(xpState, Number(target.kind ?? 2));
+      setInventoryMessage(`Mob slain (+${Number(Experience.xp_for_kind(Number(target.kind ?? 2)))} XP).`);
     } else {
       setInventoryMessage("Mob hit.");
     }
-    mobFlash.set(nearest.id, worldTime);
+    mobFlash.set(target.id, worldTime);
     if (mobFlash.size > 64) {
       for (const key of mobFlash.keys()) {
         if (worldTime - mobFlash.get(key) > 1) mobFlash.delete(key);
@@ -2093,6 +2332,60 @@ try {
     refreshInventoryUi();
     rebuildDynamicMesh(worldTime);
     return true;
+  }
+
+  function aimedMob(maxDistance = 4) {
+    return firstAimedMob(
+      [player.x, player.y + EYE_HEIGHT, player.z],
+      cameraDirection(player),
+      mobs,
+      maxDistance,
+    );
+  }
+
+  function attackNearestMob() {
+    swingHand();
+    if (mobDomainState === null) return false;
+    const selected = selectedItem(inventory, selectedSlot);
+    if (itemId(selected) === "bow") return shootArrow(selected);
+    let nearest = null;
+    let nearestDistance = 4 * 4;
+    for (const mob of mobs) {
+      if (!mob.alive) continue;
+      const dx = mob.x - player.x;
+      const dy = mob.y - player.y;
+      const dz = mob.z - player.z;
+      const distance = dx * dx + dy * dy + dz * dz;
+      if (distance < nearestDistance) {
+        nearest = mob;
+        nearestDistance = distance;
+      }
+    }
+    if (nearest === null) return false;
+    const selectedId = itemId(selected);
+    const damage = ["wooden_sword", "stone_sword", "iron_sword", "diamond_sword"].includes(selectedId)
+      ? weaponDamage(selected)
+      : handDamage();
+    return attackMob(nearest, damage, selectedId);
+  }
+
+  function attackAimedMob() {
+    if (mobDomainState === null) return false;
+    const selected = selectedItem(inventory, selectedSlot);
+    if (itemId(selected) === "bow") return shootArrow(selected);
+    const target = aimedMob();
+    if (target === null) return false;
+    swingHand();
+    const selectedId = itemId(selected);
+    const damage = ["wooden_sword", "stone_sword", "iron_sword", "diamond_sword"].includes(selectedId)
+      ? weaponDamage(selected)
+      : handDamage();
+    return attackMob(target, damage, selectedId);
+  }
+
+  function primaryAction(button) {
+    if (button === 0 && attackAimedMob()) return true;
+    return interact(button);
   }
 
   function shootArrow(selected) {
@@ -2121,16 +2414,17 @@ try {
         targetDistance = dist;
       }
     }
-    useTool(inventory, selectedSlot);
     if (target === null) {
+      useTool(inventory, selectedSlot);
       consume(inventory, arrowSlot, 1);
       setInventoryMessage("Arrow missed.");
       refreshInventoryUi();
       return true;
     }
-    consume(inventory, arrowSlot, 1);
-    const result = Entities.attack(mobDomainState, BigInt(target.id), 6.0, player.x, player.z, dropDomainState);
+    const result = Entities.attack(mobDomainState, BigInt(target.id), 6.0, player.x, player.y, player.z, RANGED_ATTACK_RANGE, dropDomainState);
     if (!result.hit) return false;
+    useTool(inventory, selectedSlot);
+    consume(inventory, arrowSlot, 1);
     mobDomainState = result.mobs;
     mobs = mobViews(mobDomainState);
     dropDomainState = result.drops;
@@ -2408,6 +2702,23 @@ try {
     return true;
   }
 
+  function renderCraftingOutput() {
+    if (craftingOutputEl === null) return;
+    const recipeId = shapedRecipeEl?.value ?? RECIPES[0]?.id;
+    const recipe = RECIPES.find((entry) => entry.id === recipeId);
+    if (recipe === undefined) {
+      craftingOutputEl.textContent = "";
+      return;
+    }
+    const output = recipe.output;
+    const name = itemName(output.item);
+    craftingOutputEl.innerHTML = `
+      <span class="slot-swatch" data-item="${name}" style="--slot-color: ${itemColor(output.item)}"></span>
+      <span class="slot-count">${output.count}</span>
+    `;
+    craftingOutputEl.setAttribute("aria-label", `Output: ${output.count} ${name}`);
+  }
+
   function renderInventoryPanel() {
     inventorySlotsEl.innerHTML = inventory
       .map((item, slot) => slotMarkup(item, slot, "inventory-slot"))
@@ -2417,6 +2728,7 @@ try {
       shapedRecipeEl.innerHTML = RECIPES.map((recipe) => `<option value="${recipe.id}">${recipe.name}</option>`).join("");
     }
     renderCraftingGrid();
+    renderCraftingOutput();
     recipeListEl.innerHTML = RECIPES.map((recipe) => {
       const ingredients = recipe.ingredients
         .map(({ item, count }) => `${count} ${itemName(item)}`)
@@ -2438,19 +2750,8 @@ try {
   }
 
   function updateHeldItemUi() {
-    const descriptor = heldItemPose(selectedItem(inventory, selectedSlot));
-    heldItemViewEl.hidden = !descriptor.visible;
-    if (!descriptor.visible) {
-      heldItemLabelEl.textContent = "Empty hand";
-      return;
-    }
-    const texture = itemTexture(descriptor.item);
-    const context = heldItemCanvasEl.getContext("2d");
-    if (context !== null && texture !== null) {
-      drawItemTexture(context, texture, { size: 72, background: "rgba(255,255,255,0.05)" });
-    }
-    heldItemLabelEl.textContent = `${descriptor.name}${descriptor.count > 1 ? ` ×${descriptor.count}` : ""}`;
-    heldItemViewEl.title = `${descriptor.category} · ${descriptor.model}`;
+    heldItemViewEl.hidden = true;
+    heldItemLabelEl.textContent = "";
   }
 
   function selectSlot(slot) {
@@ -2462,13 +2763,17 @@ try {
   }
 
   function setInventoryOpen(open) {
+    if (open) {
+      held.clear();
+      cancelMining();
+    }
     if (open && furnaceOpen) setFurnaceOpen(false);
     if (open && chestOpen) setChestOpen(false);
     if (!open && !returnCraftingGrid()) return;
     inventoryOpen = open;
     inventoryCursor = null;
     inventoryCursorAmount = null;
-    inventoryPanelEl.hidden = !open;
+    setDialogVisibility(inventoryPanelEl, inventoryToggleEl, open);
     inventoryToggleEl.setAttribute("aria-expanded", String(open));
     inventoryToggleEl.textContent = open ? "Close inventory (E)" : "Inventory (E)";
     if (open && document.pointerLockElement === canvas && typeof document.exitPointerLock === "function") {
@@ -2527,6 +2832,10 @@ try {
 
   function setFurnaceOpen(open, location = activeFurnace) {
     if (open) {
+      held.clear();
+      cancelMining();
+    }
+    if (open) {
       if (location !== null) activeFurnace = location.map((value) => Math.trunc(value));
       if (activeFurnaceState() === null) {
         setInventoryMessage("Right-click a placed furnace first.");
@@ -2535,12 +2844,12 @@ try {
     }
     furnaceOpen = open;
     furnaceToggleEl.hidden = furnaceControlHidden(activeFurnace, open);
-    furnacePanelEl.hidden = !open;
+    setDialogVisibility(furnacePanelEl, furnaceToggleEl, open);
     furnaceToggleEl.setAttribute("aria-expanded", String(open));
     furnaceToggleEl.textContent = open ? "Close furnace (R)" : "Furnace (R)";
     if (open) {
       inventoryOpen = false;
-      inventoryPanelEl.hidden = true;
+      setDialogVisibility(inventoryPanelEl, inventoryToggleEl, false);
       inventoryToggleEl.setAttribute("aria-expanded", "false");
       inventoryToggleEl.textContent = "Inventory (E)";
       if (chestOpen) setChestOpen(false);
@@ -2677,6 +2986,10 @@ try {
 
   function setChestOpen(open, location = activeChest) {
     if (open) {
+      held.clear();
+      cancelMining();
+    }
+    if (open) {
       if (location !== null) activeChest = location.map((value) => Math.trunc(value));
       if (activeChestState() === null) {
         setInventoryMessage("Right-click a placed chest first.");
@@ -2689,10 +3002,10 @@ try {
       chestToggleEl.setAttribute("aria-expanded", String(open));
       chestToggleEl.textContent = open ? "Close chest (C)" : "Chest (C)";
     }
-    if (chestPanelEl !== null) chestPanelEl.hidden = !open;
+    setDialogVisibility(chestPanelEl, chestToggleEl, open);
     if (open) {
       inventoryOpen = false;
-      inventoryPanelEl.hidden = true;
+      setDialogVisibility(inventoryPanelEl, inventoryToggleEl, false);
       inventoryToggleEl.setAttribute("aria-expanded", "false");
       inventoryToggleEl.textContent = "Inventory (E)";
       if (furnaceOpen) setFurnaceOpen(false);
@@ -2951,7 +3264,7 @@ try {
     const progress = miningProgress(miningState, now);
     if (miningProgressEl !== null) miningProgressEl.hidden = !active;
     if (miningProgressFillEl !== null) {
-      miningProgressFillEl.style.width = `${(progress * 100).toFixed(2)}%`;
+      miningProgressFillEl.style.transform = `scaleX(${progress.toFixed(3)})`;
       miningProgressFillEl.setAttribute("aria-valuenow", String(Math.round(progress * 100)));
     }
   }
@@ -3144,6 +3457,8 @@ try {
     airPips.push(bubble);
   }
   let vitalsKey = "";
+  let survivalAnnouncementKey = "";
+  let survivalAnnouncementReady = false;
   let lastHealth = 20;
   let debugOverlayTick = -1;
 
@@ -3189,35 +3504,84 @@ try {
       paintPips(airPips, (player.air ?? 10) * 2);
     }
     airEl.hidden = (player.air ?? 10) >= 9.99 && !isHeadUnderwater(world, player);
+    heartsEl.setAttribute("aria-label", `Health ${Math.ceil(player.health)} of 20`);
+    hungerEl.setAttribute("aria-label", `Hunger ${Math.ceil(player.hunger)} of 20`);
+    airEl.setAttribute("aria-label", `Air ${Math.ceil((player.air ?? 10) * 2)} of 20`);
+    const xpLevel = Number(Experience.xp_level(xpState));
+    const xpPoints = Number(Experience.xp_points(xpState));
+    const xpThreshold = Math.max(1, Number(Experience.threshold(xpLevel)));
+    const xpProgress = Math.max(0, Math.min(100, Math.round((xpPoints / xpThreshold) * 100)));
+    if (xpHudEl !== null) {
+      xpHudEl.hidden = false;
+      xpHudEl.setAttribute("aria-label", `Experience level ${xpLevel}, ${xpProgress}% to next level`);
+    }
+    if (xpLevelEl !== null) xpLevelEl.textContent = String(xpLevel);
+    if (xpTrackEl !== null) xpTrackEl.setAttribute("aria-valuenow", String(xpProgress));
+    if (xpFillEl !== null) xpFillEl.style.transform = `scaleX(${(xpProgress / 100).toFixed(3)})`;
+    const survivalKey = [
+      Math.ceil(player.health),
+      Math.ceil(player.hunger),
+      Math.ceil(player.air ?? 10),
+      xpLevel,
+    ].join("|");
+    if (survivalAnnouncementReady && survivalKey !== survivalAnnouncementKey && survivalAnnouncerEl !== null) {
+      const previous = survivalAnnouncementKey.split("|").map(Number);
+      const current = survivalKey.split("|").map(Number);
+      const messages = [];
+      if (current[0] !== previous[0]) messages.push(`Health ${current[0]} of 20`);
+      if (current[1] !== previous[1]) messages.push(`Hunger ${current[1]} of 20`);
+      if (current[2] !== previous[2]) messages.push(`Air ${current[2]} of 10`);
+      if (current[3] !== previous[3]) messages.push(`Level ${current[3]}`);
+      if (messages.length > 0) survivalAnnouncerEl.textContent = `${messages.join(". ")}.`;
+    }
+    survivalAnnouncementKey = survivalKey;
+    survivalAnnouncementReady = true;
     if (player.health < lastHealth - 0.001 && damageFlashEl !== null) {
       damageFlashEl.animate([{ opacity: 0.9 }, { opacity: 0 }], { duration: 450 });
     }
     lastHealth = player.health;
+    updateWorldLoading();
   }
 
   function atlasTexelDiagnostics(tile) {
-    const size = 16;
+    const size = ATLAS_TILE_SIZE;
     const rendered = readAtlasTilePixels(gl, atlasTexture, tile, size);
     const canvasRef = atlasSourceCanvas(atlasTexture);
     const context = canvasRef?.getContext("2d", { willReadFrequently: true });
     if (context === null || context === undefined) throw new Error("Atlas source pixels are unavailable");
     const source = context.getImageData(0, 0, canvasRef.width, canvasRef.height).data;
-    const tileX = (tile % 5) * size;
-    const tileY = Math.floor(tile / 5) * size;
+    // The atlas is padded, so the tile sits inside its own cell.
+    const cell = atlasCellOrigin(tile);
+    const tileX = cell.x + ATLAS_TILE_GUTTER;
+    const tileY = cell.y + ATLAS_TILE_GUTTER;
+    const probeInset = 0;
     let mismatches = 0;
+    let exactMismatches = 0;
     let flippedMismatches = 0;
-    for (let y = 0; y < size; y += 1) {
-      for (let x = 0; x < size; x += 1) {
+    let maxDelta = 0;
+    for (let y = probeInset; y < size - probeInset; y += 1) {
+      for (let x = probeInset; x < size - probeInset; x += 1) {
         const renderedIndex = (y * size + x) * 4;
         const normalIndex = ((tileY + y) * canvasRef.width + tileX + x) * 4;
         const flippedIndex = ((tileY + size - 1 - y) * canvasRef.width + tileX + x) * 4;
         for (let channel = 0; channel < 4; channel += 1) {
-          if (rendered[renderedIndex + channel] !== source[normalIndex + channel]) mismatches += 1;
+          const delta = Math.abs(rendered[renderedIndex + channel] - source[normalIndex + channel]);
+          maxDelta = Math.max(maxDelta, delta);
+          if (delta > 2) mismatches += 1;
+          if (delta !== 0) exactMismatches += 1;
           if (rendered[renderedIndex + channel] !== source[flippedIndex + channel]) flippedMismatches += 1;
         }
       }
     }
-    return { tile, pixels: size * size, mismatches, flippedMismatches };
+    return {
+      tile,
+      pixels: size * size,
+      mismatches,
+      exactMismatches,
+      flippedMismatches,
+      maxDelta,
+      probeInset,
+    };
   }
 
   function frameDiagnostics() {
@@ -3226,9 +3590,18 @@ try {
       ...publicFrameMetrics,
       ...framePercentiles(frameMetrics),
       renderer: rendererKind,
+      rendererName,
+      shaderQuality,
       webgpu: { ...webgpuProbe },
+      atlasMipmaps: {
+        safe: atlasMipmapVerdict.safe,
+        reason: atlasMipmapVerdict.reason ?? null,
+        levels: atlasMipmapVerdict.levels ?? [],
+        contaminated: (atlasMipmapVerdict.contaminated ?? []).length,
+      },
       player: { ...player },
       playerSpawnReady,
+      spawnMeshReady,
       activeChunks: world.activeChunkCount(),
       pendingChunks: world.pendingChunkCount(),
       pinnedChunks: world.pinnedChunkCount(),
@@ -3241,12 +3614,17 @@ try {
       meshRebuildRequests: streamingMeshScheduler?.requestCount ?? 0,
       meshRebuildRuns: streamingMeshScheduler?.runCount ?? 0,
       meshRebuildPending: (streamingMeshScheduler?.pending ?? false) || (terrainMeshCache?.pending ?? false),
+      lastGpuChunkUpdate,
       meshWorkerRequests: meshWorkerRequestCount,
       meshWorkerResponses: meshWorkerResponseCount,
       meshWorkerRejects: meshWorkerRejectCount,
       workerRequests: workerRequestCount,
       workerHydrates: workerHydrateCount,
       workerRejects: workerRejectCount,
+      villagerPathWorkerRequests: villagerPathWorkerRequests,
+      villagerPathWorkerResponses: villagerPathWorkerResponses,
+      villagerPathWorkerRejects: villagerPathWorkerRejects,
+      villagerPathPending,
       simulationTime: Number(Simulation.time(simulationState)),
       mobs: mobs.filter((mob) => mob.alive).length,
       villagers: villagers.length,
@@ -3312,8 +3690,12 @@ try {
 
   function render() {
     resizeCanvas();
-    const palette = skyPalette(daylight);
+    const palette = skyPalette(daylight, worldTime);
     const sky = palette.top;
+    const skyHorizon = palette.horizon;
+    const sunDirection = palette.sunDirection;
+    const sunColor = palette.sunColor;
+    const shaderTime = reducedMotionQuery?.matches ? 0 : worldTime;
     const skyTick = Math.floor(worldTime * 4);
     if (skyTick !== skyCssTick) {
       skyCssTick = skyTick;
@@ -3325,11 +3707,30 @@ try {
       speed: visualSpeed,
       grounded: player.grounded,
     });
+    if (firstPersonHandCanvasEl !== null && firstPersonHandContext !== null) {
+      firstPersonHandCanvasEl.hidden = activeModalPanel() !== null || paused;
+      if (!firstPersonHandCanvasEl.hidden) {
+        const selection = selectedItem(inventory, selectedSlot);
+        const swing = Math.max(0, Math.min(1, (0.26 - (worldTime - handSwingTime)) / 0.26));
+        drawFirstPersonOverlay(firstPersonHandContext, {
+          atlasCanvas: firstPersonAtlasCanvas,
+          selectedBlock: blockForItem(selection),
+          selectedItem: selection,
+          time: worldTime,
+          speed: visualSpeed,
+          grounded: player.grounded,
+          swing,
+          motionEnabled: !reducedMotionQuery?.matches,
+        });
+      }
+    }
     heldItemViewEl?.style.setProperty("--held-sway", `${(motion.sway * 180).toFixed(2)}px`);
     heldItemViewEl?.style.setProperty("--held-bob", `${(-motion.bob * 180).toFixed(2)}px`);
     heldItemViewEl?.style.setProperty("--held-roll", `${(motion.roll * 140).toFixed(2)}deg`);
     const eye = [player.x + motion.sway * 0.5, player.y + (isSneaking(held, options.controls) ? SNEAK_EYE_HEIGHT : EYE_HEIGHT) + motion.bob, player.z];
     const direction = cameraDirection(player);
+    const cameraRight = normalize(cross(direction, [0, 1, 0]));
+    const cameraUp = normalize(cross(cameraRight, direction));
     const center = [eye[0] + direction[0], eye[1] + direction[1], eye[2] + direction[2]];
     const view = lookAt(eye, center, [0, 1, 0]);
     const fov = cameraFov(options.fov, {
@@ -3342,24 +3743,41 @@ try {
       gpuRenderer.render({
         viewProjection: multiply4(projection, view),
         camera: eye,
+        cameraRight,
+        cameraUp,
+        cameraForward: direction,
         skyColor: sky,
+        skyHorizon,
+        sunDirection,
+        sunColor,
         daylight,
-        time: worldTime,
+        time: shaderTime,
         miningProgress: miningProgress(miningState, performance.now()),
         fogDistance: FOG_DISTANCE,
+        aspect: canvas.width / canvas.height,
+        tanHalfFov: Math.tan(fov * Math.PI / 360),
       });
       return;
     }
-    gl.clearColor(sky[0], sky[1], sky[2], 0);
+    gl.clearColor(sky[0], sky[1], sky[2], 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.disable(gl.BLEND);
     gl.enable(gl.DEPTH_TEST);
+    // Greedy and dynamic passes are not yet certified for one global winding
+    // order; culling here exposes missing faces as floating terrain at night.
+    gl.disable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+    gl.frontFace(gl.CCW);
     gl.useProgram(program);
 
     gl.uniformMatrix4fv(viewProjectionLocation, false, multiply4(projection, view));
     gl.uniform3f(cameraLocation, eye[0], eye[1], eye[2]);
-    gl.uniform1f(timeLocation, worldTime);
+    gl.uniform1f(timeLocation, shaderTime);
     gl.uniform1f(daylightLocation, daylight);
-    gl.uniform3f(skyColorLocation, sky[0], sky[1], sky[2]);
+    gl.uniform3f(terrainSkyColorLocation, sky[0], sky[1], sky[2]);
+    gl.uniform3f(terrainSkyHorizonColorLocation, skyHorizon[0], skyHorizon[1], skyHorizon[2]);
+    gl.uniform3f(terrainSunDirectionLocation, sunDirection[0], sunDirection[1], sunDirection[2]);
+    gl.uniform3f(terrainSunColorLocation, sunColor[0], sunColor[1], sunColor[2]);
 
     gl.uniform1f(surfacePassLocation, 0);
     gl.uniform1f(shadowPassLocation, 0);
@@ -3379,6 +3797,31 @@ try {
     gl.enableVertexAttribArray(tileLocation);
     gl.vertexAttribPointer(tileLocation, 4, gl.FLOAT, false, 0, 0);
     gl.drawArrays(gl.TRIANGLES, 0, terrainVertexCount);
+
+    // The sky only needs to shade untouched depth. Drawing it after opaque
+    // terrain avoids running cloud noise for pixels the world already covers.
+    gl.depthMask(false);
+    gl.depthFunc(gl.LEQUAL);
+    gl.useProgram(skyProgram);
+    gl.bindBuffer(gl.ARRAY_BUFFER, skyPositionBuffer);
+    gl.enableVertexAttribArray(skyPositionLocation);
+    gl.vertexAttribPointer(skyPositionLocation, 2, gl.FLOAT, false, 0, 0);
+    gl.uniform3f(skyCameraForwardLocation, direction[0], direction[1], direction[2]);
+    gl.uniform3f(skyCameraRightLocation, cameraRight[0], cameraRight[1], cameraRight[2]);
+    gl.uniform3f(skyCameraUpLocation, cameraUp[0], cameraUp[1], cameraUp[2]);
+    gl.uniform3f(skyColorLocation, sky[0], sky[1], sky[2]);
+    gl.uniform3f(skyHorizonColorLocation, skyHorizon[0], skyHorizon[1], skyHorizon[2]);
+    gl.uniform3f(skySunDirectionLocation, sunDirection[0], sunDirection[1], sunDirection[2]);
+    gl.uniform3f(skySunColorLocation, sunColor[0], sunColor[1], sunColor[2]);
+    gl.uniform1f(skyAspectLocation, canvas.width / canvas.height);
+    gl.uniform1f(skyTanHalfFovLocation, Math.tan(fov * Math.PI / 360));
+    gl.uniform1f(skyDaylightLocation, daylight);
+    gl.uniform1f(skyTimeLocation, shaderTime);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.depthFunc(gl.LESS);
+    gl.depthMask(true);
+    gl.useProgram(program);
+
     if (waterVertexCount > 0) {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -3541,6 +3984,7 @@ try {
     const button = event.target.closest("[data-recipe]");
     if (button !== null) craftRecipe(button.dataset.recipe);
   });
+  shapedRecipeEl?.addEventListener("change", renderCraftingOutput);
   inventoryPanelEl.addEventListener("click", (event) => {
     if (event.target.closest("[data-close-inventory]") !== null) toggleInventory();
     const equipmentSlot = event.target.closest("[data-equipment-slot]")?.dataset.equipmentSlot;
@@ -3586,7 +4030,7 @@ try {
       pointerLock.request();
       return;
     }
-    interact(event.button);
+    primaryAction(event.button);
   });
   window.addEventListener("mouseup", (event) => {
     if (event.button === 0) cancelMining();
@@ -3626,9 +4070,30 @@ try {
       rebuildDynamicMesh(worldTime);
     }
   }
+  function closeContainerPanels() {
+    if (craftingGrid.some((item) => itemId(item) !== null)) returnCraftingGrid();
+    if (inventoryOpen) setInventoryOpen(false);
+    if (furnaceOpen) setFurnaceOpen(false);
+    if (chestOpen) setChestOpen(false);
+    for (const panel of [inventoryPanelEl, furnacePanelEl, chestPanelEl]) {
+      if (panel.hidden) continue;
+      panel.hidden = true;
+      panel.setAttribute("aria-hidden", "true");
+    }
+    inventoryOpen = false;
+    furnaceOpen = false;
+    chestOpen = false;
+    inventoryCursor = null;
+    inventoryCursorAmount = null;
+  }
+
   function showDeath() {
+    if (deadShown) return;
     deadShown = true;
+    paused = true;
     held.clear();
+    cancelMining();
+    closeContainerPanels();
     audio.play("death");
     spawnParticles("#d03030", 14);
     scatterDeathDrops();
@@ -3639,6 +4104,9 @@ try {
     const days = worldTime / DAY_SECONDS;
     deathStatsEl.textContent = `Survived ${days.toFixed(1)} days · level ${Number(Experience.xp_level(xpState))} · ${killCount} mob ${killCount === 1 ? "kill" : "kills"} · ${WORLD_NAME}`;
     deathEl.hidden = false;
+    deathEl.setAttribute("aria-hidden", "false");
+    syncModalIsolation();
+    deathEl.querySelector('[data-action="respawn"]')?.focus({ preventScroll: true });
   }
   deathEl.addEventListener("click", (event) => {
     const button = event.target.closest("[data-action]");
@@ -3652,7 +4120,11 @@ try {
       );
       refreshMobs();
       deadShown = false;
+      paused = false;
       deathEl.hidden = true;
+      deathEl.setAttribute("aria-hidden", "true");
+      syncModalIsolation();
+      canvas.focus({ preventScroll: true });
       updateHud();
       rebuildDynamicMesh(worldTime);
       saveGame();
@@ -3675,6 +4147,10 @@ try {
       pauseSubtitleEl.textContent = `${WORLD_NAME} · ${PROFILE_NAME}`;
     }
     pauseEl.hidden = !open;
+    pauseEl.setAttribute("aria-hidden", String(!open));
+    syncModalIsolation();
+    if (open) pauseEl.querySelector('[data-action="resume"]')?.focus({ preventScroll: true });
+    else canvas.focus({ preventScroll: true });
   }
   pauseEl.addEventListener("click", (event) => {
     const button = event.target.closest("[data-action]");
@@ -3708,6 +4184,31 @@ try {
     if (event.code === "F3") {
       event.preventDefault();
       toggleDebugOverlay();
+      return;
+    }
+    const modal = activeModalPanel();
+    if (event.code === "Escape") {
+      if (inventoryOpen) toggleInventory();
+      else if (furnaceOpen) setFurnaceOpen(false);
+      else if (chestOpen) setChestOpen(false);
+      else if (paused) {
+        setPaused(false);
+        pointerLock.request();
+      }
+      if (modal !== null) event.preventDefault();
+      return;
+    }
+    if (modal !== null) {
+      if (inventoryOpen && event.code === (options.controls.inventory ?? "KeyE")) {
+        event.preventDefault();
+        toggleInventory();
+      } else if (furnaceOpen && event.code === (options.controls.furnace ?? "KeyR")) {
+        event.preventDefault();
+        setFurnaceOpen(false);
+      } else if (chestOpen && event.code === (options.controls.chest ?? "KeyC")) {
+        event.preventDefault();
+        setChestOpen(false);
+      }
       return;
     }
     if (paused) return;
@@ -3757,7 +4258,6 @@ try {
       if (!event.repeat) dropInventoryItem(selectedSlot, event.shiftKey);
       return;
     }
-    if (inventoryOpen || furnaceOpen || chestOpen) return;
     const movementCodes = new Set([
       "KeyW", "KeyA", "KeyS", "KeyD", "Space", "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight",
       options.controls.sneak,
@@ -3784,6 +4284,55 @@ try {
   const brandSpan = document.querySelector("#hud .brand span");
   if (brandSpan !== null) brandSpan.textContent = `${WORLD_NAME} · ${PROFILE_NAME} · ${worldModeLabel(WORLD_MODE)}`;
   updateHud();
+  const testApi = testMode ? {
+    spawnHostileForTest: (kind = 2, distance = 0.5) => {
+      if (PEACEFUL || mobDomainState === null) return null;
+      const id = Math.max(0, ...mobs.map((mob) => Number(mob.id))) + 1;
+      const offset = Number.isFinite(Number(distance)) ? Number(distance) : 0.5;
+      mobDomainState = Entities.cons_mob(
+        Entities.make_mob(
+          BigInt(id),
+          Number(kind) === 4 ? 4 : 2,
+          player.x + offset,
+          player.y,
+          player.z + 0.5,
+          20.0,
+          true,
+        ),
+        mobDomainState,
+      );
+      mobs = mobViews(mobDomainState);
+      rebuildDynamicMesh(worldTime);
+      return { ...mobs[0] };
+    },
+    setWorldTimeForTest: (value) => {
+      worldTime = Math.max(0, Number(value) || 0);
+      daylight = daylightForTime(worldTime);
+      return { worldTime, daylight };
+    },
+    // Test-only wall builder for the melee line-of-sight smoke. It reuses the
+    // same edit path as a player placement so the mesh and light stay coherent.
+    setBlockForTest: (x, y, z, block = 1) => {
+      const cellX = Math.trunc(Number(x));
+      const cellY = Math.trunc(Number(y));
+      const cellZ = Math.trunc(Number(z));
+      if (!inside(cellX, cellY, cellZ) || !world.isActive(cellX, cellZ)) return false;
+      setBlock(cellX, cellY, cellZ, Math.trunc(Number(block)) || 1);
+      terrainMeshCache.invalidateBlock(cellX, cellZ);
+      rebuildMesh();
+      return blockAt(cellX, cellY, cellZ);
+    },
+    // Test-only cleanup so a combat scenario can start from a known mob set.
+    // It calls the same Bend despawn contract the simulation timer uses.
+    despawnMobsForTest: (radius = 0) => {
+      if (mobDomainState === null) return 0;
+      mobDomainState = Entities.despawn(mobDomainState, player.x, player.z, Math.max(0, Number(radius) || 0));
+      mobs = mobViews(mobDomainState);
+      rebuildDynamicMesh(worldTime);
+      return mobs.length;
+    },
+  } : {};
+
   window.__bend2craft = {
     world: {
       seed: seedLabel(SEED),
@@ -3849,6 +4398,7 @@ try {
     getHeldItem: () => heldItemPose(selectedItem(inventory, selectedSlot)),
     getCharacterView: () => characterRenderDescriptor(selectedItem(inventory, selectedSlot)),
     getMobs: () => mobs.map((mob) => ({ ...mob })),
+    ...testApi,
     getVillagers: () => villagers.map((villager) => ({ ...villager })),
     getDrops: () => drops.map((drop) => ({ ...drop })),
     getChest: () => chestSlotsView(activeChestState() ?? ChestDomain.empty()),
@@ -3899,8 +4449,15 @@ try {
     }),
     getFrameDiagnostics: () => ({ ...frameDiagnostics(), debugVisible }),
     getAtlasTexelProbe: (tile = 1) => atlasTexelDiagnostics(Math.trunc(tile)),
+    // Synchronous WebGL readback keeps the historical flat RGBA array. The
+    // WebGPU path is inherently async, so it refuses here with an explicit
+    // pointer instead of returning a promise that callers would not await.
     readFramePixels: (x, y, width, height) => {
-      if (gpuRenderer !== null) throw new Error("WebGPU frame readback is not enabled in this diagnostic path.");
+      if (gpuRenderer !== null) {
+        throw new Error(
+          "WebGPU frame readback is asynchronous; use readFramePixelsAsync instead.",
+        );
+      }
       const left = Math.trunc(x);
       const bottom = Math.trunc(y);
       const pixelWidth = Math.trunc(width);
@@ -3913,6 +4470,26 @@ try {
       gl.readPixels(left, bottom, pixelWidth, pixelHeight, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
       return Array.from(pixels);
     },
+    readFramePixelsAsync: async (x, y, width, height) => {
+      if (gpuRenderer === null) {
+        const left = Math.trunc(x);
+        const bottom = Math.trunc(y);
+        const pixelWidth = Math.trunc(width);
+        const pixelHeight = Math.trunc(height);
+        if (left < 0 || bottom < 0 || pixelWidth < 1 || pixelHeight < 1
+          || left + pixelWidth > canvas.width || bottom + pixelHeight > canvas.height) {
+          throw new RangeError("frame pixel region is outside the canvas");
+        }
+        const pixels = new Uint8Array(pixelWidth * pixelHeight * 4);
+        gl.readPixels(left, bottom, pixelWidth, pixelHeight, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        return { left, bottom, width: pixelWidth, height: pixelHeight, pixels: Array.from(pixels) };
+      }
+      const region = await gpuRenderer.readFramePixels(x, y, width, height);
+      return { ...region, pixels: Array.from(region.pixels) };
+    },
+    getFrameReadbackSupport: () => (gpuRenderer === null
+      ? { supported: true, reason: null, backend: "webgl" }
+      : { ...gpuRenderer.getReadbackSupport(), backend: "webgpu" }),
     toggleDebug: toggleDebugOverlay,
     hurt: (amount) => applyDamage(player, amount),
     glBufferSizes: () => {
@@ -3972,10 +4549,17 @@ try {
       setPaused(false);
       return { x: player.x, y: player.y, z: player.z };
     },
+    setVisualTimeForTest: (seconds) => {
+      worldTime = Math.max(0, Number(seconds) || 0);
+      daylight = daylightForTime(worldTime);
+      skyCssTick = -1;
+      return { worldTime, daylight };
+    },
     pinChunk: (x, z) => world.pinChunk(x, z),
     unpinChunk: (x, z) => world.unpinChunk(x, z),
     save: saveGame,
     attack: attackNearestMob,
+    primaryActionForTest: (button) => primaryAction(Number(button)),
     drop: (stack = false) => dropInventoryItem(selectedSlot, stack),
     trade: tradeNearestVillager,
     sleep: sleepAtBed,
@@ -4150,6 +4734,10 @@ try {
   let nightSpawnTimer = 0;
   let despawnTimer = 0;
   const simulationTicker = createFixedTicker(0.2, (dt) => {
+    if (!isPlayerAlive(player)) {
+      showDeath();
+      return;
+    }
     updateMobs(dt);
     stepDrops(dt);
     collectNearbyDrops();
@@ -4171,8 +4759,7 @@ try {
     villagerSimulationSteps += 1;
     if (villagerSimulationSteps >= 5) {
       villagerSimulationSteps = 0;
-      updateVillagers(1.0);
-      simulationTerrainDirty = true;
+      if (updateVillagers(1.0)) simulationTerrainDirty = true;
     }
     tickFurnace();
   });
@@ -4201,7 +4788,7 @@ try {
       visualSpeed = Math.min(6, Math.hypot(player.x - visualSample.x, player.z - visualSample.z) / sampleSeconds);
       visualSample = { x: player.x, z: player.z, time: now };
       worldTime += dt;
-      daylight = 0.28 + 0.72 * (0.5 + 0.5 * Math.sin(worldTime * 0.08));
+      daylight = daylightForTime(worldTime);
       if (playerStreamingDirty) playerStreamingDirty = false;
       if (world.loadAround(player.x, player.z).changed) {
         rebuildHorizon();

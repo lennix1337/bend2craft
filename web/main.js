@@ -2,9 +2,14 @@
 // Splitting keeps menu loads fast (no Bend compilation) and guarantees a
 // clean engine state per session, since switching screens reloads the page.
 const params = new URLSearchParams(window.location.search);
+const playSession = params.get("play") === "1";
+document.body.dataset.mode = playSession ? "game" : "menu";
 
 async function boot() {
-  if (params.get("play") === "1") {
+  if (playSession) {
+    const loading = document.getElementById("world-loading");
+    loading?.removeAttribute("hidden");
+    loading?.setAttribute("aria-busy", "true");
     await import("./game.js");
     return;
   }

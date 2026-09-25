@@ -1,81 +1,85 @@
 import assert from "node:assert/strict";
-import { firstPersonHandParts } from "../web/first-person-hand.js";
+import { readFile } from "node:fs/promises";
+import {
+  firstPersonOverlayItem,
+  firstPersonOverlayPose,
+} from "../web/first-person-overlay.js";
+import { blockFaceTile } from "../web/texture-atlas.js";
 
-const camera = {
-  eye: [0, 1.62, 0],
-  direction: [0, 0, -1],
-  right: [1, 0, 0],
-  up: [0, 1, 0],
-};
-
-const emptyHand = firstPersonHandParts({ ...camera, time: 0, speed: 0, grounded: true });
-assert.equal(emptyHand.length, 2);
-assert.ok(emptyHand.every((part) => part.s.every((value) => value > 0)));
-assert.ok(emptyHand.every((part) => part.c[2] < camera.eye[2]));
-assert.deepEqual(emptyHand[0].s, [0.16, 0.46, 0.16]);
-assert.deepEqual(emptyHand[1].s, [0.22, 0.22, 0.22]);
-
-const blockHand = firstPersonHandParts({
-  ...camera,
+const neutral = firstPersonOverlayPose({
   time: 0,
   speed: 0,
   grounded: true,
-  selectedBlock: 1,
+  swing: 0,
+  motionEnabled: true,
 });
-assert.equal(blockHand.length, 3);
-assert.equal(blockHand[2].tile, 1);
-assert.deepEqual(blockHand[2].s, [0.16, 0.16, 0.16]);
-assert.ok(blockHand[2].c[2] < blockHand[1].c[2]);
+assert.deepEqual(neutral, { x: 0, y: 0, rotation: -0.32, scale: 1 });
 
-const pickaxeHand = firstPersonHandParts({
-  ...camera,
-  time: 0,
-  speed: 0,
-  grounded: true,
-  selectedItem: { item: "wooden_pickaxe" },
-});
-assert.equal(pickaxeHand.length, 4);
-assert.ok(pickaxeHand.some((part) => part.s[1] > 0.4));
-assert.ok(pickaxeHand.some((part) => part.s[0] > 0.25));
-
-const torchHand = firstPersonHandParts({
-  ...camera,
-  time: 0,
-  speed: 0,
-  grounded: true,
-  selectedItem: { item: "torch" },
-});
-assert.equal(torchHand.length, 3);
-
-const walking = firstPersonHandParts({
-  ...camera,
+const walking = firstPersonOverlayPose({
   time: 0.25,
   speed: 4.5,
   grounded: true,
-  selectedBlock: 1,
+  swing: 0,
+  motionEnabled: true,
 });
-assert.notDeepEqual(walking, blockHand);
+assert.notDeepEqual(walking, neutral);
+assert.ok(walking.x !== 0 || walking.y !== 0);
 
-const swinging = firstPersonHandParts({
-  ...camera,
-  time: 0.08,
-  speed: 0,
-  grounded: true,
-  selectedBlock: 1,
-  swing: 1,
-});
-assert.notDeepEqual(swinging, blockHand);
-
-const turned = firstPersonHandParts({
-  ...camera,
-  cameraYaw: Math.PI / 2,
-  cameraPitch: -0.2,
+const swinging = firstPersonOverlayPose({
   time: 0,
   speed: 0,
   grounded: true,
-  selectedItem: { item: "wooden_pickaxe" },
+  swing: 0.5,
+  motionEnabled: true,
 });
-assert.ok(turned.every((part) => Math.abs(part.yaw - Math.PI / 2) < 1e-9));
-assert.ok(turned.every((part) => Math.abs(part.pitch + 0.2) < 1e-9));
+assert.ok(swinging.y > neutral.y);
+assert.ok(swinging.rotation < neutral.rotation);
+assert.ok(swinging.scale > neutral.scale);
 
-console.log("first person hand ok");
+const reduced = firstPersonOverlayPose({
+  time: 0.25,
+  speed: 4.5,
+  grounded: true,
+  swing: 0,
+  motionEnabled: false,
+});
+assert.deepEqual(reduced, neutral);
+
+assert.deepEqual(firstPersonOverlayItem({ selectedBlock: null, selectedItem: null }), {
+  kind: "empty",
+  block: null,
+  item: null,
+  tile: null,
+});
+assert.deepEqual(firstPersonOverlayItem({ selectedBlock: 1, selectedItem: null }), {
+  kind: "block",
+  block: 1,
+  item: null,
+  tile: 1,
+});
+assert.deepEqual(firstPersonOverlayItem({ selectedBlock: 3, selectedItem: null }), {
+  kind: "block",
+  block: 3,
+  item: null,
+  tile: blockFaceTile(3, 1),
+});
+assert.deepEqual(firstPersonOverlayItem({
+  selectedBlock: null,
+  selectedItem: { item: "wooden_pickaxe" },
+}), {
+  kind: "item",
+  block: null,
+  item: "wooden_pickaxe",
+  tile: null,
+});
+
+const gameSource = await readFile(new URL("../web/game.js", import.meta.url), "utf8");
+const indexSource = await readFile(new URL("../web/index.html", import.meta.url), "utf8");
+const styleSource = await readFile(new URL("../web/styles.css", import.meta.url), "utf8");
+assert.doesNotMatch(gameSource, /for \(const part of firstPersonHandParts/);
+assert.match(gameSource, /drawFirstPersonOverlay/);
+assert.match(indexSource, /id="first-person-hand-canvas"/);
+assert.match(styleSource, /#first-person-hand-canvas/);
+assert.match(styleSource, /image-rendering:\s*pixelated/);
+
+console.log("first person overlay ok");

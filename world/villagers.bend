@@ -51,32 +51,39 @@ def spawn(+seed: Nat) -> List<&2, Villager>:
   +third = make_villager(2n, 2, origin_x, origin_z, origin_x, Nat.add(origin_z, 10n), base, True{})
   Con{third, Con{second, Con{first, Nil{}}}}
 
-def path_grid.fill(
-  +remaining: Nat, +index: Nat, +seed: Nat, +edits: List<&2, WorldState.Edit>, +y: Nat,
-  +min_x: Nat, +min_z: Nat, +width: Nat, +grid: List<&2, U32>
-) -> List<&2, U32>:
+def path_grid.row(
+  +remaining: Nat, +local_x: Nat, +seed: Nat, +edits: List<&2, WorldState.Edit>, +y: Nat,
+  +x: Nat, +z: Nat, +mask: U32
+) -> U32:
   match remaining:
     case 0n:
-      grid
+      mask
     case 1n+p:
-      +local_x = Nat.mod(index, width)
-      +local_z = Nat.div(index, width)
-      +x = Nat.add(min_x, local_x)
-      +z = Nat.add(min_z, local_z)
       +feet = WorldState.block(edits, seed, x, y, z)
       +head = WorldState.block(edits, seed, x, Nat.add(y, 1n), z)
       +feet_open = Bool.or(Bool.or(U32.is_eq(feet, 0), U32.is_eq(feet, 13)), Bool.or(U32.is_eq(feet, 14), U32.is_eq(feet, 15)))
       +head_open = Bool.or(U32.is_eq(head, 0), Bool.or(U32.is_eq(head, 14), U32.is_eq(head, 15)))
       +open = Bool.and(feet_open, head_open)
-      path_grid.fill(p, Nat.sub(index, 1n), seed, edits, y, min_x, min_z, width,
-        Con{Bool.pick(U32, open, 1, 0), grid})
+      +bit = U32.shln(1, local_x)
+      +next_mask = Bool.pick(U32, open, U32.or(mask, bit), mask)
+      path_grid.row(p, Nat.add(local_x, 1n), seed, edits, y, Nat.add(x, 1n), z, next_mask)
+
+def path_grid.fill(
+  +remaining_rows: Nat, +row: Nat, +seed: Nat, +edits: List<&2, WorldState.Edit>, +y: Nat,
+  +min_x: Nat, +min_z: Nat, +width: Nat, +rows: List<&2, U32>
+) -> List<&2, U32>:
+  match remaining_rows:
+    case 0n:
+      rows
+    case 1n+p:
+      +mask = path_grid.row(width, 0n, seed, edits, y, min_x, Nat.add(min_z, row), 0)
+      path_grid.fill(p, Nat.sub(row, 1n), seed, edits, y, min_x, min_z, width, Con{mask, rows})
 
 def path_grid(+seed: Nat, +edits: List<&2, WorldState.Edit>) -> List<&2, U32>:
   +origin_x = Structures.village_origin_x(seed)
   +origin_z = Structures.village_origin_z(seed)
   +base = World.column_height(seed, origin_x, origin_z)
-  +cells = Nat.mul(28n, 26n)
-  path_grid.fill(cells, Nat.sub(cells, 1n), seed, edits, Nat.add(base, 1n), 17n, 19n, 28n, Nil{})
+  path_grid.fill(26n, 25n, seed, edits, Nat.add(base, 1n), 17n, 19n, 28n, Nil{})
 
 def nighttime(+tick: Nat) -> Bool:
   +phase = Nat.mod(tick, 24n)
@@ -130,6 +137,27 @@ def step(
       Nil{}
     case Con{+head, +tail}:
       Con{step_one(head, seed, grid, tick, dt), step(tail, seed, grid, tick, dt)}
+
+def within_radius(
+  +x: F32, +z: F32, +player_x: F32, +player_z: F32, +radius: F32
+) -> Bool:
+  +dx = F32.sub(x, player_x)
+  +dz = F32.sub(z, player_z)
+  +distance = F32.add(F32.mul(dx, dx), F32.mul(dz, dz))
+  F32.is_lt(distance, F32.mul(radius, radius))
+
+def step_near(
+  +villagers: List<&2, Villager>, +seed: Nat, +grid: List<&2, U32>, +tick: Nat, +dt: F32,
+  +player_x: F32, +player_z: F32, +radius: F32
+) -> List<&2, Villager>:
+  match villagers:
+    case Nil{}:
+      Nil{}
+    case Con{+head, +tail}:
+      Villager{+id, +profession, +x, +y, +z, +home_x, +home_z, +resting} = head
+      +near = within_radius(x, z, player_x, player_z, radius)
+      +next = Bool.pick(Villager, near, step_one(head, seed, grid, tick, dt), head)
+      Con{next, step_near(tail, seed, grid, tick, dt, player_x, player_z, radius)}
 
 def open_door(
   +edits: List<&2, WorldState.Edit>, +seed: Nat, +x: Nat, +y: Nat, +z: Nat

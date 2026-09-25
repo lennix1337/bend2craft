@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { buildChunkMeshes } from "../web/mesh-worker-core.js";
-import { createAsyncChunkMeshCache } from "../web/mesh-cache.js";
+import { createAsyncChunkMeshCache, shouldPublishMeshSnapshot } from "../web/mesh-cache.js";
 
 const active = new Map([["0,0", {
   chunkX: 0,
@@ -95,4 +95,22 @@ const progressiveJob = windowJobs[1];
 assert.equal(progressiveJob.chunks.length, 7);
 assert.equal(progressiveJob.chunks.some((chunk) => chunk.key === "-1,0"), false);
 assert.equal(windowCache.applyBuild(progressiveJob.id, buildChunkMeshes(progressiveJob)), true);
+
+const cappedJobs = [];
+const cappedCache = createAsyncChunkMeshCache(
+  windowWorld,
+  (job) => cappedJobs.push(job),
+  null,
+  { maxTargetsPerJob: 2 },
+);
+assert.equal(cappedCache.rebuildDirty(), true);
+assert.equal(cappedJobs[0].targets.length, 2);
+assert.equal(cappedCache.applyBuild(cappedJobs[0].id, buildChunkMeshes(cappedJobs[0])), true);
+assert.equal(cappedCache.rebuildDirty(), true);
+assert.equal(cappedJobs[1].targets.length, 2);
+assert.equal(cappedCache.applyBuild(cappedJobs[1].id, buildChunkMeshes(cappedJobs[1])), true);
+assert.equal(shouldPublishMeshSnapshot("webgl", true, false), false);
+assert.equal(shouldPublishMeshSnapshot("webgl", false, false), true);
+assert.equal(shouldPublishMeshSnapshot("webgl", true, true), true);
+assert.equal(shouldPublishMeshSnapshot("webgpu", true, false), true);
 console.log("async mesh cache ok");

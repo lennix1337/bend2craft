@@ -12,6 +12,23 @@ assert.equal(maxY, 20);
 assert.equal(chunkSize, 16);
 assert.equal(seaLevel, 7);
 assert.equal(Number(World.biome_at(1337n, 40n, 40n)), 0);
+const spawn = World.spawn_cell(1337n);
+assert.ok(spawn.x >= 0n && spawn.x < width, "spawn should remain inside the world");
+assert.ok(spawn.z >= 0n && spawn.z < depth, "spawn should remain inside the world");
+assert.equal(World.spawn_clear(1337n, spawn.x, spawn.z), true, "spawn contract should return a validated clearing");
+for (let dz = -7n; dz <= 7n; dz += 1n) {
+  for (let dx = -7n; dx <= 7n; dx += 1n) {
+    assert.equal(
+      World.tree_at(1337n, spawn.x + dx, spawn.z + dz),
+      false,
+      `spawn must keep a broad tree-free clearing at ${spawn.x},${spawn.z}`,
+    );
+  }
+}
+for (const seed of [0n, 1n, 42n, 9999n, 123456n]) {
+  const candidate = World.spawn_cell(seed);
+  assert.equal(World.spawn_clear(seed, candidate.x, candidate.z), true, `seed ${seed} should produce a validated spawn`);
+}
 const generatedChunk = World.chunk(1337n, 2n, 2n);
 assert.equal(Array.isArray(generatedChunk), true);
 assert.equal(generatedChunk.length, 8192);
@@ -51,6 +68,20 @@ for (let z = 0; z < depth; z += 1) {
 assert.ok(grass > 0);
 assert.ok(wood > 0);
 assert.ok(leaves > 0);
+let shorelineFound = false;
+for (let z = 1; z < depth - 1 && !shorelineFound; z += 1) {
+  for (let x = 1; x < width - 1; x += 1) {
+    const h = Number(World.column_height(1337n, BigInt(x), BigInt(z)));
+    const lowerNeighbor = [World.column_height(1337n, BigInt(x - 1), BigInt(z)), World.column_height(1337n, BigInt(x + 1), BigInt(z)), World.column_height(1337n, BigInt(x), BigInt(z - 1)), World.column_height(1337n, BigInt(x), BigInt(z + 1))]
+      .some((neighbor) => Number(neighbor) < h);
+    if (h === seaLevel + 1 && lowerNeighbor) {
+      assert.equal(Number(World.block(1337n, BigInt(x), BigInt(h - 1), BigInt(z))), 6);
+      shorelineFound = true;
+      break;
+    }
+  }
+}
+assert.equal(shorelineFound, true, "world generation should create a sand shoreline beside lower water");
 assert.ok(sand > 0);
 assert.ok(water > 0);
 assert.ok(coalOre > 0);
@@ -60,16 +91,45 @@ assert.ok(heights.size >= 3);
 const heightList = [...heights];
 assert.ok(Math.max(...heightList) - Math.min(...heightList) <= 4);
 
-let farTree = false;
-for (let z = 48; z < 80 && !farTree; z += 1) {
+let farTree = null;
+for (let z = 48; z < 80 && farTree === null; z += 1) {
   for (let x = 48; x < 80; x += 1) {
-    if (World.tree_at(1337n, BigInt(x), BigInt(z))) {
-      farTree = true;
+    const bx = BigInt(x);
+    const bz = BigInt(z);
+    const isolated = !World.tree_at(1337n, bx - 1n, bz)
+      && !World.tree_at(1337n, bx + 1n, bz)
+      && !World.tree_at(1337n, bx, bz - 1n)
+      && !World.tree_at(1337n, bx, bz + 1n);
+    if (World.tree_at(1337n, bx, bz) && isolated) {
+      farTree = { x: bx, z: bz };
       break;
     }
   }
 }
-assert.equal(farTree, true);
+assert.notEqual(farTree, null);
+const treeX = farTree.x;
+const treeZ = farTree.z;
+const treeGround = World.column_height(1337n, treeX, treeZ);
+assert.equal(
+  Number(World.block(1337n, treeX + 1n, treeGround + 2n, treeZ + 1n)),
+  4,
+  "the lower canopy should form a full supporting crown",
+);
+assert.equal(
+  Number(World.block(1337n, treeX + 1n, treeGround + 3n, treeZ + 1n)),
+  0,
+  "the upper canopy must not remain a solid 3x3 slab",
+);
+assert.equal(
+  Number(World.block(1337n, treeX + 1n, treeGround + 3n, treeZ)),
+  4,
+  "the upper canopy should retain an arm",
+);
+assert.equal(
+  Number(World.block(1337n, treeX, treeGround + 3n, treeZ)),
+  4,
+  "the upper canopy should retain its center",
+);
 const biomes = new Set();
 for (let z = 96; z < 256; z += 16) {
   for (let x = 96; x < 256; x += 16) biomes.add(Number(World.biome_at(1337n, BigInt(x), BigInt(z))));

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { litEntityFaceColor, litFaceColor } from "../web/material-lighting.js";
+import { TERRAIN_FACE_SHADES, litEntityFaceColor, litFaceColor } from "../web/material-lighting.js";
+
+assert.deepEqual(TERRAIN_FACE_SHADES, [1, 0.68, 0.9, 0.82, 0.96, 0.74]);
+assert.ok(Math.min(...TERRAIN_FACE_SHADES) >= 0.68, "voxel faces should retain readable color in ambient daylight");
 
 const top = litFaceColor(0, 1, 15, 1);
 const bottom = litFaceColor(1, 1, 15, 1);

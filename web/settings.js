@@ -7,6 +7,11 @@ import { normalizeRendererMode, RENDERER_MODES } from "./webgpu-capabilities.js"
 
 export { RENDERER_MODES };
 
+export function runtimeRendererMode(value) {
+  const mode = normalizeRendererMode(value);
+  return mode === RENDERER_MODES.AUTO ? RENDERER_MODES.WEBGL : mode;
+}
+
 export const OPTIONS_KEY = "bend2craft-options";
 export const MIN_FOV = 60;
 export const MAX_FOV = 110;
@@ -15,7 +20,7 @@ export const MAX_SENSITIVITY = 3;
 export const MIN_RENDER_DISTANCE = 2;
 export const MAX_RENDER_DISTANCE = 6;
 export const DEFAULT_RENDER_DISTANCE = 2;
-export const DEFAULT_RENDERER = RENDERER_MODES.AUTO;
+export const DEFAULT_RENDERER = RENDERER_MODES.WEBGL;
 export const DEFAULT_CONTROLS = Object.freeze({
   sneak: "ShiftLeft",
   sprint: "ControlLeft",
@@ -81,7 +86,7 @@ export function sanitizeOptions(raw = {}) {
     sensitivity: clampNumber(raw.sensitivity, MIN_SENSITIVITY, MAX_SENSITIVITY, fallback.sensitivity),
     showCoords: raw.showCoords === undefined ? fallback.showCoords : Boolean(raw.showCoords),
     renderDistance: clampInteger(raw.renderDistance, MIN_RENDER_DISTANCE, MAX_RENDER_DISTANCE, fallback.renderDistance),
-    renderer: normalizeRendererMode(raw.renderer),
+    renderer: runtimeRendererMode(raw.renderer),
     controls,
   };
 }

@@ -10,18 +10,26 @@ assert.equal(Number(first.home_x), 25);
 assert.equal(Number(first.home_z), 27);
 assert.equal(first.resting, true);
 assert.equal(Villagers.walkable(1337n, 26n, 9n, 27n), true);
+const farStep = Villagers.step_near(state, 1337n, Villagers.path_grid(1337n, WorldState.empty()), 0n, 1.0, 0.0, 0.0, 1.0);
+assert.equal(Number(farStep.tail.tail.head.x), Number(state.tail.tail.head.x));
+assert.equal(Number(farStep.tail.tail.head.z), Number(state.tail.tail.head.z));
+const nearStep = Villagers.step_near(state, 1337n, Villagers.path_grid(1337n, WorldState.empty()), 1n, 1.0, 27.5, 27.5, 4.0);
+assert.notEqual(Number(nearStep.tail.head.z), Number(state.tail.head.z));
 assert.equal(Villagers.walkable(1337n, 21n, 9n, 27n), false);
 
 const grid = Villagers.path_grid(1337n, WorldState.empty());
 const edited = WorldState.set(WorldState.empty(), 26n, 9n, 27n, 1);
 const editedGrid = Villagers.path_grid(1337n, edited);
-function listAt(list, index) {
+function rowAt(list, index) {
   let node = list;
   for (let offset = 0; offset < index && node?.$ === "Con"; offset += 1) node = node.tail;
   return Number(node?.head ?? 0);
 }
-assert.equal(listAt(grid, (27 - 19) * 28 + (26 - 17)), 1);
-assert.equal(listAt(editedGrid, (27 - 19) * 28 + (26 - 17)), 0);
+function cellAt(list, x, z) {
+  return (rowAt(list, z - 19) & (1 << (x - 17))) !== 0 ? 1 : 0;
+}
+assert.equal(cellAt(grid, 26, 27), 1);
+assert.equal(cellAt(editedGrid, 26, 27), 0);
 const stepped = Villagers.step(state, 1337n, grid, 8n, 1.0);
 assert.equal(stepped.$, "Con");
 assert.notEqual(Number(stepped.tail.head.z), Number(state.tail.head.z));

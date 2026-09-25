@@ -1,3 +1,15 @@
+export function withTimeout(promise, timeoutMs, message) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([Promise.resolve(promise), timeout]).finally(() => {
+    if (timer !== null) clearTimeout(timer);
+  });
+}
+
+const WEBGPU_PROBE_TIMEOUT_MS = 2000;
+
 export const RENDERER_MODES = Object.freeze({
   AUTO: "auto",
   WEBGPU: "webgpu",
@@ -70,11 +82,19 @@ export async function probeWebGpu(navigatorLike = globalThis.navigator, canvas =
     return { supported: false, adapterName: null, reason: "navigator.gpu is unavailable" };
   }
   try {
-    const adapter = await gpu.requestAdapter();
+    const adapter = await withTimeout(
+      gpu.requestAdapter(),
+      WEBGPU_PROBE_TIMEOUT_MS,
+      "WebGPU adapter probe timed out.",
+    );
     if (adapter === null) {
       return { supported: false, adapterName: null, reason: "no WebGPU adapter was returned" };
     }
-    const presentationError = await probePresentation(canvas, gpu, adapter);
+    const presentationError = await withTimeout(
+      probePresentation(canvas, gpu, adapter),
+      WEBGPU_PROBE_TIMEOUT_MS,
+      "WebGPU presentation probe timed out.",
+    );
     return {
       supported: presentationError === null,
       adapterName: adapter.name ?? null,

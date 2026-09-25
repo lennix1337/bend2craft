@@ -72,32 +72,40 @@ def grid_walkable(
   )
   +local_x = Nat.sub(x, min_x)
   +local_z = Nat.sub(z, min_z)
-  +index = Nat.add(local_x, Nat.mul(width, local_z))
-  Bool.and(inside, U32.is_eq(list_at(index, grid), 1))
+  +row = list_at(local_z, grid)
+  +bit = U32.shln(1, local_x)
+  Bool.and(inside, U32.is_ne(U32.and(row, bit), 0))
 
-def grid.fill(
-  +remaining: Nat, +index: Nat, +seed: Nat, +y: Nat, +min_x: Nat, +min_z: Nat,
-  +width: Nat, +grid: List<&2, U32>
-) -> List<&2, U32>:
+def grid.row(
+  +remaining: Nat, +local_x: Nat, +seed: Nat, +y: Nat,
+  +x: Nat, +z: Nat, +mask: U32
+) -> U32:
   match remaining:
     case 0n:
-      grid
+      mask
     case 1n+p:
-      +local_x = Nat.mod(index, width)
-      +local_z = Nat.div(index, width)
-      +x = Nat.add(min_x, local_x)
-      +z = Nat.add(min_z, local_z)
       +feet = World.block(seed, x, y, z)
       +head = World.block(seed, x, Nat.add(y, 1n), z)
       +feet_open = Bool.or(Bool.or(U32.is_eq(feet, 0), U32.is_eq(feet, 13)), Bool.or(U32.is_eq(feet, 14), U32.is_eq(feet, 15)))
       +head_open = Bool.or(U32.is_eq(head, 0), Bool.or(U32.is_eq(head, 14), U32.is_eq(head, 15)))
       +open = Bool.and(feet_open, head_open)
-      grid.fill(p, Nat.sub(index, 1n), seed, y, min_x, min_z, width,
-        Con{Bool.pick(U32, open, 1, 0), grid})
+      +bit = U32.shln(1, local_x)
+      +next_mask = Bool.pick(U32, open, U32.or(mask, bit), mask)
+      grid.row(p, Nat.add(local_x, 1n), seed, y, Nat.add(x, 1n), z, next_mask)
+
+def grid.fill(
+  +remaining_rows: Nat, +row: Nat, +seed: Nat, +y: Nat,
+  +min_x: Nat, +min_z: Nat, +width: Nat, +rows: List<&2, U32>
+) -> List<&2, U32>:
+  match remaining_rows:
+    case 0n:
+      rows
+    case 1n+p:
+      +mask = grid.row(width, 0n, seed, y, min_x, Nat.add(min_z, row), 0)
+      grid.fill(p, Nat.sub(row, 1n), seed, y, min_x, min_z, width, Con{mask, rows})
 
 def grid(+seed: Nat, +y: Nat, +min_x: Nat, +min_z: Nat, +width: Nat, +depth: Nat) -> List<&2, U32>:
-  +cells = Nat.mul(width, depth)
-  grid.fill(cells, Nat.sub(cells, 1n), seed, y, min_x, min_z, width, Nil{})
+  grid.fill(depth, Nat.sub(depth, 1n), seed, y, min_x, min_z, width, Nil{})
 
 def push(
   state: Search, grid: List<&2, U32>, +x: Nat, +z: Nat,
@@ -143,12 +151,49 @@ def search_state(
           Bool.pick(PathResult, found, PathResult{first_x, first_z, True{}},
             search_state(p, forward, grid, target_x, target_z, min_x, min_z, width, depth))
 
+def adjacent_candidate(
+  +start_x: Nat, +start_z: Nat, +target_x: Nat, +target_z: Nat
+) -> PathResult:
+  +same = Bool.and(Nat.is_eq(start_x, target_x), Nat.is_eq(start_z, target_z))
+  +right = Bool.and(
+    Nat.is_eq(target_x, Nat.add(start_x, 1n)),
+    Nat.is_eq(target_z, start_z)
+  )
+  +left = Bool.and(
+    Nat.is_eq(target_x, Nat.sub(start_x, 1n)),
+    Nat.is_eq(target_z, start_z)
+  )
+  +forward = Bool.and(
+    Nat.is_eq(target_x, start_x),
+    Nat.is_eq(target_z, Nat.add(start_z, 1n))
+  )
+  +back = Bool.and(
+    Nat.is_eq(target_x, start_x),
+    Nat.is_eq(target_z, Nat.sub(start_z, 1n))
+  )
+  +candidate = Bool.or(Bool.or(same, right), Bool.or(left, Bool.or(forward, back)))
+  Bool.pick(PathResult, candidate, PathResult{target_x, target_z, True{}}, PathResult{0n, 0n, False{}})
+
+def resolve_candidate(
+  grid: List<&2, U32>, candidate: PathResult,
+  target_x: Nat, target_z: Nat, min_x: Nat, min_z: Nat, width: Nat, depth: Nat,
+  +start_x: Nat, +start_z: Nat
+) -> PathResult:
+  PathResult{candidate_x, candidate_z, candidate_found} = candidate
+  match candidate_found:
+    case True{}:
+      walkable = grid_walkable(grid, candidate_x, candidate_z, min_x, min_z, width, depth)
+      Bool.pick(PathResult, walkable, PathResult{target_x, target_z, True{}}, PathResult{0n, 0n, False{}})
+    case False{}:
+      +initial = make_search(
+        Con{Node{start_x, start_z, start_x, start_z, True{}}, Nil{}},
+        Con{Point{start_x, start_z}, Nil{}}
+      )
+      search_state(256n, initial, grid, target_x, target_z, min_x, min_z, width, depth)
+
 def next(
   grid: List<&2, U32>, +start_x: Nat, +start_z: Nat, +target_x: Nat, +target_z: Nat,
   +min_x: Nat, +min_z: Nat, +width: Nat, +depth: Nat
 ) -> PathResult:
-  +initial = make_search(
-    Con{Node{start_x, start_z, start_x, start_z, True{}}, Nil{}},
-    Con{Point{start_x, start_z}, Nil{}}
-  )
-  search_state(256n, initial, grid, target_x, target_z, min_x, min_z, width, depth)
+  +candidate = adjacent_candidate(start_x, start_z, target_x, target_z)
+  resolve_candidate(grid, candidate, target_x, target_z, min_x, min_z, width, depth, start_x, start_z)

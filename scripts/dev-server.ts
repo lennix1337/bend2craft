@@ -1,7 +1,10 @@
+import { mkdir, rm } from "node:fs/promises";
 import * as path from "node:path";
 import bendPlugin from "../vendor/bend/bend2/main.ts";
 
 const outdir = path.resolve(".dev");
+await rm(outdir, { recursive: true, force: true });
+await mkdir(outdir, { recursive: true });
 const page = await Bun.build({
   entrypoints: [path.resolve("web/index.html")],
   outdir,

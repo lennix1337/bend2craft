@@ -1,12 +1,19 @@
 import assert from "node:assert/strict";
 import {
   atlasUV,
+  atlasCellOrigin,
   atlasTile,
   blockFaceTile,
   ATLAS_COLUMNS,
   ATLAS_ROWS,
+  ATLAS_CAPACITY,
+  ATLAS_TILE_GUTTER,
   ATLAS_TILE_SIZE,
+  ATLAS_TILE_STRIDE,
+  ATLAS_WIDTH,
+  ATLAS_HEIGHT,
   BLOCK_TEXTURES,
+  ATLAS_TEXTURES,
   ENTITY_TEXTURES,
   VARIANT_TEXTURES,
   TEXTURE_PASS,
@@ -16,19 +23,29 @@ import {
   createTextureAtlas,
 } from "../web/texture-atlas.js";
 
-assert.equal(ATLAS_COLUMNS, 5);
-assert.equal(ATLAS_ROWS, 10);
-assert.equal(ATLAS_TILE_SIZE, 16);
+assert.equal(ATLAS_COLUMNS, 8);
+assert.equal(ATLAS_ROWS, 8);
+assert.equal(ATLAS_CAPACITY, 64);
+assert.equal(ATLAS_TILE_SIZE, 32);
+assert.ok(ATLAS_TILE_GUTTER > 0, "each tile must own padding so the mip chain cannot blend materials");
+assert.equal(ATLAS_TILE_STRIDE, ATLAS_TILE_SIZE + 2 * ATLAS_TILE_GUTTER);
+assert.equal(ATLAS_WIDTH, 512, "the padded terrain atlas must remain power-of-two for mipmaps");
+assert.equal(ATLAS_HEIGHT, 512, "the padded terrain atlas must remain power-of-two for mipmaps");
 assert.equal(TEXTURE_PASS.id, "fallback-pixel-pass-v1");
 assert.equal(TEXTURE_PASS.referenceSheet, null);
 assert.equal(TEXTURE_PASS.gridSize, 8);
 assert.equal(TEXTURE_PASS.blockGridSize, 16);
 assert.ok(Object.isFrozen(TEXTURE_PASS));
-assert.ok(TEXTURE_PASS.edgeHighlightAlpha <= 0.08, "tile highlights should not outline every block face");
-assert.ok(TEXTURE_PASS.edgeShadowAlpha <= 0.1, "tile shadows should not outline every block face");
+assert.equal(TEXTURE_PASS.edgeHighlightAlpha, 0.05, "tile highlights should remain material detail, not a wireframe");
+assert.equal(TEXTURE_PASS.edgeShadowAlpha, 0.06, "tile shadows should remain material detail, not a wireframe");
+assert.equal(TEXTURE_PASS.outline, "rgba(19, 27, 28, 0.05)");
 assert.ok(TEXTURE_PASS.noiseHighlightAlpha <= 0.06, "texture grain should stay subtle");
 assert.ok(TEXTURE_PASS.noiseShadowAlpha <= 0.04, "texture grain should stay subtle");
 assert.equal(BLOCK_TEXTURES.length, 30);
+assert.ok(
+  BLOCK_TEXTURES[7].pattern.every((row) => !row.includes("wwwwww")),
+  "water texture should not bake bright horizontal scanlines into the surface",
+);
 assert.equal(VARIANT_TEXTURES.length, 10);
 assert.equal(ENTITY_TEXTURES.length, 10);
 assert.equal(blockTexture(1), BLOCK_TEXTURES[1]);
@@ -40,12 +57,14 @@ assert.ok(Object.isFrozen(BLOCK_TEXTURES[1]));
 assert.ok(Object.isFrozen(BLOCK_TEXTURES[1].palette));
 assert.ok(Object.isFrozen(BLOCK_TEXTURES[1].pattern));
 assert.deepEqual(atlasTile(1), { column: 1, row: 0 });
-assert.deepEqual(atlasTile(10), { column: 0, row: 2 });
-assert.deepEqual(atlasTile(99), { column: 4, row: 9 });
+assert.deepEqual(atlasTile(10), { column: 2, row: 1 });
+assert.deepEqual(atlasTile(99), { column: 1, row: 6 });
 
 for (const block of Array.from({ length: 26 }, (_, index) => index + 1)) {
   assert.equal(BLOCK_TEXTURES[block].pattern.length, 16, `block ${block} should use a 16px authored pattern`);
-  assert.ok(BLOCK_TEXTURES[block].pattern.every((row) => row.length === 16));
+  BLOCK_TEXTURES[block].pattern.forEach((row, rowIndex) => {
+    assert.equal(row.length, 16, `block ${block} row ${rowIndex} should be 16px: ${row}`);
+  });
 }
 
 for (const [index, texture] of ENTITY_TEXTURES.entries()) {
@@ -84,18 +103,27 @@ assert.equal(blockFaceTile(21, 0), 23);
 assert.equal(blockFaceTile(22, 0), 25);
 assert.equal(blockFaceTile(23, 0), 26);
 assert.equal(blockFaceTile(99, 0), 49);
-assert.ok([1, 30].includes(blockFaceTileAt(1, 0, 4, 8)));
-assert.ok([1, 30].includes(blockFaceTileAt(1, 0, 5, 8)));
-assert.notEqual(blockFaceTileAt(1, 0, 4, 8), blockFaceTileAt(1, 0, 5, 8));
+assert.equal(blockFaceTileAt(1, 0, 4, 8), 1);
+assert.equal(blockFaceTileAt(1, 0, 5, 8), 1);
+assert.equal(blockFaceTileAt(2, 0, 4, 8), 2);
+assert.equal(blockFaceTileAt(3, 0, 4, 8), 21);
+assert.equal(blockFaceTileAt(3, 2, 4, 8), 3);
+assert.equal(blockFaceTileAt(4, 2, 4, 8), 4);
+assert.equal(blockFaceTileAt(5, 2, 4, 8), 5);
+assert.equal(blockFaceTileAt(6, 0, 4, 8), 6);
 
 const fills = [];
 const strokes = [];
+const draws = [];
 const context = {
   imageSmoothingEnabled: true,
   fillStyle: "",
   strokeStyle: "",
   globalAlpha: 1,
   globalCompositeOperation: "source-over",
+  clearRect(x, y, width, height) {
+    fills.push({ x, y, width, height, fillStyle: "", globalAlpha: this.globalAlpha, globalCompositeOperation: this.globalCompositeOperation, cleared: true });
+  },
   fillRect(x, y, width, height) {
     fills.push({
       x,
@@ -110,6 +138,9 @@ const context = {
   strokeRect(x, y, width, height) {
     strokes.push({ x, y, width, height, strokeStyle: this.strokeStyle });
   },
+  drawImage(...args) {
+    draws.push(args);
+  },
 };
 const canvas = {
   width: 0,
@@ -119,6 +150,7 @@ const canvas = {
     return context;
   },
 };
+context.canvas = canvas;
 const previousDocument = globalThis.document;
 const glCalls = [];
 const gl = {
@@ -131,6 +163,8 @@ const gl = {
   TEXTURE_WRAP_S: "TEXTURE_WRAP_S",
   TEXTURE_WRAP_T: "TEXTURE_WRAP_T",
   NEAREST: "NEAREST",
+  LINEAR: "LINEAR",
+  LINEAR_MIPMAP_LINEAR: "LINEAR_MIPMAP_LINEAR",
   CLAMP_TO_EDGE: "CLAMP_TO_EDGE",
   createTexture() {
     return { kind: "texture" };
@@ -146,6 +180,12 @@ const gl = {
   },
   texParameteri(...args) {
     glCalls.push(["texParameteri", ...args]);
+  },
+  generateMipmap(...args) {
+    glCalls.push(["generateMipmap", ...args]);
+  },
+  getExtension() {
+    return null;
   },
 };
 
@@ -165,11 +205,72 @@ try {
   else globalThis.document = previousDocument;
 }
 
-assert.equal(canvas.width, ATLAS_COLUMNS * ATLAS_TILE_SIZE);
-assert.equal(canvas.height, ATLAS_ROWS * ATLAS_TILE_SIZE);
-assert.equal(strokes.length, ATLAS_COLUMNS * ATLAS_ROWS);
+assert.equal(canvas.width, ATLAS_WIDTH);
+assert.equal(canvas.height, ATLAS_HEIGHT);
+// Every tile must bleed its own material into its gutter, otherwise the mip
+// chain averages the gap with the neighbouring material.
+const stoneCell = atlasCellOrigin(1);
+const stoneBleed = draws.filter((args) => {
+  const [, , , , , destX, destY] = args;
+  return destX >= stoneCell.x && destX < stoneCell.x + ATLAS_TILE_STRIDE
+    && destY >= stoneCell.y && destY < stoneCell.y + ATLAS_TILE_STRIDE;
+});
+assert.ok(
+  stoneBleed.length >= 8,
+  `tile 1 must bleed its four edges and four corners, saw ${stoneBleed.length} gutter draws`,
+);
+assert.equal(strokes.length, ATLAS_TEXTURES.length);
 assert.equal(glCalls.filter(([name]) => name === "texImage2D").length, 1);
 assert.equal(glCalls.filter(([name]) => name === "pixelStorei").length, 0);
+assert.equal(glCalls.filter(([name]) => name === "generateMipmap").length, 0, "packed atlas must not mix neighboring mip levels");
+assert.ok(glCalls.some(([name, target, parameter, value]) => (
+  name === "texParameteri" && target === "TEXTURE_2D" && parameter === "TEXTURE_MIN_FILTER" && value === "LINEAR"
+)));
+assert.ok(glCalls.some(([name, target, parameter, value]) => (
+  name === "texParameteri" && target === "TEXTURE_2D" && parameter === "TEXTURE_MAG_FILTER" && value === "LINEAR"
+)));
+
+// Mipmaps are gated on a proven-clean padded atlas. An uncertified atlas must
+// keep the deterministic LINEAR path, and a certified one must build the chain.
+function uploadWith(options) {
+  glCalls.length = 0;
+  return createTextureAtlas(gl, { 1: [0.34, 0.38, 0.42] }, options);
+}
+function minFilterValue() {
+  const call = glCalls.find(([name, , parameter]) => (
+    name === "texParameteri" && parameter === "TEXTURE_MIN_FILTER"
+  ));
+  return call?.[3] ?? null;
+}
+function mipmapCalls() {
+  return glCalls.filter(([name]) => name === "generateMipmap").length;
+}
+
+try {
+  globalThis.document = {
+    createElement(kind) {
+      assert.equal(kind, "canvas");
+      return canvas;
+    },
+  };
+  uploadWith({ mipmaps: true, mipmapSafe: false });
+  assert.equal(mipmapCalls(), 0, "an uncertified atlas must not build a mip chain");
+  assert.equal(minFilterValue(), "LINEAR", "an uncertified atlas must stay on the LINEAR fallback");
+
+  uploadWith({ mipmaps: false, mipmapSafe: true });
+  assert.equal(mipmapCalls(), 0, "mipmaps stay off when they are not requested");
+  assert.equal(minFilterValue(), "LINEAR");
+
+  uploadWith({ mipmaps: true, mipmapSafe: true });
+  assert.equal(mipmapCalls(), 1, "a certified atlas must build exactly one mip chain");
+  assert.equal(minFilterValue(), "LINEAR_MIPMAP_LINEAR", "a certified atlas must use mip filtering");
+  assert.ok(glCalls.some(([name, target, parameter, value]) => (
+    name === "texParameteri" && target === "TEXTURE_2D" && parameter === "TEXTURE_WRAP_S" && value === "CLAMP_TO_EDGE"
+  )), "the atlas must stay clamped so filtering cannot wrap into another tile");
+} finally {
+  if (previousDocument === undefined) delete globalThis.document;
+  else globalThis.document = previousDocument;
+}
 
 const stoneOperations = tileOperations(1);
 assert.ok(stoneOperations.some(({ x, y, width, height, globalAlpha }) => (
@@ -190,9 +291,9 @@ assert.ok(tileOperations(3).some(({ width, height }) => width === 1 && height ==
 assert.ok(tileOperations(7).some(({ width, height }) => width === 1 && height === 1));
 
 function tileOperations(block) {
-  const { column, row } = atlasTile(block);
-  const x0 = column * ATLAS_TILE_SIZE;
-  const y0 = row * ATLAS_TILE_SIZE;
+  const { x: cellX, y: cellY } = atlasCellOrigin(block);
+  const x0 = cellX + ATLAS_TILE_GUTTER;
+  const y0 = cellY + ATLAS_TILE_GUTTER;
   return fills
     .filter(({ x, y }) => x >= x0 && x < x0 + ATLAS_TILE_SIZE && y >= y0 && y < y0 + ATLAS_TILE_SIZE)
     .map(({ x, y, width, height, fillStyle, globalAlpha, globalCompositeOperation }) => ({
@@ -207,11 +308,11 @@ function tileOperations(block) {
 }
 
 const signatures = new Set();
-for (let block = 0; block < ATLAS_COLUMNS * ATLAS_ROWS; block += 1) {
+for (let block = 0; block < ATLAS_TEXTURES.length; block += 1) {
   const operations = tileOperations(block);
   assert.ok(operations.length >= 3, `block ${block} should contain pixel details`);
   signatures.add(JSON.stringify(operations));
 }
-assert.equal(signatures.size, ATLAS_COLUMNS * ATLAS_ROWS, "every atlas tile should contain a distinct texture pattern");
+assert.equal(signatures.size, ATLAS_TEXTURES.length, "every atlas tile should contain a distinct texture pattern");
 
 console.log("texture atlas ok");

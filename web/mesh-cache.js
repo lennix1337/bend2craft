@@ -4,6 +4,10 @@ import { buildTerrainVertexArrays } from "./terrain-vertex-builder.js";
 
 export { mergeChunkQuads } from "./mesh-merge.js";
 
+export function shouldPublishMeshSnapshot(rendererKind, pending, immediateDirty = false) {
+  return immediateDirty || rendererKind !== "webgl" || !pending;
+}
+
 function chunkKey(chunkX, chunkZ) {
   return `${chunkX},${chunkZ}`;
 }
@@ -149,7 +153,7 @@ export function createChunkMeshCache(world, buildQuads = buildGreedyQuads) {
   };
 }
 
-export function createAsyncChunkMeshCache(world, requestBuild, onReady = null) {
+export function createAsyncChunkMeshCache(world, requestBuild, onReady = null, options = {}) {
   if (!world || typeof world.forEachActiveChunk !== "function"
     || typeof world.getChunkData !== "function") {
     throw new TypeError("async mesh cache requires chunk iteration and data methods");
@@ -160,6 +164,14 @@ export function createAsyncChunkMeshCache(world, requestBuild, onReady = null) {
   if (onReady !== null && typeof onReady !== "function") {
     throw new TypeError("async mesh cache ready callback must be a function");
   }
+  const maxTargetsPerJob = options.maxTargetsPerJob ?? Infinity;
+  if (maxTargetsPerJob !== Infinity && (!Number.isInteger(maxTargetsPerJob) || maxTargetsPerJob < 1)) {
+    throw new RangeError("maxTargetsPerJob must be a positive integer");
+  }
+  // The WebGPU backend publishes one vertex buffer per chunk, so it never reads
+  // the merged snapshot. Skipping that composition removes the whole-world
+  // rebuild that used to run on every mined or placed block.
+  const perChunkOnly = options.perChunkOnly === true;
 
   const meshes = new Map();
   const dirty = new Set();
@@ -225,10 +237,13 @@ export function createAsyncChunkMeshCache(world, requestBuild, onReady = null) {
   function rebuildDirty() {
     const active = syncActiveChunks();
     if (pendingJobId !== null) return false;
-    const targets = [...dirty].filter((key) => active.has(key));
+    const candidates = [...dirty].filter((key) => active.has(key));
     for (const key of dirty) {
       if (!active.has(key)) dirty.delete(key);
     }
+    const targets = maxTargetsPerJob === Infinity
+      ? candidates
+      : candidates.slice(0, maxTargetsPerJob);
     if (targets.length === 0 && !mergeDirty) return false;
 
     for (const key of targets) dirty.delete(key);
@@ -269,6 +284,7 @@ export function createAsyncChunkMeshCache(world, requestBuild, onReady = null) {
         chunks,
         existingMeshes,
         merge,
+        perChunkOnly,
       });
     } catch (error) {
       pendingJobId = null;
@@ -317,8 +333,10 @@ export function createAsyncChunkMeshCache(world, requestBuild, onReady = null) {
     }
     mergedQuads = quads;
     mergedBlockCount = blockCount;
-    mergedVertexData = composeVertexData([...meshes.values()].filter((mesh) => active.has(mesh.key)));
-    hasMergedSnapshot = true;
+    mergedVertexData = perChunkOnly
+      ? null
+      : composeVertexData([...meshes.values()].filter((mesh) => active.has(mesh.key)));
+    hasMergedSnapshot = !perChunkOnly;
     mergeDirty = false;
     preferFastRebuild = false;
     return true;
@@ -352,6 +370,17 @@ export function createAsyncChunkMeshCache(world, requestBuild, onReady = null) {
       meshes.set(mesh.key, mesh);
       dirty.delete(mesh.key);
       rebuildCount += 1;
+    }
+    if (perChunkOnly) {
+      // Nothing downstream reads the merged arrays in this mode, so leave them
+      // unset instead of rebuilding them once per edit.
+      mergedQuads = [];
+      mergedBlockCount = 0;
+      mergedVertexData = null;
+      hasMergedSnapshot = false;
+      mergeDirty = false;
+      if (onReady !== null) onReady();
+      return true;
     }
     const currentActiveKeys = [...active].sort();
     const builtActiveKeys = Array.isArray(aggregate.activeKeys) ? [...aggregate.activeKeys].sort() : [];

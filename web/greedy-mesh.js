@@ -1,3 +1,8 @@
+import { blockFaceTileAt } from "./texture-atlas.js";
+import { WATER_DEPTH_MAX } from "./terrain-presentation.js";
+
+export const LEAF_FACE_INSET = 0.025;
+
 const FACE_DIRECTIONS = [
   [0, 1, 0],
   [0, -1, 0],
@@ -30,10 +35,23 @@ function planeCell(faceIndex, x, y, z) {
   }
 }
 
-function sameCell(mask, visited, u, v, block, light) {
+const AO_MERGE_EPSILON = 0.3;
+
+function sameAo(a, b) {
+  if (a === b) return true;
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  return a.every((value, index) => Math.abs(value - b[index]) <= AO_MERGE_EPSILON);
+}
+
+function sameCell(mask, visited, u, v, block, light, tile, ao, waterDepthCells) {
   const key = cellKey(u, v);
   const cell = mask.get(key);
-  return !visited.has(key) && cell?.block === block && cell?.light === light;
+  return !visited.has(key)
+    && cell?.block === block
+    && cell?.light === light
+    && cell?.tile === tile
+    && cell?.waterDepthCells === waterDepthCells
+    && sameAo(cell?.ao, ao);
 }
 
 function mergePlane(faceIndex, fixed, mask) {
@@ -49,9 +67,29 @@ function mergePlane(faceIndex, fixed, mask) {
   for (const start of cells) {
     const startKey = cellKey(start.u, start.v);
     if (visited.has(startKey)) continue;
-    const { block, light } = start;
+    const { block, light, tile, ao, waterDepthCells } = start;
+    if (block === 4) {
+      visited.add(startKey);
+      quads.push({
+        faceIndex,
+        fixed,
+        u: start.u,
+        v: start.v,
+        width: 1,
+        height: 1,
+        block,
+        x: start.x,
+        y: start.y,
+        z: start.z,
+        light,
+        waterDepthCells,
+        tile,
+        ao,
+      });
+      continue;
+    }
     let width = 1;
-    while (sameCell(mask, visited, start.u + width, start.v, block, light)) width += 1;
+    while (sameCell(mask, visited, start.u + width, start.v, block, light, tile, ao, waterDepthCells)) width += 1;
 
     let height = 1;
     while (true) {
@@ -59,7 +97,7 @@ function mergePlane(faceIndex, fixed, mask) {
       for (let offset = 0; offset < width; offset += 1) {
         const u = start.u + offset;
         const v = start.v + height;
-        if (!sameCell(mask, visited, u, v, block, light)) break;
+        if (!sameCell(mask, visited, u, v, block, light, tile, ao, waterDepthCells)) break;
         row.push(cellKey(u, v));
       }
       if (row.length !== width) break;
@@ -83,6 +121,9 @@ function mergePlane(faceIndex, fixed, mask) {
       y: start.y,
       z: start.z,
       light,
+      waterDepthCells,
+      tile,
+      ao,
     });
   }
   return quads;
@@ -92,6 +133,21 @@ const FLUID_BLOCKS = new Set([7, 21, 24]);
 
 function isFluid(block) {
   return FLUID_BLOCKS.has(block);
+}
+
+// Water depth is sampled with a bounded downward scan from the surface cell, so
+// it costs at most WATER_DEPTH_MAX lookups per water surface face and never
+// walks the whole column. The scan stops at the first solid floor.
+export function waterColumnDepth(x, y, z, blockAt, isActive, maxDepth) {
+  let fluid = 0;
+  for (let step = 1; step <= maxDepth; step += 1) {
+    const below = y - step;
+    if (below < 0) break;
+    const block = isActive(x, z) ? Number(blockAt(x, below, z) ?? 0) : 0;
+    if (!isFluid(block)) break;
+    fluid = step;
+  }
+  return fluid;
 }
 
 function isOpaque(block) {
@@ -109,29 +165,48 @@ function topCornerAmbient(quad, cornerIndex, blockAt, isActive) {
   const maxZ = quad.v + quad.height;
   const vertexX = cornerIndex === 0 || cornerIndex === 3 ? minX : maxX;
   const vertexZ = cornerIndex === 0 || cornerIndex === 1 ? minZ : maxZ;
-  const sideX = occupied(
-    blockAt,
-    isActive,
+  const wall = (x, z) => occupied(blockAt, isActive, x, quad.y, z)
+    && occupied(blockAt, isActive, x, quad.y + 1, z);
+  const sideX = wall(
     vertexX === minX ? vertexX - 1 : vertexX,
-    quad.y,
     Math.floor(vertexZ),
   );
-  const sideZ = occupied(
+  const sideZ = wall(
+    Math.floor(vertexX),
+    vertexZ === minZ ? vertexZ - 1 : vertexZ,
+  );
+  const diagonal = wall(
+    vertexX === minX ? vertexX - 1 : vertexX,
+    vertexZ === minZ ? vertexZ - 1 : vertexZ,
+  );
+  const overheadX = occupied(
+    blockAt,
+    isActive,
+    vertexX,
+    quad.y + 1,
+    Math.floor(vertexZ),
+  );
+  const overheadZ = occupied(
     blockAt,
     isActive,
     Math.floor(vertexX),
-    quad.y,
-    vertexZ === minZ ? vertexZ - 1 : vertexZ,
+    quad.y + 1,
+    vertexZ,
   );
-  const diagonal = occupied(
+  const overheadDiagonal = occupied(
     blockAt,
     isActive,
-    vertexX === minX ? vertexX - 1 : vertexX,
-    quad.y,
-    vertexZ === minZ ? vertexZ - 1 : vertexZ,
+    vertexX,
+    quad.y + 1,
+    vertexZ,
   );
-  if (sideX && sideZ) return 0.62;
-  return 1 - (sideX ? 0.14 : 0) - (sideZ ? 0.14 : 0) - (diagonal ? 0.1 : 0);
+  const sideOcclusion = sideX && sideZ
+    ? 0.42
+    : (sideX ? 0.16 : 0) + (sideZ ? 0.16 : 0) + (diagonal ? 0.1 : 0);
+  const overheadOcclusion = overheadX && overheadZ
+    ? 0.32
+    : (overheadX ? 0.16 : 0) + (overheadZ ? 0.16 : 0) + (overheadDiagonal ? 0.1 : 0);
+  return Math.max(0.4, (1 - sideOcclusion) * (1 - overheadOcclusion));
 }
 
 function ambientCorners(quad, blockAt, isActive) {
@@ -169,7 +244,22 @@ export function buildGreedyQuads({ forEachLoadedBlock, blockAt, isActive, lightA
         mask = new Map();
         planes.set(planeKey, mask);
       }
-      mask.set(cellKey(u, v), { block, x, y, z, light });
+      const cellQuad = { faceIndex, fixed, u, v, width: 1, height: 1, block, x, y, z };
+      // Only the visible top face of a water column carries depth; side faces
+      // are the same body of water and stay at depth zero.
+      const waterDepthCells = block === 7 && faceIndex === 0
+        ? waterColumnDepth(x, y, z, blockAt, isActive, WATER_DEPTH_MAX)
+        : 0;
+      mask.set(cellKey(u, v), {
+        block,
+        x,
+        y,
+        z,
+        light,
+        waterDepthCells,
+        tile: blockFaceTileAt(block, faceIndex, x, z),
+        ao: ambientCorners(cellQuad, blockAt, isActive),
+      });
     }
   });
 
@@ -180,7 +270,9 @@ export function buildGreedyQuads({ forEachLoadedBlock, blockAt, isActive, lightA
     const fixed = Number(planeKey.slice(separator + 1));
     quads.push(...mergePlane(faceIndex, fixed, mask));
   }
-  for (const quad of quads) quad.ao = ambientCorners(quad, blockAt, isActive);
+  for (const quad of quads) {
+    if (quad.ao === undefined) quad.ao = ambientCorners(quad, blockAt, isActive);
+  }
   return { blockCount, quads };
 }
 
@@ -188,19 +280,24 @@ export function quadCorners(quad) {
   const { faceIndex, fixed, u, v, width, height } = quad;
   // Recessed top surfaces read as soil/water instead of full cubes.
   const topInset = quad.block === 20 ? 1 / 16 : isFluid(quad.block) ? 2 / 16 : 0;
+  const faceInset = quad.block === 4 ? LEAF_FACE_INSET : 0;
+  const minU = u + faceInset;
+  const maxU = u + width - faceInset;
+  const minV = v + faceInset;
+  const maxV = v + height - faceInset;
   switch (faceIndex) {
     case 0:
-      return [[u, fixed - topInset, v], [u + width, fixed - topInset, v], [u + width, fixed - topInset, v + height], [u, fixed - topInset, v + height]];
+      return [[minU, fixed - topInset, minV], [maxU, fixed - topInset, minV], [maxU, fixed - topInset, maxV], [minU, fixed - topInset, maxV]];
     case 1:
-      return [[u, fixed, v + height], [u + width, fixed, v + height], [u + width, fixed, v], [u, fixed, v]];
+      return [[minU, fixed, maxV], [maxU, fixed, maxV], [maxU, fixed, minV], [minU, fixed, minV]];
     case 2:
-      return [[fixed, v, u], [fixed, v, u + width], [fixed, v + height - topInset, u + width], [fixed, v + height - topInset, u]];
+      return [[fixed, minV, minU], [fixed, minV, maxU], [fixed, maxV - topInset, maxU], [fixed, maxV - topInset, minU]];
     case 3:
-      return [[fixed, v, u + width], [fixed, v, u], [fixed, v + height - topInset, u], [fixed, v + height - topInset, u + width]];
+      return [[fixed, maxV, maxU], [fixed, maxV, minU], [fixed, minV, minU], [fixed, minV, maxU]];
     case 4:
-      return [[u + width, v, fixed], [u, v, fixed], [u, v + height - topInset, fixed], [u + width, v + height - topInset, fixed]];
+      return [[maxU, minV, fixed], [minU, minV, fixed], [minU, maxV - topInset, fixed], [maxU, maxV - topInset, fixed]];
     case 5:
-      return [[u, v, fixed], [u + width, v, fixed], [u + width, v + height - topInset, fixed], [u, v + height - topInset, fixed]];
+      return [[minU, minV, fixed], [maxU, minV, fixed], [maxU, maxV - topInset, fixed], [minU, maxV - topInset, fixed]];
     default:
       throw new RangeError(`Unknown face index: ${faceIndex}`);
   }

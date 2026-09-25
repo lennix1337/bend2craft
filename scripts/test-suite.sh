@@ -25,13 +25,20 @@ TESTS=(
   tests/drop-ground-cache.test.mjs
   tests/async-mesh-cache.test.mjs
   tests/greedy-mesh.test.mjs
+  tests/mesh-merge.test.mjs
+  tests/terrain-edit-visibility.test.mjs
   tests/mesh-cache.test.mjs
   tests/mesh-rebuild-scheduler.test.mjs
+  tests/villager-terrain.test.mjs
   tests/mesh-worker.test.mjs
   tests/terrain-vertex-builder.test.mjs
   tests/vertex-buffer-compose.test.mjs
+  tests/chunk-frustum.test.mjs
   tests/webgpu-capabilities.test.mjs
   tests/webgpu-chunk-buffers.test.mjs
+  tests/webgpu-chunk-updates.test.mjs
+  tests/webgpu-frame-readback.test.mjs
+  tests/webgpu-terrain-presentation.test.mjs
   tests/surface-materials.test.mjs
   tests/mob-models.test.mjs
   tests/visual-motion.test.mjs
@@ -44,6 +51,7 @@ TESTS=(
   tests/material-lighting.test.mjs
   tests/sky-palette.test.mjs
   tests/texture-atlas.test.mjs
+  tests/atlas-mipmap-safety.test.mjs
   tests/item-atlas.test.mjs
   tests/character-view.test.mjs
   tests/aim.test.mjs
@@ -73,7 +81,12 @@ TESTS=(
   tests/seed-input.test.mjs
   tests/seed-world.test.mjs
   tests/profiles.test.mjs
+  tests/menu-navigation.test.mjs
+  tests/modal-focus.test.mjs
   tests/settings.test.mjs
+  tests/ui-shell.test.mjs
+  tests/startup-contract.test.mjs
+  tests/boot-resilience.test.mjs
 )
 
 declare -A LISTED_TESTS=()

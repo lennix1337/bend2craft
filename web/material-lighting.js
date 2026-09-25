@@ -1,3 +1,5 @@
+export const TERRAIN_FACE_SHADES = Object.freeze([1, 0.68, 0.9, 0.82, 0.96, 0.74]);
+
 const FACE_LIGHT_TINTS = Object.freeze([
   [1.04, 1.02, 0.96],
   [0.78, 0.84, 0.94],

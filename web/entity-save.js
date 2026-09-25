@@ -24,9 +24,18 @@ function normalizeMobs(list) {
   if (list?.$ === "Nil") return list;
   if (list?.$ !== "Con") return list;
   const mob = list.head;
-  const normalized = mob?.$ === "Mob" && (mob.heading_x === undefined || mob.heading_z === undefined)
-    ? { ...mob, heading_x: 0, heading_z: -1 }
-    : mob;
+  let normalized = mob;
+  if (mob?.$ === "Mob") {
+    const numericHealth = Number(mob.health);
+    const health = Number.isFinite(numericHealth) ? Math.max(0, numericHealth) : 0;
+    normalized = {
+      ...mob,
+      health,
+      alive: health > 0 && mob.alive !== false,
+      heading_x: mob.heading_x ?? 0,
+      heading_z: mob.heading_z ?? -1,
+    };
+  }
   return { $: "Con", head: normalized, tail: normalizeMobs(list.tail) };
 }
 

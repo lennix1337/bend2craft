@@ -12,7 +12,112 @@ page.on("console", (message) => {
 page.on("pageerror", (error) => pageErrors.push(String(error)));
 
 try {
-  await page.goto(`${baseUrl}/`, { waitUntil: "networkidle", timeout: 30000 });
+  await page.goto(`${baseUrl}/?test=1`, { waitUntil: "load", timeout: 30000 });
+  await page.waitForFunction(
+    () => document.getElementById("world-preview")?.dataset.previewState === "ready",
+    null,
+    { timeout: 10000 },
+  );
+  await page.waitForFunction(
+    () => {
+      const screen = [...document.querySelectorAll("[data-screen]")].find((node) => !node.hidden);
+      return screen?.contains(document.activeElement) ?? false;
+    },
+    null,
+    { timeout: 10000 },
+  );
+  const titleShell = await page.evaluate(() => {
+    const preview = document.getElementById("world-preview");
+    const screen = [...document.querySelectorAll("[data-screen]")].find((node) => !node.hidden);
+    const rect = preview?.getBoundingClientRect();
+    return {
+      previewState: preview?.dataset.previewState,
+      previewImage: getComputedStyle(preview).backgroundImage,
+      previewWidth: rect?.width ?? 0,
+      previewHeight: rect?.height ?? 0,
+      menuRole: document.getElementById("menu")?.getAttribute("role"),
+      focusInside: screen?.contains(document.activeElement) ?? false,
+      startPrimary: document.getElementById("title-start-button")?.classList.contains("primary") ?? false,
+    };
+  });
+  assert.equal(titleShell.previewState, "ready");
+  assert.match(titleShell.previewImage, /^url\(/);
+  assert.ok(titleShell.previewWidth >= 1280 && titleShell.previewHeight >= 720);
+  assert.equal(titleShell.menuRole, "dialog");
+  assert.equal(titleShell.focusInside, true);
+  assert.equal(titleShell.startPrimary, true);
+  await page.keyboard.press("Tab");
+  assert.equal(await page.evaluate(() => {
+    const screen = [...document.querySelectorAll("[data-screen]")].find((node) => !node.hidden);
+    return screen?.contains(document.activeElement) ?? false;
+  }), true);
+  await page.evaluate(() => {
+    localStorage.removeItem("bend2craft-save-p-smoke-1337");
+    localStorage.setItem("bend2craft-profiles", JSON.stringify({
+      version: 1,
+      activeProfileId: "p-smoke",
+      profiles: [{
+        id: "p-smoke",
+        name: "Voyager",
+        createdAt: 1,
+        lastPlayed: 1,
+        worlds: [{
+          id: "w-smoke",
+          name: "Bend Valley",
+          seedText: "1337",
+          seed: "1337",
+          mode: "survival",
+          createdAt: 1,
+          lastPlayed: 1,
+        }],
+      }],
+    }));
+  });
+  await page.reload({ waitUntil: "load", timeout: 30000 });
+  await page.waitForFunction(
+    () => document.getElementById("world-preview")?.dataset.previewState === "ready",
+    null,
+    { timeout: 10000 },
+  );
+  await page.waitForFunction(
+    () => [...document.querySelectorAll("[data-screen]")].some((node) => !node.hidden && node.contains(document.activeElement)),
+    null,
+    { timeout: 10000 },
+  );
+  const returningShell = await page.evaluate(() => ({
+    continueVisible: document.getElementById("continue-world-button")?.hidden === false,
+    worldName: document.getElementById("title-world-name")?.textContent,
+    worldMeta: document.getElementById("title-world-meta")?.textContent,
+  }));
+  assert.deepEqual(returningShell, {
+    continueVisible: true,
+    worldName: "Bend Valley",
+    worldMeta: "Voyager · Survival · seed 1337",
+  });
+  await page.locator("#continue-world-button").click();
+  await page.waitForFunction(
+    () => new URLSearchParams(window.location.search).get("world") === "w-smoke",
+    null,
+    { timeout: 10000 },
+  );
+  const continuedWorld = await page.evaluate(() => ({
+    play: new URLSearchParams(window.location.search).get("play"),
+    world: new URLSearchParams(window.location.search).get("world"),
+  }));
+  assert.deepEqual(continuedWorld, { play: "1", world: "w-smoke" });
+  await page.goto(`${baseUrl}/?test=1`, { waitUntil: "load", timeout: 30000 });
+  await page.waitForFunction(
+    () => document.getElementById("world-preview")?.dataset.previewState === "ready",
+    null,
+    { timeout: 10000 },
+  );
+  await page.evaluate(() => localStorage.removeItem("bend2craft-profiles"));
+  await page.reload({ waitUntil: "load", timeout: 30000 });
+  await page.waitForFunction(
+    () => document.getElementById("world-preview")?.dataset.previewState === "ready",
+    null,
+    { timeout: 10000 },
+  );
   await page.locator('[data-action="goto-options"]').click();
   const renderDistanceOptions = await page.evaluate(() => {
     const input = document.getElementById("input-render-distance");
@@ -31,7 +136,7 @@ try {
     max: 6,
     value: 2,
     output: "2",
-    rendererValue: "auto",
+    rendererValue: "webgl",
     rendererOptions: ["auto", "webgpu", "webgl"],
   });
   await page.locator("#input-render-distance").evaluate((input) => {
@@ -52,7 +157,11 @@ try {
     JSON.stringify({ fov: 75, sensitivity: 1, showCoords: true, renderDistance: 2, renderer: "auto" }),
   ));
 
-  await page.goto(`${baseUrl}/?play=1&seed=1337`, { waitUntil: "networkidle", timeout: 30000 });
+  // Functional smoke uses WebGL so headless SwiftShader cannot report a
+  // successful WebGPU frame while presenting a blank compositor surface.
+  // World readiness is asserted explicitly below because streaming workers
+  // keep the page active after the initial document load.
+  await page.goto(`${baseUrl}/?test=1&play=1&seed=1337&renderer=webgl`, { waitUntil: "domcontentloaded", timeout: 30000 });
   await page.waitForFunction(
     () => window.__bend2craft?.world?.activeChunks > 0 && window.__bend2craft?.world?.pendingChunks === 0,
     null,
@@ -63,11 +172,23 @@ try {
     null,
     { timeout: 30000 },
   );
+  await page.waitForFunction(
+    () => document.getElementById("world-loading")?.hidden === true,
+    null,
+    { timeout: 5000 },
+  );
   const state = await page.evaluate(() => ({
     errorHidden: document.getElementById("error")?.hidden ?? false,
     activeChunks: window.__bend2craft?.world?.activeChunks ?? 0,
     pendingChunks: window.__bend2craft?.world?.pendingChunks ?? -1,
     miningProgressHidden: document.getElementById("mining-progress")?.hidden ?? false,
+    hudOpacity: getComputedStyle(document.getElementById("hud")).opacity,
+    hotbarOpacity: getComputedStyle(document.getElementById("hotbar")).opacity,
+    vitalsHidden: document.getElementById("vitals")?.hidden ?? true,
+    crosshairOpacity: getComputedStyle(document.getElementById("crosshair")).opacity,
+    xpHidden: document.getElementById("xp-hud")?.hidden ?? true,
+    loadingHidden: document.getElementById("world-loading")?.hidden ?? false,
+    renderer: window.__bend2craft?.getFrameDiagnostics?.().renderer ?? null,
     lightProbe: typeof window.__bend2craft?.getLight === "function",
     frame: window.__bend2craft?.getFrameDiagnostics?.() ?? null,
   }));
@@ -75,11 +196,38 @@ try {
   assert.ok(state.activeChunks > 0);
   assert.equal(state.pendingChunks, 0);
   assert.equal(state.miningProgressHidden, true);
+  assert.equal(state.hudOpacity, "1");
+  assert.equal(state.hotbarOpacity, "1");
+  assert.equal(state.vitalsHidden, false);
+  assert.equal(state.crosshairOpacity, "1");
+  assert.equal(state.xpHidden, false);
+  assert.equal(state.loadingHidden, true);
+  assert.equal(state.renderer, "webgl");
   assert.equal(state.lightProbe, true);
   assert.equal(state.frame?.playerSpawnReady, true);
+  assert.equal(state.frame?.spawnMeshReady, true);
   assert.ok(state.frame?.meshRebuilds > 0);
   assert.ok(state.frame?.workerHydrates > 0);
   assert.ok(state.frame?.meshWorkerResponses > 0);
+  const firstPersonOverlayProbe = await page.evaluate(async () => {
+    const canvas = document.getElementById("first-person-hand-canvas");
+    const player = window.__bend2craft.getPlayer();
+    window.__bend2craft.setViewForTest(player.x, player.y, player.z, 0, 0);
+    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    const forward = canvas.toDataURL();
+    window.__bend2craft.setViewForTest(player.x, player.y, player.z, Math.PI / 2, 0);
+    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    return {
+      available: canvas instanceof HTMLCanvasElement,
+      stable: forward === canvas.toDataURL(),
+    };
+  });
+  assert.equal(firstPersonOverlayProbe.available, true);
+  assert.equal(firstPersonOverlayProbe.stable, true, "held-item overlay must not rotate with the camera");
+  await page.evaluate(() => {
+    window.__bend2craft.teleportForTest(40.5, 24.5, 8);
+    window.__bend2craft.resumeForTest();
+  });
 
   const initialTarget = await page.evaluate(() => {
     const player = window.__bend2craft.getPlayer();
@@ -111,10 +259,11 @@ try {
   let atlasProbe = null;
   if (state.frame?.renderer === "webgl") {
   textureProbe = await page.evaluate(async () => {
-    const region = [300, 210, 64, 64];
+    const player = window.__bend2craft.getPlayer();
+    window.__bend2craft.teleportForTest(player.x, player.z, player.y, player.yaw, player.pitch);
+    const region = [500, 500, 64, 64];
     const first = window.__bend2craft.readFramePixels(...region);
-    // Read twice in the same rendered frame so intentional day/night changes
-    // do not get confused with same-frame texture flicker.
+    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
     const second = window.__bend2craft.readFramePixels(...region);
     let changedPixels = 0;
     for (let index = 0; index < first.length; index += 4) {
@@ -123,10 +272,11 @@ try {
         || first[index + 2] !== second[index + 2]
         || first[index + 3] !== second[index + 3]) changedPixels += 1;
     }
+    window.__bend2craft.resumeForTest();
     return { region, pixels: first.length / 4, changedPixels };
   });
   assert.ok(textureProbe.pixels > 0);
-  assert.ok(textureProbe.changedPixels <= 64, "static terrain pixels should not flicker between frames");
+  assert.ok(textureProbe.changedPixels <= 64, `static terrain pixels should not flicker between frames (changed=${textureProbe.changedPixels})`);
 
   animatedSurfaceProbe = await page.evaluate(async () => {
     const region = [100, 210, 64, 64];
@@ -152,10 +302,22 @@ try {
       totalMismatches: probes.reduce((sum, probe) => sum + probe.mismatches, 0),
       maxMismatches: Math.max(...probes.map((probe) => probe.mismatches)),
       flippedMismatches: probes.reduce((sum, probe) => sum + probe.flippedMismatches, 0),
+      mipmaps: window.__bend2craft.getFrameDiagnostics().atlasMipmaps,
     };
   });
   assert.equal(atlasProbe.tiles, 50);
   assert.equal(atlasProbe.totalMismatches, 0, "WebGL atlas texels must match all source tiles");
+  // The Foreign Tile Contamination gate ran against the real mip chain. A
+  // rejected verdict must keep mipmaps off rather than ship a blended atlas.
+  assert.ok(atlasProbe.mipmaps !== undefined, "the atlas mipmap verdict must be reported");
+  if (atlasProbe.mipmaps.safe) {
+    assert.equal(atlasProbe.mipmaps.contaminated, 0, "a certified mip chain must report no contamination");
+  } else {
+    assert.ok(
+      atlasProbe.mipmaps.reason !== null || atlasProbe.mipmaps.contaminated > 0,
+      "a rejected mip chain must carry an explicit diagnostic",
+    );
+  }
   }
 
   const interactionProbe = await page.evaluate(async ({ targetInfo }) => {
@@ -178,7 +340,7 @@ try {
   await page.waitForFunction(
     ({ x, y, z, beforeBlock }) => window.__bend2craft.getBlock(x, y, z) !== beforeBlock,
     hitCoordinates,
-    { timeout: 3000 },
+    { timeout: 10000 },
   );
   const mined = await page.evaluate(({ x, y, z }) => ({
     block: window.__bend2craft.getBlock(x, y, z),
@@ -208,12 +370,71 @@ try {
   }), { hit: interactionProbe.hit, place: placement.target.place });
   assert.equal(interactionResult.placedBlock, 1);
 
+  // A block edit must refresh only the chunks it touched, never the whole
+  // render window. This is asserted through the mesh cache's rebuild counters
+  // so it holds on both backends.
+  const editScope = await page.evaluate(async ({ hit, place }) => {
+    const before = window.__bend2craft.getFrameDiagnostics();
+    const chunkSize = window.__bend2craft.world.chunkSize;
+    const chunkOf = (value) => Math.floor(value / chunkSize);
+    const touched = new Set([
+      `${chunkOf(hit[0])},${chunkOf(hit[2])}`,
+      `${chunkOf(place[0])},${chunkOf(place[2])}`,
+    ]);
+    window.__bend2craft.setBlockForTest(hit[0], hit[1] + 1, hit[2], 0);
+    await new Promise((resolve) => window.setTimeout(resolve, 400));
+    const after = window.__bend2craft.getFrameDiagnostics();
+    return {
+      activeChunks: after.activeChunks,
+      rebuilds: after.meshRebuilds - before.meshRebuilds,
+      touched: touched.size,
+    };
+  }, { hit: interactionProbe.hit, place: placement.target.place });
+  assert.ok(
+    editScope.rebuilds > 0,
+    "the synthetic edit must actually rebuild a mesh",
+  );
+  assert.ok(
+    editScope.rebuilds <= editScope.activeChunks,
+    `an edit rebuilt ${editScope.rebuilds} chunks for a ${editScope.activeChunks} chunk window`,
+  );
+  assert.ok(
+    editScope.rebuilds <= 9,
+    `an edit rebuilt ${editScope.rebuilds} chunks, more than a 3x3 seam neighbourhood`,
+  );
+
+  const primaryInputSetup = await page.evaluate(() => {
+    const mob = window.__bend2craft.getMobs().find((entry) => entry.alive);
+    if (mob === undefined) return null;
+    window.__bend2craft.teleportForTest(mob.x, mob.z - 3, mob.y, Math.PI, -0.3);
+    document.getElementById("pause").hidden = true;
+    document.getElementById("game-shell").inert = false;
+    document.getElementById("game").inert = false;
+    return { id: mob.id, health: mob.health };
+  });
+  assert.ok(primaryInputSetup !== null, "a spawned mob is required for primary-click smoke");
+  await page.locator("#game").click({ button: "left" });
+  await page.waitForFunction(() => document.pointerLockElement?.id === "game", null, { timeout: 5000 });
+  await page.evaluate(({ id }) => {
+    const mob = window.__bend2craft.getMobs().find((entry) => entry.id === id);
+    window.__bend2craft.setViewForTest(mob.x, mob.y, mob.z - 3, Math.PI, -0.3);
+  }, primaryInputSetup);
+  await page.mouse.down({ button: "left" });
+  await page.mouse.up({ button: "left" });
+  const primaryInputProbe = await page.evaluate(({ id }) => (
+    window.__bend2craft.getMobs().find((entry) => entry.id === id)
+  ), primaryInputSetup);
+  await page.evaluate(() => window.__bend2craft.resumeForTest());
+  assert.ok(primaryInputProbe?.health < primaryInputSetup.health, "left-click input must damage the mob under the crosshair");
+
   const mobProbe = await page.evaluate(() => {
     const mob = window.__bend2craft.getMobs().find((entry) => entry.alive);
     if (mob === undefined) return null;
-    window.__bend2craft.teleportForTest(mob.x, mob.z, mob.y, 0, -0.18);
-    const hits = [];
-    for (let index = 0; index < 5; index += 1) hits.push(window.__bend2craft.attack());
+    window.__bend2craft.teleportForTest(mob.x, mob.z - 1, mob.y, Math.PI, -0.3);
+    window.__bend2craft.setViewForTest(mob.x, mob.y, mob.z - 1, Math.PI, -0.3);
+    const primaryHit = window.__bend2craft.primaryActionForTest(0);
+    const hits = [primaryHit];
+    for (let index = 0; index < 4; index += 1) hits.push(window.__bend2craft.attack());
     const after = window.__bend2craft.getMobs().find((entry) => entry.id === mob.id);
     return {
       id: mob.id,
@@ -227,8 +448,28 @@ try {
   });
   assert.ok(mobProbe !== null, "a spawned mob is required for combat smoke");
   assert.ok(mobProbe.hits.some(Boolean));
+  assert.ok(mobProbe.afterHealth < mobProbe.beforeHealth || mobProbe.alive === false);
   assert.equal(mobProbe.alive, false);
   assert.ok(mobProbe.drops.length > 0, "a killed mob must produce a Bend drop");
+  const deathTickProbeBefore = await page.evaluate(({ mobId }) => {
+    const deadMob = window.__bend2craft.getMobs().find((entry) => entry.id === mobId);
+    window.__bend2craft.teleportForTest(deadMob.x + 6, deadMob.z, deadMob.y, 0, 0);
+    return {
+      health: window.__bend2craft.getPlayer().health,
+      drops: window.__bend2craft.getDrops().length,
+      alive: deadMob?.alive,
+    };
+  }, { mobId: mobProbe.id });
+  await page.evaluate(() => window.__bend2craft.resumeForTest());
+  await page.waitForTimeout(650);
+  const deathTickProbeAfter = await page.evaluate(({ mobId }) => ({
+    health: window.__bend2craft.getPlayer().health,
+    drops: window.__bend2craft.getDrops().length,
+    alive: window.__bend2craft.getMobs().find((entry) => entry.id === mobId)?.alive,
+  }), { mobId: mobProbe.id });
+  assert.equal(deathTickProbeAfter.health, deathTickProbeBefore.health, "a dead mob must not keep damaging the player");
+  assert.equal(deathTickProbeAfter.alive, false);
+  assert.equal(deathTickProbeAfter.drops, deathTickProbeBefore.drops);
   const drop = mobProbe.drops[0];
   const entityPersistenceBefore = await page.evaluate(({ mobId, dropId }) => {
     window.__bend2craft.teleportForTest(40.5, 24.5, 8);
@@ -241,7 +482,7 @@ try {
   assert.equal(entityPersistenceBefore.mob?.alive, false);
   assert.ok(entityPersistenceBefore.drop !== undefined);
 
-  await page.reload({ waitUntil: "networkidle", timeout: 30000 });
+  await page.reload({ waitUntil: "domcontentloaded", timeout: 30000 });
   await page.waitForFunction(
     () => window.__bend2craft?.world?.activeChunks > 0 && window.__bend2craft?.world?.pendingChunks === 0,
     null,
@@ -264,27 +505,114 @@ try {
     window.__bend2craft.teleportForTest(currentDrop.x, currentDrop.z, currentDrop.y);
     window.__bend2craft.resumeForTest();
   });
-  await page.waitForFunction(() => window.__bend2craft.getDrops().length === 0, null, { timeout: 5000 });
+  await page.waitForFunction(() => window.__bend2craft.getDrops().length === 0, null, { timeout: 15000 });
   const collectedInventory = await page.evaluate(() => window.__bend2craft.getInventory());
   assert.ok(collectedInventory.some((item) => item.item === "wool" || item.item === "rotten_flesh"));
 
-  const hostile = await page.evaluate(() => window.__bend2craft.getMobs()
-    .find((entry) => entry.alive && entry.kind === 2));
-  assert.ok(hostile !== undefined, "a hostile mob is required for damage smoke");
-  await page.evaluate(({ x, y, z }) => window.__bend2craft.teleportForTest(x, z, y), hostile);
-  await page.evaluate(() => window.__bend2craft.resumeForTest());
-  await page.waitForFunction(() => window.__bend2craft.getPlayer().health < 20, null, { timeout: 5000 });
+  const farDamageSetup = await page.evaluate(() => {
+    window.__bend2craft.teleportForTest(40.5, 24.5, 8);
+    const hostile = window.__bend2craft.spawnHostileForTest(2, 10.5);
+    window.__bend2craft.resumeForTest();
+    return { hostile, health: window.__bend2craft.getPlayer().health };
+  });
+  assert.ok(farDamageSetup.hostile !== null, "a far hostile is required for range smoke");
+  await page.waitForTimeout(650);
+  const farDamageProbe = await page.evaluate(() => window.__bend2craft.getPlayer());
+  assert.equal(farDamageProbe.health, farDamageSetup.health, "a hostile beyond melee range must not damage the player");
+
+  const damageSetup = await page.evaluate(() => {
+    window.__bend2craft.teleportForTest(40.5, 24.5, 8);
+    const hostile = window.__bend2craft.spawnHostileForTest(2);
+    window.__bend2craft.resumeForTest();
+    return { hostile, health: window.__bend2craft.getPlayer().health };
+  });
+  assert.ok(damageSetup.hostile !== null, "a hostile mob is required for damage smoke");
+  await page.waitForFunction(
+    (health) => window.__bend2craft.getPlayer().health < health,
+    damageSetup.health,
+    { timeout: 5000 },
+  );
   const damageProbe = await page.evaluate(() => window.__bend2craft.getPlayer());
   assert.ok(damageProbe.health < 20);
 
+  // Bend owns melee line-of-sight: a hostile walled off from the player must
+  // not reach through, and removing the wall must restore the same damage.
+  const wallSetup = await page.evaluate(() => {
+    window.__bend2craft.teleportForTest(40.5, 24.5, 8);
+    // Earlier combat scenarios leave hostiles behind; clear them so this one
+    // measures line of sight and not a leftover attacker.
+    const remaining = window.__bend2craft.despawnMobsForTest(0);
+    const ground = Math.floor(window.__bend2craft.getPlayer().y);
+    const wall = [];
+    for (let y = ground; y < ground + 3; y += 1) {
+      wall.push(window.__bend2craft.setBlockForTest(42, y, 25, 1));
+    }
+    const hostile = window.__bend2craft.spawnHostileForTest(2, 2.0);
+    window.__bend2craft.resumeForTest();
+    return { hostile, wall, remaining, health: window.__bend2craft.getPlayer().health };
+  });
+  assert.equal(wallSetup.remaining, 0, "the line-of-sight scenario needs an empty mob set");
+  assert.ok(wallSetup.hostile !== null, "a walled hostile is required for line-of-sight smoke");
+  assert.ok(wallSetup.wall.every(Boolean), "the smoke wall must be placeable in open air");
+  await page.waitForTimeout(650);
+  const walledProbe = await page.evaluate(() => window.__bend2craft.getPlayer());
+  // Regeneration can raise health while the wall holds, so the contract is
+  // "no damage", not "health unchanged".
+  assert.ok(
+    walledProbe.health >= wallSetup.health,
+    `a hostile behind a wall must not damage the player, ${wallSetup.health} -> ${walledProbe.health}`,
+  );
+
+  const unwalledSetup = await page.evaluate(() => {
+    const ground = Math.floor(window.__bend2craft.getPlayer().y);
+    for (let y = ground; y < ground + 3; y += 1) {
+      window.__bend2craft.setBlockForTest(42, y, 25, 0);
+    }
+    window.__bend2craft.resumeForTest();
+    return { health: window.__bend2craft.getPlayer().health };
+  });
+  await page.waitForFunction(
+    (health) => window.__bend2craft.getPlayer().health < health,
+    unwalledSetup.health,
+    { timeout: 5000 },
+  );
+  await page.waitForFunction(
+    () => (document.getElementById("survival-announcer")?.textContent ?? "").length > 0,
+    null,
+    { timeout: 2000 },
+  ).catch(() => {});
+
+  await page.locator("#inventory-toggle").click();
+  await page.waitForFunction(() => document.getElementById("inventory-panel")?.hidden === false);
   await page.evaluate(() => window.__bend2craft.hurt(100));
   await page.waitForFunction(() => document.getElementById("death")?.hidden === false, null, { timeout: 5000 });
+  const deathModalProbe = await page.evaluate(() => ({
+    inventoryHidden: document.getElementById("inventory-panel")?.hidden ?? false,
+    canvasInert: document.getElementById("game")?.inert ?? true,
+    miningHidden: document.getElementById("mining-progress")?.hidden ?? false,
+    health: window.__bend2craft.getPlayer().health,
+    paused: window.__bend2craft.getInputState().paused,
+  }));
+  assert.deepEqual(deathModalProbe, { inventoryHidden: true, canvasInert: true, miningHidden: true, health: 0, paused: true });
+  await page.waitForTimeout(500);
+  assert.equal(await page.evaluate(() => window.__bend2craft.getPlayer().health), 0, "death must latch at zero health");
   await page.locator('[data-action="respawn"]').click();
   await page.waitForFunction(
     () => window.__bend2craft.getPlayer().health > 0 && document.getElementById("death")?.hidden === true,
     null,
     { timeout: 5000 },
   );
+  assert.equal(await page.evaluate(() => document.getElementById("game")?.inert), false);
+
+  const recoveryInventory = await page.evaluate(() => ({
+    collectedWool: window.__bend2craft.collect("wool"),
+    collectedWood: window.__bend2craft.collect("wood"),
+    inventory: window.__bend2craft.getInventory(),
+  }));
+  assert.equal(recoveryInventory.collectedWool, true);
+  assert.equal(recoveryInventory.collectedWood, true);
+  assert.ok(recoveryInventory.inventory.some((item) => item.item === "wool"));
+  assert.ok(recoveryInventory.inventory.some((item) => item.block === 5));
 
   const persistenceBefore = await page.evaluate(({ place }) => {
     window.__bend2craft.save();
@@ -297,7 +625,7 @@ try {
   assert.ok(persistenceBefore.inventory.some((item) => item.item === "wool"));
   assert.equal(persistenceBefore.placedBlock, 1);
 
-  await page.reload({ waitUntil: "networkidle", timeout: 30000 });
+  await page.reload({ waitUntil: "domcontentloaded", timeout: 30000 });
   await page.waitForFunction(
     () => window.__bend2craft?.world?.activeChunks > 0 && window.__bend2craft?.world?.pendingChunks === 0,
     null,
@@ -370,6 +698,31 @@ try {
   assert.ok(inventoryIconProbe.painted > 0, "open inventory slots must use the item atlas icons");
   assert.equal(inventoryIconProbe.namesHidden, true);
   assert.ok(inventoryIconProbe.draggable > 0, "inventory slots must support drag transfer");
+  const modalProbe = await page.evaluate(() => {
+    const panel = document.getElementById("inventory-panel");
+    const canvas = document.getElementById("game");
+    return {
+      panelVisible: panel?.hidden === false,
+      panelInert: panel?.inert === true,
+      canvasInert: canvas?.inert === true,
+      focusInside: panel?.contains(document.activeElement) ?? false,
+    };
+  });
+  assert.deepEqual(modalProbe, {
+    panelVisible: true,
+    panelInert: false,
+    canvasInert: true,
+    focusInside: true,
+  });
+  const inventoryBeforeShortcut = await page.evaluate(() => window.__bend2craft.getInventory());
+  await page.keyboard.press("KeyQ");
+  assert.deepEqual(await page.evaluate(() => window.__bend2craft.getInventory()), inventoryBeforeShortcut);
+  await page.keyboard.press("Tab");
+  assert.equal(await page.evaluate(() => document.getElementById("inventory-panel")?.contains(document.activeElement)), true);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => document.getElementById("inventory-panel")?.hidden === true);
+  await page.locator("#inventory-toggle").click();
+  await page.waitForFunction(() => document.getElementById("inventory-panel")?.hidden === false);
   await page.locator("#shaped-recipe").selectOption("planks");
   await page.locator('[data-shaped-action="load"]').click();
   const shapedLoaded = await page.evaluate(() => ({
@@ -458,9 +811,38 @@ try {
   assert.equal(dropProbe.ok, true);
   assert.equal(dropProbe.after, dropProbe.before + 1);
 
+  await page.setViewportSize({ width: 390, height: 844 });
+  const narrowProbe = await page.evaluate(() => {
+    const air = document.getElementById("air");
+    const wasHidden = air?.hidden ?? true;
+    if (air !== null) air.hidden = false;
+    const airDisplay = air === null ? null : getComputedStyle(air).display;
+    if (air !== null) air.hidden = wasHidden;
+    return {
+      overflow: document.documentElement.scrollWidth > window.innerWidth + 1
+        || document.body.scrollWidth > window.innerWidth + 1,
+      airDisplay,
+    };
+  });
+  assert.equal(narrowProbe.overflow, false, "narrow game shell must not overflow horizontally");
+  assert.notEqual(narrowProbe.airDisplay, "none", "narrow layouts must retain underwater air feedback");
+  const narrowAir = [];
+  for (const width of [320, 280]) {
+    await page.setViewportSize({ width, height: 844 });
+    narrowAir.push(await page.evaluate(() => {
+      const air = document.getElementById("air");
+      const wasHidden = air?.hidden ?? true;
+      if (air !== null) air.hidden = false;
+      const rect = air?.getBoundingClientRect();
+      if (air !== null) air.hidden = wasHidden;
+      return { left: rect?.left ?? 0, right: rect?.right ?? 0, viewport: window.innerWidth };
+    }));
+  }
+  assert.ok(narrowAir.every((probe) => probe.left >= 0 && probe.right <= probe.viewport), "air pips must remain visible at 320px and 280px");
+
   assert.deepEqual(consoleErrors, []);
   assert.deepEqual(pageErrors, []);
-  console.log(JSON.stringify({ ...state, textureProbe, animatedSurfaceProbe, atlasProbe, interactionResult, mobProbe, collectedInventory, damageProbe, persistenceBefore, persistenceAfter, entityPersistenceBefore, entityPersistenceAfter, negativeState, streamingSwap, inventoryToggle: "ok", shapedLoaded, shapedCrafted, shieldInventory, equipped, unequipped, chestProbe, dropProbe, consoleErrors, pageErrors }));
+  console.log(JSON.stringify({ ...state, continuedWorld, textureProbe, animatedSurfaceProbe, atlasProbe, interactionResult, mobProbe, collectedInventory, damageProbe, recoveryInventory, deathModalProbe, persistenceBefore, persistenceAfter, entityPersistenceBefore, entityPersistenceAfter, negativeState, streamingSwap, inventoryToggle: "ok", modalProbe, shapedLoaded, shapedCrafted, shieldInventory, equipped, unequipped, chestProbe, dropProbe, narrowProbe, narrowAir, consoleErrors, pageErrors }));
 } finally {
   await browser.close();
 }

@@ -5,6 +5,7 @@ import {
   describeBrowserExecution,
   normalizeRendererMode,
   probeWebGpu,
+  withTimeout,
 } from "../web/webgpu-capabilities.js";
 
 assert.equal(normalizeRendererMode("webgpu"), RENDERER_MODES.WEBGPU);
@@ -44,5 +45,10 @@ assert.deepEqual(await probeWebGpu({ gpu: { async requestAdapter() { return null
   adapterName: null,
   reason: "no WebGPU adapter was returned",
 });
+assert.equal(await withTimeout(Promise.resolve("ready"), 50, "late"), "ready");
+await assert.rejects(
+  withTimeout(new Promise(() => {}), 5, "probe timed out"),
+  /probe timed out/,
+);
 
 console.log("webgpu capabilities ok");

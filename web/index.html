@@ -8,34 +8,53 @@
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./styles.css">
 </head>
-<body>
+<body data-mode="menu">
   <main id="game-shell">
-    <canvas id="game" aria-label="Voxel world"></canvas>
+    <canvas id="game" tabindex="0" aria-label="Voxel world"></canvas>
+    <section id="world-loading" role="status" aria-live="polite" aria-busy="true" aria-label="Loading world" hidden>
+      <div class="world-loading__mark" aria-hidden="true">B2</div>
+      <div class="world-loading__copy">
+        <p id="loading-world-name">Preparing world</p>
+        <h1>Shaping the world</h1>
+        <div id="loading-progress" role="progressbar" aria-label="World loading progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <span></span>
+        </div>
+        <small>Bend 2 is generating deterministic terrain, light, and the first safe place to stand.</small>
+      </div>
+    </section>
     <div id="vignette" aria-hidden="true"></div>
     <div id="damage-flash" aria-hidden="true"></div>
     <div id="crosshair" aria-hidden="true"></div>
-    <div id="block-highlight" aria-live="polite" hidden></div>
+    <div id="block-highlight" aria-live="off" hidden></div>
     <div id="toast" role="status" aria-live="polite" hidden></div>
     <div id="particles" aria-hidden="true"></div>
     <div id="mining-progress" aria-hidden="true" hidden>
       <span id="mining-progress-fill"></span>
     </div>
-    <section id="vitals" aria-live="polite" hidden>
-      <div id="hearts" aria-label="Health"></div>
-      <div id="hunger" aria-label="Hunger"></div>
-      <div id="air" aria-label="Air" hidden></div>
+    <section id="vitals" aria-label="Survival status" hidden>
+      <div id="hearts" role="img" aria-label="Health"></div>
+      <div id="hunger" role="img" aria-label="Hunger"></div>
+      <div id="air" role="img" aria-label="Air" hidden></div>
     </section>
-    <section id="hud" aria-live="polite">
-      <div class="brand">BEND2CRAFT <span>inventory slice</span></div>
+    <div id="xp-hud" aria-label="Experience level" hidden>
+      <span id="xp-level">0</span>
+      <div id="xp-track" role="progressbar" aria-label="Experience progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <span id="xp-fill"></span>
+      </div>
+    </div>
+    <div id="survival-announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+    <section id="hud" aria-label="World status">
+      <div class="brand">BEND2CRAFT <span>Wilderness</span></div>
       <div id="coords" class="hud-coords">loading world…</div>
       <div id="seed" class="hud-debug">seed: —</div>
-      <div id="selected" class="selected-item">selected: —</div>
       <div id="stats" class="hud-debug">— blocks visible</div>
     </section>
-    <section id="debug-overlay" aria-live="polite" aria-label="Performance diagnostics" hidden></section>
+    <div id="selected" class="selected-item">selected: —</div>
+    <section id="debug-overlay" aria-live="off" aria-label="Performance diagnostics" hidden></section>
     <section id="hotbar" aria-label="Hotbar">
       <div id="hotbar-slots"></div>
     </section>
+    <canvas id="first-person-hand-canvas" width="192" height="192" aria-hidden="true"></canvas>
     <section id="held-item-view" aria-label="Held item">
       <canvas id="held-item-canvas" width="72" height="72" aria-hidden="true"></canvas>
       <span id="held-item-label">Empty hand</span>
@@ -43,7 +62,7 @@
     <button id="inventory-toggle" type="button" aria-controls="inventory-panel" aria-expanded="false">Inventory (E)</button>
     <button id="furnace-toggle" type="button" aria-controls="furnace-panel" aria-expanded="false">Furnace (R)</button>
     <button id="chest-toggle" type="button" aria-controls="chest-panel" aria-expanded="false" hidden>Chest (C)</button>
-    <section id="inventory-panel" aria-labelledby="inventory-title" hidden>
+    <section id="inventory-panel" role="dialog" aria-modal="true" aria-labelledby="inventory-title" hidden>
       <header class="inventory-header">
         <div>
           <h2 id="inventory-title">Inventory &amp; crafting</h2>
@@ -55,10 +74,11 @@
         <section class="equipment-section" aria-labelledby="equipment-title">
           <h3 id="equipment-title">Equipment</h3>
           <div id="equipment-slots" class="equipment-slots" aria-label="Armor and offhand slots"></div>
-          <p class="field-hint">Click a shield in the inventory to equip it in your offhand.</p>
+          <p class="field-hint">Select armor or a shield to equip it. Click an equipped slot to remove it.</p>
         </section>
         <section class="inventory-section" aria-labelledby="items-title">
           <h3 id="items-title">Items</h3>
+          <p class="field-hint">The first row is your hotbar.</p>
           <div id="inventory-slots" class="inventory-grid" aria-label="All inventory slots"></div>
         </section>
         <section class="crafting-section" aria-labelledby="recipes-title">
@@ -68,7 +88,13 @@
               <span>3×3 shaped recipe</span>
               <select id="shaped-recipe"></select>
             </label>
-            <div id="crafting-grid" class="crafting-grid" aria-label="3 by 3 crafting grid"></div>
+            <div class="crafting-bench">
+              <div id="crafting-grid" class="crafting-grid" aria-label="3 by 3 crafting grid"></div>
+              <div class="crafting-output">
+                <span>Output</span>
+                <div id="crafting-output" class="inventory-slot" aria-live="polite" aria-label="Crafting output"></div>
+              </div>
+            </div>
             <div class="shaped-actions">
               <button type="button" data-shaped-action="load">Load ingredients</button>
               <button type="button" data-shaped-action="craft">Craft output</button>
@@ -81,7 +107,7 @@
         </section>
       </div>
     </section>
-    <section id="furnace-panel" aria-labelledby="furnace-title" hidden>
+    <section id="furnace-panel" role="dialog" aria-modal="true" aria-labelledby="furnace-title" hidden>
       <header class="inventory-header">
         <div>
           <h2 id="furnace-title">Furnace</h2>
@@ -98,7 +124,7 @@
         </div>
       </div>
     </section>
-    <section id="chest-panel" aria-labelledby="chest-title" hidden>
+    <section id="chest-panel" role="dialog" aria-modal="true" aria-labelledby="chest-title" hidden>
       <header class="inventory-header">
         <div>
           <h2 id="chest-title">Chest</h2>
@@ -116,10 +142,10 @@
     <section id="help">
       <strong id="lock-hint">Click to capture the mouse</strong>
       <span>WASD · mouse look · Space jump · Shift sneak · Ctrl sprint</span>
-      <span>1–9 hotbar · E inventory · R furnace · C chest · G eat · Q drop · F attack/shoot · T trade · N sleep · click mine/place</span>
+      <span>1–9 hotbar · E inventory · R furnace · C chest · G eat · Q drop · F attack/shoot · T trade · N sleep · click mine/attack/place</span>
     </section>
     <div id="error" role="alert" hidden></div>
-    <section id="pause" aria-labelledby="pause-title" hidden>
+    <section id="pause" role="dialog" aria-modal="true" aria-labelledby="pause-title" aria-hidden="true" hidden>
       <div class="menu-panel">
         <h2 id="pause-title">Game Paused</h2>
         <p id="pause-subtitle" class="field-hint"></p>
@@ -129,7 +155,7 @@
         </div>
       </div>
     </section>
-    <section id="death" aria-labelledby="death-title" hidden>
+    <section id="death" role="dialog" aria-modal="true" aria-labelledby="death-title" aria-hidden="true" hidden>
       <div class="menu-panel">
         <h2 id="death-title">You died!</h2>
         <p id="death-stats" class="field-hint"></p>
@@ -139,16 +165,35 @@
         </div>
       </div>
     </section>
-    <section id="menu" aria-label="Main menu" hidden>
-      <div class="menu-panel" id="screen-title" data-screen>
-        <h1 class="logo">BEND2CRAFT</h1>
-        <p class="splash">Punch trees, dodge zombies, mind the fall!</p>
-        <div class="menu-buttons">
-          <button class="mc-button primary" type="button" data-action="goto-profiles">Singleplayer</button>
-          <button class="mc-button" type="button" data-action="goto-options">Options...</button>
-          <button class="mc-button" type="button" data-action="goto-help">How to Play...</button>
+    <section id="menu" role="dialog" aria-modal="true" aria-label="Main menu" hidden>
+      <div id="world-preview" aria-hidden="true" data-preview-state="ready"></div>
+      <div class="world-preview-shade" aria-hidden="true"></div>
+      <div class="title-screen" id="screen-title" data-screen>
+        <header class="game-brand">
+          <div class="brand-lockup">
+            <span class="brand-cube" aria-hidden="true"></span>
+            <h1 class="logo">BEND2CRAFT</h1>
+          </div>
+          <p>Build a world. Make it yours.</p>
+        </header>
+        <div class="title-play">
+          <div class="continue-summary">
+            <strong id="title-world-name">Start a new world</strong>
+            <span id="title-world-meta">Create a player, choose a seed, and begin exploring.</span>
+          </div>
+          <button id="continue-world-button" class="mc-button primary title-primary" type="button" data-action="continue-world" hidden>
+            Enter World
+          </button>
+          <button id="title-start-button" class="mc-button primary title-secondary" type="button" data-action="goto-profiles">Create Your First World</button>
         </div>
-        <p class="menu-foot">Bend 2 engine core · one save per player</p>
+        <nav class="title-tools" aria-label="Game menu">
+          <button class="mc-button small" type="button" data-action="goto-options">Options</button>
+          <button class="mc-button small" type="button" data-action="goto-help">How to Play</button>
+        </nav>
+        <footer class="title-foot">
+          <span>Bend 2 world engine</span>
+          <span>Deterministic by design</span>
+        </footer>
       </div>
       <div class="menu-panel" id="screen-profiles" data-screen hidden>
         <h2>Who is playing?</h2>
@@ -230,11 +275,11 @@
         <label class="field">
           <span>Graphics API</span>
           <select id="input-renderer">
-            <option value="auto">Auto (WebGPU when available)</option>
+            <option value="auto">Auto (safe WebGL)</option>
             <option value="webgpu">WebGPU</option>
             <option value="webgl">WebGL fallback</option>
           </select>
-          <span class="field-hint">WebGPU accelerates presentation; Bend 2 browser evaluation remains sequential.</span>
+          <span class="field-hint">Auto uses the verified WebGL path; choose WebGPU explicitly to opt into the optional renderer.</span>
         </label>
         <div class="controls-grid" aria-label="Control remapping">
           <label class="field"><span>Sneak key</span><input id="input-control-sneak" type="text" maxlength="24" autocomplete="off"></label>
@@ -253,7 +298,7 @@
         <h2>How to Play</h2>
         <ul class="help-list">
           <li><strong>WASD</strong> move · <strong>Mouse</strong> look · <strong>Space</strong> jump · <strong>Shift</strong> sneak · <strong>Ctrl</strong> sprint</li>
-          <li><strong>Left click</strong> mine · <strong>Right click</strong> place · <strong>F</strong> attack (bow selected: shoot)</li>
+          <li><strong>Left click</strong> mine or attack the mob under the crosshair · <strong>Right click</strong> place · <strong>F</strong> attack (bow selected: shoot)</li>
           <li><strong>Shield</strong> selected blocks 2/3 of mob damage · <strong>Swords</strong> deal 4–7 damage</li>
           <li><strong>1–9</strong> hotbar · <strong>E</strong> inventory · <strong>R</strong> furnace</li>
           <li><strong>G</strong> eat · <strong>T</strong> trade · <strong>N</strong> sleep · <strong>Esc</strong> pause</li>
@@ -262,9 +307,13 @@
           <button class="mc-button primary" type="button" data-action="back-title-help">Done</button>
         </div>
       </div>
-      <div class="menu-panel" id="screen-loading" data-screen hidden>
-        <h2>Loading world...</h2>
-        <p class="field-hint">Generating chunks with Bend 2.</p>
+      <div class="menu-panel loading-panel" id="screen-loading" data-screen role="status" aria-live="polite" aria-busy="true" tabindex="-1" hidden>
+        <p class="loading-world-name" id="menu-loading-world-name">World selected</p>
+        <h2>Shaping the world</h2>
+        <div id="menu-loading-progress" class="loading-progress" role="progressbar" aria-label="Preparing world" aria-busy="true">
+          <span></span>
+        </div>
+        <p class="field-hint">Bend 2 is preparing terrain, light, and your first safe place to stand.</p>
       </div>
     </section>
   </main>

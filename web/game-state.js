@@ -223,7 +223,12 @@ export function overlapsPlayer(player, x, y, z) {
   );
 }
 
+export function isPlayerAlive(player) {
+  return PlayerDomain.alive(stateRaw(player));
+}
+
 export function applyDamage(player, amount) {
+  if (!isPlayerAlive(player)) return player.health;
   const raw = PlayerDomain.damage(stateRaw(player), amount);
   Object.assign(player, stateView(raw));
   PLAYER_STATES.set(player, raw);

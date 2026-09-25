@@ -1,6 +1,7 @@
 import Base
 import ./world.bend as World
 import ./player.bend as Player
+import ./world_state.bend as WorldState
 
 type Mob is Data:
   Mob{id: Nat, kind: U32, x: F32, y: F32, z: F32, heading_x: F32, heading_z: F32, health: F32, alive: Bool}
@@ -344,33 +345,214 @@ def step_budgeted(
         step_budgeted(tail, player_x, player_z, dt, active_radius)
       )
 
-def threat_damage(mobs: List<&2, Mob>, +player_x: F32, +player_z: F32) -> F32:
+# Melee threat is a world query, not a distance check. A hostile may only
+# damage a player it can actually see, and only from inside its attack cone.
+# The cone is wider for the brute so a heavy mob still connects off-axis while
+# a turning mob can no longer hit the player behind it.
+def attack_cone_cosine(+kind: U32) -> F32:
+  Bool.pick(F32, U32.is_eq(kind, 4), fraction(1, 6), fraction(1, 2))
+
+def facing_player(
+  +heading_x: F32, +heading_z: F32, +to_x: F32, +to_z: F32, +kind: U32
+) -> Bool:
+  +reach = F32.sqrt(F32.add(F32.mul(to_x, to_x), F32.mul(to_z, to_z)))
+  +overlapping = F32.is_lt(reach, fraction(1, 10))
+  +safe = Bool.pick(F32, F32.is_eq(reach, 0.0), 1.0, reach)
+  +alignment = F32.add(
+    F32.mul(heading_x, F32.div(to_x, safe)),
+    F32.mul(heading_z, F32.div(to_z, safe))
+  )
+  Bool.or(overlapping, F32.is_ge(alignment, attack_cone_cosine(kind)))
+
+# The eye ray runs above the feet so a one-block step under the target is not
+# mistaken for a wall; the endpoint cells are skipped so a body pressed against
+# a wall still resolves instead of becoming permanently invulnerable.
+def melee_eye() -> F32:
+  fraction(12, 10)
+
+# Face-adjacent bodies share a face, so no cell can sit strictly between them.
+# The fast path keeps the common melee case free; only a diagonal stand-off
+# pays for the ray.
+def line_of_sight.crosses_cell(
+  +start_x: Nat, +start_y: Nat, +start_z: Nat,
+  +end_x: Nat, +end_y: Nat, +end_z: Nat
+) -> Bool:
+  +dx = Nat.is_ne(start_x, end_x)
+  +dy = Nat.is_ne(start_y, end_y)
+  +dz = Nat.is_ne(start_z, end_z)
+  Bool.or(Bool.and(dx, Bool.or(dy, dz)), Bool.and(dy, dz))
+
+def line_of_sight.blocked(
+  +blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
+  +width: Nat, +height: Nat, +depth: Nat,
+  +cell_x: Nat, +cell_y: Nat, +cell_z: Nat,
+  +start_x: Nat, +start_y: Nat, +start_z: Nat,
+  +end_x: Nat, +end_y: Nat, +end_z: Nat
+) -> Bool:
+  +at_start = Bool.and(
+    Bool.and(Nat.is_eq(cell_x, start_x), Nat.is_eq(cell_y, start_y)),
+    Nat.is_eq(cell_z, start_z)
+  )
+  +at_end = Bool.and(
+    Bool.and(Nat.is_eq(cell_x, end_x), Nat.is_eq(cell_y, end_y)),
+    Nat.is_eq(cell_z, end_z)
+  )
+  +block = Player.region_block(blocks, origin_x, origin_y, origin_z, width, height, depth, cell_x, cell_y, cell_z)
+  Bool.and(Bool.not(Bool.or(at_start, at_end)), Player.solid(block))
+
+def line_of_sight.step(
+  +blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
+  +width: Nat, +height: Nat, +depth: Nat,
+  +from_x: F32, +from_y: F32, +from_z: F32,
+  +delta_x: F32, +delta_y: F32, +delta_z: F32, +denominator: F32, +index: Nat,
+  +start_x: Nat, +start_y: Nat, +start_z: Nat,
+  +end_x: Nat, +end_y: Nat, +end_z: Nat
+) -> Bool:
+  +t = F32.div(F32.add(U32.to_f32(U32.from_nat(index)), 1.0), denominator)
+  line_of_sight.blocked(
+    blocks, origin_x, origin_y, origin_z, width, height, depth,
+    Player.floor_nat(F32.add(from_x, F32.mul(delta_x, t))),
+    Player.floor_nat(F32.add(from_y, F32.mul(delta_y, t))),
+    Player.floor_nat(F32.add(from_z, F32.mul(delta_z, t))),
+    start_x, start_y, start_z, end_x, end_y, end_z
+  )
+
+def line_of_sight.hit(
+  +blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
+  +width: Nat, +height: Nat, +depth: Nat,
+  +from_x: F32, +from_y: F32, +from_z: F32,
+  +delta_x: F32, +delta_y: F32, +delta_z: F32, +denominator: F32, +index: Nat,
+  +start_x: Nat, +start_y: Nat, +start_z: Nat,
+  +end_x: Nat, +end_y: Nat, +end_z: Nat
+) -> Bool:
+  line_of_sight.step(blocks, origin_x, origin_y, origin_z, width, height, depth,
+    from_x, from_y, from_z, delta_x, delta_y, delta_z, denominator, index,
+    start_x, start_y, start_z, end_x, end_y, end_z)
+
+def line_of_sight.loop(
+  +remaining: Nat, hit: Bool,
+  +blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
+  +width: Nat, +height: Nat, +depth: Nat,
+  +from_x: F32, +from_y: F32, +from_z: F32,
+  +delta_x: F32, +delta_y: F32, +delta_z: F32, +denominator: F32, +index: Nat,
+  +start_x: Nat, +start_y: Nat, +start_z: Nat,
+  +end_x: Nat, +end_y: Nat, +end_z: Nat
+) -> Bool:
+  match remaining:
+    case 0n:
+      False{}
+    case 1n+p:
+      match hit:
+        case True{}:
+          True{}
+        case False{}:
+          line_of_sight.loop(p,
+            line_of_sight.hit(blocks, origin_x, origin_y, origin_z, width, height, depth,
+              from_x, from_y, from_z, delta_x, delta_y, delta_z, denominator, index,
+              start_x, start_y, start_z, end_x, end_y, end_z),
+            blocks, origin_x, origin_y, origin_z, width, height, depth,
+            from_x, from_y, from_z, delta_x, delta_y, delta_z, denominator,
+            Nat.add(index, 1n), start_x, start_y, start_z, end_x, end_y, end_z)
+
+# Eight samples keep the eye ray finer than a single cell across the whole
+# melee radius; the caller passes zero samples to skip the scan entirely.
+def line_of_sight(
+  +blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
+  +width: Nat, +height: Nat, +depth: Nat,
+  +mob_x: F32, +mob_y: F32, +mob_z: F32,
+  +player_x: F32, +player_y: F32, +player_z: F32,
+  +samples: Nat
+) -> Bool:
+  +eye = melee_eye()
+  +from_x = mob_x
+  +from_y = F32.add(mob_y, eye)
+  +from_z = mob_z
+  +to_x = player_x
+  +to_y = F32.add(player_y, eye)
+  +to_z = player_z
+  Bool.not(line_of_sight.loop(
+    samples, False{},
+    blocks, origin_x, origin_y, origin_z, width, height, depth,
+    from_x, from_y, from_z,
+    F32.sub(to_x, from_x), F32.sub(to_y, from_y), F32.sub(to_z, from_z),
+    U32.to_f32(U32.from_nat(Nat.add(samples, 1n))), 0n,
+    Player.floor_nat(from_x), Player.floor_nat(from_y), Player.floor_nat(from_z),
+    Player.floor_nat(to_x), Player.floor_nat(to_y), Player.floor_nat(to_z)
+  ))
+
+def threat_damage.cell(
+  +kind: U32, +heading_x: F32, +heading_z: F32, +alive: Bool,
+  +mob_x: F32, +mob_y: F32, +mob_z: F32,
+  region: Region, +player_x: F32, +player_y: F32, +player_z: F32, +offset: Nat
+) -> F32:
+  Region{+blocks, +origin_x, +origin_y, +origin_z, +width, +height, +depth} = region
+  +offset_f = U32.to_f32(U32.from_nat(offset))
+  +to_x = F32.sub(player_x, mob_x)
+  +to_y = F32.sub(player_y, mob_y)
+  +to_z = F32.sub(player_z, mob_z)
+  +distance = F32.sqrt(F32.add(F32.mul(to_x, to_x), F32.mul(to_z, to_z)))
+  +vertical_close = F32.is_lt(F32.abs(to_y), fraction(3, 2))
+  +close = Bool.and(F32.is_lt(distance, fraction(3, 2)), vertical_close)
+  +brute = Bool.and(U32.is_eq(kind, 4), alive)
+  +hostile = Bool.and(U32.is_eq(kind, 2), alive)
+  +here = Bool.pick(F32, brute, 4.0, Bool.pick(F32, hostile, 2.0, 0.0))
+  +contact = Bool.and(close, F32.is_gt(here, 0.0))
+  +facing = facing_player(heading_x, heading_z, to_x, to_z, kind)
+  +eye = melee_eye()
+  +crosses = line_of_sight.crosses_cell(
+    Player.floor_nat(F32.add(mob_x, offset_f)),
+    Player.floor_nat(F32.add(mob_y, eye)),
+    Player.floor_nat(F32.add(mob_z, offset_f)),
+    Player.floor_nat(F32.add(player_x, offset_f)),
+    Player.floor_nat(F32.add(player_y, eye)),
+    Player.floor_nat(F32.add(player_z, offset_f))
+  )
+  # Only a hostile that is in reach, in a diagonal, pays for the eye-ray scan.
+  +samples = Bool.pick(Nat, Bool.and(contact, crosses), 8n, 0n)
+  +visible = line_of_sight(
+    blocks, origin_x, origin_y, origin_z, width, height, depth,
+    F32.add(mob_x, offset_f), mob_y, F32.add(mob_z, offset_f),
+    F32.add(player_x, offset_f), player_y, F32.add(player_z, offset_f),
+    samples
+  )
+  choose_f32(Bool.and(contact, Bool.and(facing, visible)), here, 0.0)
+
+def threat_damage(
+  mobs: List<&2, Mob>, +player_x: F32, +player_y: F32, +player_z: F32,
+  +offset: Nat, +regions: List<&2, Region>
+) -> F32:
   match mobs:
     case Nil{}:
       0.0
     case Con{+head, tail}:
-      Mob{+id, +kind, +x, +y, +z, heading_x, heading_z, +health, +alive} = head
-      +dx = F32.sub(player_x, x)
-      +dz = F32.sub(player_z, z)
-      +distance = F32.sqrt(F32.add(F32.mul(dx, dx), F32.mul(dz, dz)))
-      +close = F32.is_lt(distance, fraction(3, 2))
-      +brute = Bool.and(U32.is_eq(kind, 4), alive)
-      +hostile = Bool.and(U32.is_eq(kind, 2), alive)
-      +here = Bool.pick(F32, brute, 4.0, Bool.pick(F32, hostile, 2.0, 0.0))
-      +local = choose_f32(Bool.and(close, F32.is_gt(here, 0.0)), here, 0.0)
-      +rest = threat_damage(tail, player_x, player_z)
-      choose_f32(F32.is_lt(local, rest), rest, local)
+      Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive} = head
+      match regions:
+        case Nil{}:
+          0.0
+        case Con{+region, rest}:
+          +local = threat_damage.cell(kind, heading_x, heading_z, alive, x, y, z, region, player_x, player_y, player_z, offset)
+          +rest_damage = threat_damage(tail, player_x, player_y, player_z, offset, rest)
+          choose_f32(F32.is_lt(local, rest_damage), rest_damage, local)
 
 def attack.go(
   mobs: List<&2, Mob>, +target_id: Nat, +damage: F32,
-  +from_x: F32, +from_z: F32, +drops: List<&2, Drop>
+  +from_x: F32, +from_y: F32, +from_z: F32, +max_range: F32,
+  +drops: List<&2, Drop>
 ) -> CombatResult:
   match mobs:
     case Nil{}:
       CombatResult{Nil{}, drops, False{}}
     case Con{+head, tail}:
       Mob{+id, +kind, +x, +y, +z, heading_x, heading_z, +health, +alive} = head
-      +target = Bool.and(Nat.is_eq(id, target_id), alive)
+      +from_dx = F32.sub(x, from_x)
+      +from_dy = F32.sub(y, from_y)
+      +from_dz = F32.sub(z, from_z)
+      +from_distance = F32.sqrt(F32.add(
+        F32.add(F32.mul(from_dx, from_dx), F32.mul(from_dy, from_dy)),
+        F32.mul(from_dz, from_dz)
+      ))
+      +in_range = F32.is_le(from_distance, max_range)
+      +target = Bool.and(Bool.and(Nat.is_eq(id, target_id), alive), in_range)
       +next_health = Bool.pick(F32, target, F32.sub(health, damage), health)
       +next_alive = Bool.pick(Bool, target, F32.is_gt(next_health, 0.0), alive)
       +killed = Bool.and(target, Bool.not(next_alive))
@@ -388,14 +570,94 @@ def attack.go(
         Bool.pick(F32, target, knock_z, z), next_heading_x, next_heading_z,
         next_health, next_alive
       )
-      +rest = attack.go(tail, target_id, damage, from_x, from_z, next_drops)
+      +rest = attack.go(tail, target_id, damage, from_x, from_y, from_z, max_range, next_drops)
       CombatResult{cons_mob(updated, combat_mobs(rest)), combat_drops(rest), Bool.or(target, combat_hit(rest))}
 
 def attack(
   +mobs: List<&2, Mob>, +target_id: Nat, +damage: F32,
-  +from_x: F32, +from_z: F32, +drops: List<&2, Drop>
+  +from_x: F32, +from_y: F32, +from_z: F32, +max_range: F32,
+  +drops: List<&2, Drop>
 ) -> CombatResult:
-  attack.go(mobs, target_id, damage, from_x, from_z, drops)
+  attack.go(mobs, target_id, damage, from_x, from_y, from_z, max_range, drops)
+
+def hostile_kind(+kind: U32, +alive: Bool) -> Bool:
+  Bool.and(alive, Bool.or(U32.is_eq(kind, 2), U32.is_eq(kind, 4)))
+
+def edit_opaque_above(
+  +edits: List<&2, WorldState.Edit>, +x: Nat, +z: Nat, +from_y: Nat
+) -> Bool:
+  match edits:
+    case Nil{}:
+      False{}
+    case Con{+head, tail}:
+      WorldState.Edit{+edit_x, +edit_y, +edit_z, +block} = head
+      +same_column = Bool.and(Nat.is_eq(edit_x, x), Nat.is_eq(edit_z, z))
+      +above = Nat.is_ge(edit_y, from_y)
+      +rest = edit_opaque_above(tail, x, z, from_y)
+      Bool.or(Bool.and(Bool.and(same_column, above), Player.solid(block)), rest)
+
+# Use the generated terrain height for the bulk sky query; only persistent
+# edits need a per-column scan, keeping the simulation tick independent of
+# world-generation cost for every mob.
+def sun_exposed(
+  +edits: List<&2, WorldState.Edit>, +seed: Nat, +x: F32, +y: F32, +z: F32
+) -> Bool:
+  +cell_x = Player.floor_nat(x)
+  +cell_y = Player.floor_nat(y)
+  +cell_z = Player.floor_nat(z)
+  +terrain_height = World.column_height(seed, cell_x, cell_z)
+  +above_terrain = Nat.is_ge(cell_y, terrain_height)
+  +generated_cover = Bool.and(
+    above_terrain,
+    Player.solid(World.generated_cover_above(seed, cell_x, cell_y, cell_z))
+  )
+  +edited_cover = edit_opaque_above(edits, cell_x, cell_z, cell_y)
+  Bool.and(above_terrain, Bool.not(Bool.or(generated_cover, edited_cover)))
+
+def sun_burning.hostile(
+  +hostile: Bool, +edits: List<&2, WorldState.Edit>, +seed: Nat,
+  +x: F32, +y: F32, +z: F32
+) -> Bool:
+  match hostile:
+    case False{}:
+      False{}
+    case True{}:
+      sun_exposed(edits, seed, x, y, z)
+
+def sun_burning(
+  +day: Bool, +kind: U32, +alive: Bool,
+  +edits: List<&2, WorldState.Edit>, +seed: Nat, +x: F32, +y: F32, +z: F32
+) -> Bool:
+  match day:
+    case False{}:
+      False{}
+    case True{}:
+      sun_burning.hostile(hostile_kind(kind, alive), edits, seed, x, y, z)
+
+def sunlight_damage.go(
+  +mobs: List<&2, Mob>, +edits: List<&2, WorldState.Edit>, +seed: Nat,
+  +daylight: F32, +dt: F32, +drops: List<&2, Drop>
+) -> CombatResult:
+  match mobs:
+    case Nil{}:
+      CombatResult{Nil{}, drops, False{}}
+    case Con{+head, tail}:
+      Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive} = head
+      +day = F32.is_gt(daylight, 0.5)
+      +burning = sun_burning(day, kind, alive, edits, seed, x, y, z)
+      +next_health = choose_f32(burning, F32.sub(health, F32.mul(dt, 1.0)), health)
+      +next_alive = Bool.pick(Bool, burning, F32.is_gt(next_health, 0.0), alive)
+      +killed = Bool.and(burning, Bool.not(next_alive))
+      +next_drops = Bool.pick(List<&2, Drop>, killed, cons_drop(drop_for(head), drops), drops)
+      +updated = make_mob_heading(id, kind, x, y, z, heading_x, heading_z, next_health, next_alive)
+      +rest = sunlight_damage.go(tail, edits, seed, daylight, dt, next_drops)
+      CombatResult{cons_mob(updated, combat_mobs(rest)), combat_drops(rest), Bool.or(burning, combat_hit(rest))}
+
+def sunlight_damage(
+  +mobs: List<&2, Mob>, +edits: List<&2, WorldState.Edit>, +seed: Nat,
+  +daylight: F32, +dt: F32, +drops: List<&2, Drop>
+) -> CombatResult:
+  sunlight_damage.go(mobs, edits, seed, daylight, dt, drops)
 
 def make_drop_target(id: Nat, item: U32, amount: U32) -> DropTarget:
   DropFound{id, item, amount}
@@ -466,7 +728,7 @@ def despawn(
     case Con{+head, tail}:
       Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive} = head
       +rest = despawn(tail, player_x, player_z, radius)
-      +gone = Bool.and(alive, far_away(x, z, player_x, player_z, radius))
+      +gone = far_away(x, z, player_x, player_z, radius)
       Bool.pick(List<&2, Mob>, gone, rest, cons_mob(head, rest))
 
 def count_alive(mobs: List<&2, Mob>, +total: Nat) -> Nat:

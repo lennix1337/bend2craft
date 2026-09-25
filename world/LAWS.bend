@@ -6,13 +6,13 @@ law air_above_surface:
   {World.block(1337n, 40n, 15n, 40n) == 0 : U32}
 
 law surface_is_grass:
-  {World.block(1337n, 8n, 7n, 8n) == 3 : U32}
+  {World.block(1337n, 20n, 8n, 20n) == 3 : U32}
 
 law known_tree_wood:
-  {World.block(1337n, 38n, 9n, 3n) == 5 : U32}
+  {World.block(1337n, 14n, 9n, 6n) == 5 : U32}
 
 law known_tree_leaf:
-  {World.block(1337n, 37n, 11n, 3n) == 4 : U32}
+  {World.block(1337n, 13n, 11n, 5n) == 4 : U32}
 
 law beach_is_sand:
   {World.block(1337n, 3n, 5n, 3n) == 6 : U32}

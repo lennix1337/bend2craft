@@ -1,30 +1,39 @@
 import { quadCorners } from "./greedy-mesh.js";
 import { atlasUV, blockFaceTileAt } from "./texture-atlas.js";
-import { litFaceColor } from "./material-lighting.js";
+import { TERRAIN_FACE_SHADES, litFaceColor } from "./material-lighting.js";
+import { WATER_DEPTH_MAX } from "./terrain-presentation.js";
 import {
-  SURFACE_MATERIAL_FIRE,
-  SURFACE_MATERIAL_LAVA,
-  SURFACE_MATERIAL_WATER,
+  isFireMaterial,
+  isLavaMaterial,
+  isWaterMaterial,
   surfaceMaterial,
+  waterMaterial,
 } from "./surface-materials.js";
 
-const FACE_SHADES = [1.0, 0.52, 0.82, 0.7, 0.92, 0.62];
 function blockColor(block, faceIndex, x, z, light, daylight) {
   const variation = (((x * 17 + z * 31) % 5) + 5) % 5 * 0.012;
   const top = block === 3 && faceIndex === 0;
-  const shade = FACE_SHADES[faceIndex] + (top ? variation : variation * 0.5);
+  const shade = TERRAIN_FACE_SHADES[faceIndex] + (top ? variation : variation * 0.5);
   return litFaceColor(faceIndex, daylight, light, shade);
+}
+
+function quadMaterial(quad) {
+  const material = surfaceMaterial(quad.block);
+  if (!isWaterMaterial(material)) return material;
+  // Water carries its sampled column depth in the material band.
+  return waterMaterial(Number(quad.waterDepthCells ?? 0) / WATER_DEPTH_MAX);
 }
 
 function appendQuad(layer, quad, daylight) {
   const color = blockColor(quad.block, quad.faceIndex, quad.x, quad.z, quad.light, daylight);
   const corners = quadCorners(quad);
-  const uv = atlasUV(blockFaceTileAt(quad.block, quad.faceIndex, quad.x, quad.z));
+  const tile = quad.tile ?? blockFaceTileAt(quad.block, quad.faceIndex, quad.x, quad.z);
+  const uv = atlasUV(tile);
   const tileRect = quad.faceIndex >= 2
     ? [uv[0], uv[5], uv[4], uv[1]]
     : [uv[0], uv[1], uv[4], uv[5]];
   const localUv = [[0, 0], [quad.width, 0], [quad.width, quad.height], [0, quad.height]];
-  const material = surfaceMaterial(quad.block);
+  const material = quadMaterial(quad);
   for (const cornerIndex of [0, 1, 2, 0, 2, 3]) {
     const corner = corners[cornerIndex];
     const ao = quad.ao?.[cornerIndex] ?? 1;
@@ -53,13 +62,10 @@ export function buildTerrainVertexArrays(quads, daylight = 1) {
   const opaque = { positions: [], colors: [], uvs: [], materials: [], tiles: [], quadCount: 0 };
   const water = { positions: [], colors: [], uvs: [], materials: [], tiles: [], quadCount: 0 };
   for (const quad of quads) {
-    const material = surfaceMaterial(quad.block);
-    const target = material === SURFACE_MATERIAL_WATER
-      || material === SURFACE_MATERIAL_LAVA
-      || material === SURFACE_MATERIAL_FIRE
+    const material = quadMaterial(quad);
+    const target = isWaterMaterial(material) || isLavaMaterial(material) || isFireMaterial(material)
       ? water
       : opaque;
     appendQuad(target, quad, daylight);
-  }
-  return { opaque: typedLayer(opaque), water: typedLayer(water) };
+  }  return { opaque: typedLayer(opaque), water: typedLayer(water) };
 }

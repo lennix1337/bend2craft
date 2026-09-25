@@ -538,6 +538,30 @@ assert.doesNotMatch(
   /the WebGPU mip chain needs an async readback to certify/,
   "the gate must no longer give up instead of awaiting",
 );
+// Contamination alone is not enough: a gate that builds the observed atlas and
+// its isolation reference with the same generator certifies a broken chain as
+// clean, which is what shipped a washed-out WebGPU scene. The chain has to be
+// checked against a reference computed a different way.
+assert.match(rendererSource, /certifyMipChainGenerator/);
+assert.match(rendererSource, /atlasBoxDownsample\(size, source, level\)/);
+assert.match(rendererSource, /the WebGPU mip chain does not match a box-filter reference/);
+assert.match(
+  rendererSource,
+  /if \(!chain\.matches\)[\s\S]*?return verdict;/,
+  "a chain that misses the reference must not be used",
+);
+assert.match(
+  rendererSource,
+  /createMipScratchTexture/,
+  "a texture cannot be sampled and rendered into, so the chain needs a scratch texture",
+);
+assert.match(rendererSource, /copyTextureToTexture/);
+assert.match(
+  rendererSource,
+  /minFilter: "linear"/,
+  "an uncertified atlas must still get linear minification within the base level",
+);
+assert.match(rendererSource, /mipmapFilter: atlasMipmapVerdict\.safe \? "linear" : "nearest"/);
 // The readback has to report the frame the caller asked for, in the caller's
 // orientation and channel order, or a scene probe scores the wrong pixels.
 assert.match(rendererSource, /readbackRowTop\(canvas\.height, bottom, pixelHeight\)/);

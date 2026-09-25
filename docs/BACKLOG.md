@@ -45,6 +45,7 @@ Status markers:
 
 - [x] Chunk streaming keeps desired/active/pending state separate and supports render distances 2–6.
 - [x] Edited blocks, entities and simulation state are persisted in the seed-scoped save.
+- [ ] Fix the WebGPU atlas mip generator, then enable the chain. WebGPU has no `generateMipmap`, so each level is written by hand. The current implementation renders each level while sampling the same texture, which WebGPU forbids, so the levels stay zero-initialized and the chain misses the box-filter reference by a max delta of 255. The gate detects this and refuses the chain, so WebGPU currently samples the base level with linear minification. The ping-pong version through a scratch texture is in place; the remaining work is making the downsample match `atlasBoxDownsample`. Measured cost of shipping the broken chain: mean per-pixel delta against WebGL rises from 1.43 to 41.77, with 76% of pixels differing by more than 8.
 - [~] Larger `max_y`: the current world remains at `20`; benchmark and decide a larger height without regressing browser frame time.
 - [~] Finalize a reproducible save/load chunk benchmark and p95/p99 streaming budget on target hardware; default render distance 2 is the smooth baseline, while distance 6 remains an explicit stress setting.
 

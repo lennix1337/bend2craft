@@ -29,6 +29,44 @@ export function atlasMipLevelGeometry(gutter, tileSize, level) {
   return { interior, padding, size: interior + 2 * padding, factor };
 }
 
+/**
+ * Reference mip level, produced by repeated 2x2 box averaging on the CPU.
+ *
+ * WebGL builds its chain with the driver's `generateMipmap`. WebGPU has no
+ * equivalent, so the renderer has to write each level itself, and a hand-written
+ * downsample can be subtly wrong in a way that only shows up as a washed-out
+ * scene. This reference is the definition of a correct chain, computed a
+ * completely different way, so comparing against it can actually fail.
+ */
+export function atlasBoxDownsample(size, pixels, level) {
+  let current = pixels;
+  let currentSize = Math.max(1, Math.trunc(Number(size) || 0));
+  for (let step = 0; step < Math.max(0, Math.trunc(Number(level) || 0)); step += 1) {
+    const nextSize = Math.max(1, currentSize >> 1);
+    const next = new Uint8Array(nextSize * nextSize * 4);
+    for (let y = 0; y < nextSize; y += 1) {
+      for (let x = 0; x < nextSize; x += 1) {
+        for (let channel = 0; channel < 4; channel += 1) {
+          let sum = 0;
+          let count = 0;
+          for (let dy = 0; dy < 2; dy += 1) {
+            for (let dx = 0; dx < 2; dx += 1) {
+              const sx = Math.min(currentSize - 1, x * 2 + dx);
+              const sy = Math.min(currentSize - 1, y * 2 + dy);
+              sum += current[(sy * currentSize + sx) * 4 + channel];
+              count += 1;
+            }
+          }
+          next[(y * nextSize + x) * 4 + channel] = Math.round(sum / count);
+        }
+      }
+    }
+    current = next;
+    currentSize = nextSize;
+  }
+  return { size: currentSize, pixels: current };
+}
+
 /** Top-left pixel of a tile's padded cell inside the atlas. */
 export function atlasCellOrigin(tile) {
   const id = Math.max(0, Math.min(ATLAS_CAPACITY - 1, Math.trunc(Number(tile)) || 0));

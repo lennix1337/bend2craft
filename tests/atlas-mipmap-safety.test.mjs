@@ -8,6 +8,7 @@ import {
   ATLAS_TILE_SIZE,
   ATLAS_TILE_STRIDE,
   atlasCellOrigin,
+  atlasBoxDownsample,
   atlasMipLevelGeometry,
   atlasTileUV,
   atlasUV,
@@ -44,6 +45,61 @@ for (let tile = 0; tile < ATLAS_COLUMNS * ATLAS_ROWS; tile += 1) {
     assert.equal(gap, 2 * ATLAS_TILE_GUTTER, "a tile must be followed by a full gutter");
   }
 }
+
+// The reference mip chain is what makes a hand-written WebGPU downsample
+// checkable at all: the WebGL path uses the driver's `generateMipmap`, and a
+// gate that builds both sides with its own generator certifies a broken chain
+// as clean. These tests pin the reference itself.
+const ramp = new Uint8Array(atlasWidth * atlasHeight * 4);
+for (let index = 0; index < atlasWidth * atlasHeight; index += 1) {
+  ramp[index * 4] = index % 256;
+  ramp[index * 4 + 1] = (index * 7) % 256;
+  ramp[index * 4 + 2] = (index * 13) % 256;
+  ramp[index * 4 + 3] = 255;
+}
+const chainZero = atlasBoxDownsample(atlasWidth, ramp, 0);
+assert.equal(chainZero.size, atlasWidth, "level zero is the source");
+assert.deepEqual([...chainZero.pixels.subarray(0, 16)], [...ramp.subarray(0, 16)]);
+
+const chainOne = atlasBoxDownsample(atlasWidth, ramp, 1);
+assert.equal(chainOne.size, atlasWidth / 2);
+assert.equal(chainOne.pixels.length, (atlasWidth / 2) * (atlasWidth / 2) * 4);
+// Every output texel is the mean of exactly the 2x2 block above it.
+for (let y = 0; y < 4; y += 1) {
+  for (let x = 0; x < 4; x += 1) {
+    for (let channel = 0; channel < 3; channel += 1) {
+      let sum = 0;
+      for (let dy = 0; dy < 2; dy += 1) {
+        for (let dx = 0; dx < 2; dx += 1) {
+          sum += ramp[((y * 2 + dy) * atlasWidth + (x * 2 + dx)) * 4 + channel];
+        }
+      }
+      assert.equal(
+        chainOne.pixels[(y * chainOne.size + x) * 4 + channel],
+        Math.round(sum / 4),
+        `level 1 texel ${x},${y} channel ${channel} must be the 2x2 mean`,
+      );
+    }
+  }
+}
+// Repeated 2x2 averaging is the same as one pass, so the chain has to be
+// self-consistent rather than drifting a little at every level.
+const chainTwo = atlasBoxDownsample(atlasWidth, ramp, 2);
+assert.equal(chainTwo.size, atlasWidth / 4);
+const chainTwoFromOne = atlasBoxDownsample(chainOne.size, chainOne.pixels, 1);
+assert.equal(maxChannelDelta(chainTwo.pixels, chainTwoFromOne.pixels), 0,
+  "a level must not depend on whether it was reached in one pass or two");
+// A flat atlas must stay flat all the way down, or the chain is inventing detail.
+const flat = new Uint8Array(atlasWidth * atlasHeight * 4).fill(90);
+for (let level = 1; level <= 4; level += 1) {
+  const flatLevel = atlasBoxDownsample(atlasWidth, flat, level);
+  for (let index = 0; index < flatLevel.pixels.length; index += 4) {
+    assert.equal(flatLevel.pixels[index], 90, `level ${level} must not lift a flat atlas`);
+    assert.equal(flatLevel.pixels[index + 1], 90);
+    assert.equal(flatLevel.pixels[index + 2], 90);
+  }
+}
+assert.equal(atlasBoxDownsample(0, new Uint8Array(0), 0).size, 1, "an empty input must not divide by zero");
 
 // Sampling must inset by the gutter so linear filtering cannot reach the
 // neighbouring material even at the tile's own edge.

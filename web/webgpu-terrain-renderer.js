@@ -13,6 +13,7 @@ import {
   ATLAS_TEXTURES,
   ATLAS_WIDTH,
   ATLAS_COLUMNS,
+  atlasBoxDownsample,
   atlasCellOrigin,
   atlasMipLevelGeometry,
   foreignTileContamination,
@@ -97,6 +98,9 @@ const TEXTURE_USAGE = {
 };
 const SHADER_STAGE = { VERTEX: 0x1, FRAGMENT: 0x2 };
 const FRAME_UNIFORM_BYTES = 224;
+// An rgba8 round trip through a box filter rounds by at most one step, so a
+// correct chain lands inside this; anything larger is a real generator bug.
+const MIP_CHAIN_TOLERANCE = 2;
 
 export const WEBGPU_TERRAIN_SHADER = `
 struct Frame {
@@ -459,9 +463,18 @@ async function certifyAtlasMipmapsOnGpu(device, canvas) {
     return verdict;
   }
   try {
-    return await probeAtlasMipmapGpu(
+    const chain = await certifyMipChainGenerator(device, observed, canvas.width, source);
+    if (!chain.matches) {
+      // The chain is wrong, so contamination is beside the point: keep the atlas
+      // un-mipmapped rather than sample a broken level.
+      verdict.mipChain = chain;
+      verdict.reason = `the WebGPU mip chain does not match a box-filter reference (max delta ${chain.maxDelta} > ${chain.tolerance})`;
+      return verdict;
+    }
+    const probed = await probeAtlasMipmapGpu(
       device, observed, canvas.width, mipLevelCount, source, levels, verdict, probeTiles,
     );
+    return { ...probed, mipChain: chain };
   } catch (error) {
     verdict.reason = `the WebGPU atlas certification failed: ${String(error).slice(0, 160)}`;
     return verdict;
@@ -538,42 +551,65 @@ async function probeAtlasMipmapGpu(
 }
 
 async function readAtlasCell(device, texture, cell, geometry, level) {
-  const factor = 2 ** level;
   const origin = atlasCellOrigin(cell.tile);
+  const factor = 2 ** level;
   // `geometry.size` is already the whole padded cell at this level, so the cell
   // starts at the scaled cell origin with no extra gutter inset.
   const x = Math.floor(origin.x / factor);
   const y = Math.floor(origin.y / factor);
-  const stride = bytesPerRow(geometry.size);
+  const region = await readTextureRegion(device, texture, level, x, y, geometry.size, geometry.size);
+  return region.pixels;
+}
+/** Copy a rectangular region of one mip level and return it tightly packed. */
+async function readTextureRegion(device, texture, level, x, y, width, height) {
+  const stride = bytesPerRow(width);
   const buffer = device.createBuffer({
-    size: stride * geometry.size,
+    size: stride * height,
     usage: bufferUsage("MAP_READ") | bufferUsage("COPY_DST"),
   });
   try {
     const encoder = device.createCommandEncoder();
     encoder.copyTextureToBuffer(
       { texture, mipLevel: level, origin: { x, y, z: 0 } },
-      { buffer, bytesPerRow: stride, rowsPerImage: geometry.size },
-      { width: geometry.size, height: geometry.size, depthOrArrayLayers: 1 },
+      { buffer, bytesPerRow: stride, rowsPerImage: height },
+      { width, height, depthOrArrayLayers: 1 },
     );
     device.queue.submit([encoder.finish()]);
     await buffer.mapAsync(mapMode());
     const mapped = new Uint8Array(buffer.getMappedRange());
-    const rowBytes = geometry.size * 4;
-    const pixels = new Uint8Array(rowBytes * geometry.size);
-    for (let row = 0; row < geometry.size; row += 1) {
+    const rowBytes = width * 4;
+    const pixels = new Uint8Array(rowBytes * height);
+    for (let row = 0; row < height; row += 1) {
       pixels.set(mapped.subarray(row * stride, row * stride + rowBytes), row * rowBytes);
     }
     buffer.unmap();
-    return pixels;
+    return { width, height, pixels };
   } finally {
     buffer.destroy();
   }
 }
 
+// The contamination probe builds both the observed atlas and its isolation
+// reference with the same generator, so a generator bug cancels out and the
+// chain is certified as clean while the scene renders wrong. This compares the
+// chain against a CPU box filter computed a different way, which can fail.
+async function certifyMipChainGenerator(device, texture, size, source) {
+  const level = 1;
+  const half = Math.max(1, size >> 1);
+  const observed = await readTextureRegion(device, texture, level, 0, 0, half, half);
+  const expected = atlasBoxDownsample(size, source, level);
+  const delta = maxChannelDelta(observed.pixels, expected.pixels);
+  return {
+    level,
+    matches: delta <= MIP_CHAIN_TOLERANCE,
+    maxDelta: delta,
+    tolerance: MIP_CHAIN_TOLERANCE,
+  };
+}
+
 // The atlas is a padded, power-of-two image, so it can take a mip chain like the
-// WebGL path. Mipmaps are only generated once the atlas has been certified free
-// of foreign tile contamination.
+// WebGL path. The chain is only generated once the atlas has been certified free
+// of foreign tile contamination and its levels match a box-filter reference.
 function createAtlasTexture(device, canvas, mipmapSafe) {
   if (canvas === null || canvas === undefined) return createDefaultAtlas(device);
   const mipLevelCount = mipmapSafe
@@ -583,7 +619,10 @@ function createAtlasTexture(device, canvas, mipmapSafe) {
     size: [canvas.width, canvas.height, 1],
     format: "rgba8unorm",
     mipLevelCount,
-    usage: textureUsage("TEXTURE_BINDING") | textureUsage("COPY_DST") | textureUsage("RENDER_ATTACHMENT"),
+    // COPY_SRC/COPY_DST are what let the generated chain be copied into the
+    // levels, since a texture cannot be sampled and rendered into at once.
+    usage: textureUsage("TEXTURE_BINDING") | textureUsage("COPY_DST")
+      | textureUsage("COPY_SRC") | textureUsage("RENDER_ATTACHMENT"),
   });
   device.queue.copyExternalImageToTexture(
     { source: canvas },
@@ -621,18 +660,31 @@ function generateAtlasMipmaps(device, texture, mipLevelCount) {
     addressModeU: "clamp-to-edge",
     addressModeV: "clamp-to-edge",
   });
+  // Level 0 already holds the atlas, so the chain is built by sampling it into a
+  // scratch texture per level and copying the result back.
+  let previous = createMipScratchTexture(device, texture.width);
+  {
+    const encoder = device.createCommandEncoder();
+    encoder.copyTextureToTexture(
+      { texture },
+      { texture: previous },
+      { width: previous.width, height: previous.height, depthOrArrayLayers: 1 },
+    );
+    device.queue.submit([encoder.finish()]);
+  }
   for (let level = 1; level < size; level += 1) {
+    const target = createMipScratchTexture(device, Math.max(1, texture.width >> level));
     const bindGroup = device.createBindGroup({
       layout: pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: sampler },
-        { binding: 1, resource: texture.createView({ baseMipLevel: level - 1, mipLevelCount: 1 }) },
+        { binding: 1, resource: previous.createView() },
       ],
     });
     const encoder = device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
-        view: texture.createView({ baseMipLevel: level, mipLevelCount: 1 }),
+        view: target.createView(),
         loadOp: "clear",
         storeOp: "store",
         clearValue: { r: 0, g: 0, b: 0, a: 0 },
@@ -642,8 +694,28 @@ function generateAtlasMipmaps(device, texture, mipLevelCount) {
     pass.setBindGroup(0, bindGroup);
     pass.draw(3, 1, 0, 0);
     pass.end();
+    // The downsample has to land in the chain, but a texture cannot be sampled
+    // and rendered into at the same time, so each level is built in its own
+    // texture and copied in afterwards.
+    encoder.copyTextureToTexture(
+      { texture: target },
+      { texture, mipLevel: level },
+      { width: target.width, height: target.height, depthOrArrayLayers: 1 },
+    );
     device.queue.submit([encoder.finish()]);
+    previous?.destroy?.();
+    previous = target;
   }
+  previous?.destroy?.();
+}
+
+function createMipScratchTexture(device, size) {
+  return device.createTexture({
+    size: [Math.max(1, size), Math.max(1, size), 1],
+    format: "rgba8unorm",
+    usage: textureUsage("TEXTURE_BINDING") | textureUsage("RENDER_ATTACHMENT")
+      | textureUsage("COPY_SRC") | textureUsage("COPY_DST"),
+  });
 }
 
 const ATLAS_MIPMAP_WGSL = `
@@ -846,9 +918,10 @@ export async function createWebGpuTerrainRenderer({
   }
   const atlasSampler = device.createSampler({
     magFilter: "linear",
-    // Minification only sees the mip chain when the atlas was certified, so
-    // the filter has to match whether one exists.
-    minFilter: atlasMipmapVerdict.safe ? "linear" : "nearest",
+    // Minification filters within the base level whether or not a chain exists.
+    // Only the mip filter has to follow the chain, so an uncertified atlas still
+    // gets linear minification instead of dropping to nearest.
+    minFilter: "linear",
     mipmapFilter: atlasMipmapVerdict.safe ? "linear" : "nearest",
     addressModeU: "clamp-to-edge",
     addressModeV: "clamp-to-edge",

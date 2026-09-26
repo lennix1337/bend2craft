@@ -89,9 +89,11 @@ TESTS=(
   tests/boot-resilience.test.mjs
 )
 
-declare -A LISTED_TESTS=()
+# A newline-delimited set keeps this membership check working on the bash 3.2
+# that ships with macOS, which has no associative arrays.
+LISTED_TESTS=$'\n'
 for test_file in "${TESTS[@]}"; do
-  LISTED_TESTS["$test_file"]=1
+  LISTED_TESTS+="$test_file"$'\n'
   if [[ ! -f "$ROOT/$test_file" ]]; then
     printf 'Listed test does not exist: %s\n' "$test_file" >&2
     exit 1
@@ -100,10 +102,13 @@ done
 
 while IFS= read -r discovered; do
   [[ -z "$discovered" ]] && continue
-  if [[ -z "${LISTED_TESTS[$discovered]+x}" ]]; then
-    printf 'Test file is not registered in scripts/test-suite.sh: %s\n' "$discovered" >&2
-    exit 1
-  fi
+  case "$LISTED_TESTS" in
+    *$'\n'"$discovered"$'\n'*) ;;
+    *)
+      printf 'Test file is not registered in scripts/test-suite.sh: %s\n' "$discovered" >&2
+      exit 1
+      ;;
+  esac
 done < <(cd "$ROOT" && printf '%s\n' tests/*.test.mjs | sort)
 
 printf 'Running %d tests\n' "${#TESTS[@]}"

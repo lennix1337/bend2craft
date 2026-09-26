@@ -33,13 +33,14 @@ Start here:
 ## Toolchain
 
 - Bend 2 is pinned as the `vendor/bend` submodule.
-- On Windows, run the toolchain inside WSL.
+- On Windows, run the toolchain inside WSL. On macOS and Linux it runs natively; keep scripts portable to the bash 3.2 that macOS ships, so no bash 4+ builtin (`declare -A`, `mapfile`, `readarray`) and no Linux-only binary such as `setsid`.
 - Bun is preferred from `.tools/bun/bin/bun`; `scripts/run-bun.sh` selects it automatically.
 - `vendor/bend` is upstream code. Do not edit it for application features.
 
 ## Required checks
 
-Run from WSL at the repository root:
+Run at the repository root, from WSL on Windows and from a normal shell on macOS
+or Linux:
 
 ```bash
 npm run verify       # all Bend, proof, test, build and diff checks

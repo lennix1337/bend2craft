@@ -42,8 +42,13 @@ if curl --max-time 2 -fsS "$BASE_URL/" -o "$INDEX_FILE" 2>/dev/null; then
   exit 0
 fi
 
-setsid bash "$ROOT/scripts/run-bun.sh" "$ROOT/scripts/dev-server.ts" >"$LOG_FILE" 2>&1 &
+# Job control gives the server its own process group, so the group kill in
+# cleanup() below reaps it with anything it spawned. This is a bash builtin,
+# which keeps the script working on macOS, where setsid is not available.
+set -m
+bash "$ROOT/scripts/run-bun.sh" "$ROOT/scripts/dev-server.ts" >"$LOG_FILE" 2>&1 &
 SERVER_PID=$!
+set +m
 
 for attempt in $(seq 1 30); do
   if curl --max-time 2 -fsS "$BASE_URL/" -o "$INDEX_FILE" 2>/dev/null; then

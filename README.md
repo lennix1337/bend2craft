@@ -149,7 +149,10 @@ The reproducible `bench:light` run compares dirty-cell patches with full light-c
 
 Removing an opaque block now sends a compact 20-cell vertical column through the Bend2 edit-aware light patch, so sky light reaches the newly opened cell and the blocks below it without rebuilding a full light chunk. The final benchmark measured the edit-aware column patch at `4.1–7.0 ms` versus `160.3–200.7 ms` for the old `421`-cell plane, and `browser:lighting-smoke` verified a surface grass block changing from light `0` to `15` after mining.
 
-## Windows + WSL setup
+## Setup
+
+The toolchain runs on Windows through WSL, and natively on macOS and Linux. All
+three use the same pinned `vendor/bend` submodule and the same project-local Bun.
 
 Clone the repository with its submodule:
 
@@ -158,7 +161,13 @@ git clone --recurse-submodules https://github.com/lennix1337/bend2craft.git
 cd bend2craft
 ```
 
-Install Bun into the project-local WSL tool directory when needed:
+If you cloned without `--recurse-submodules`, populate it once:
+
+```bash
+git submodule update --init --recursive
+```
+
+Install Bun into the project-local tool directory when needed:
 
 ```bash
 export BUN_INSTALL="$PWD/.tools/bun"
@@ -167,9 +176,31 @@ curl -fsSL https://bun.sh/install | bash
 
 The project scripts automatically prefer `.tools/bun/bin/bun`.
 
+### macOS
+
+macOS needs no WSL, but two stock details differ from Linux:
+
+- The system `bash` is 3.2. The repository scripts are written to run on it, so
+  nothing else is required.
+- `scripts/dev-smoke.sh` puts the dev server in its own process group with the
+  bash `set -m` builtin instead of `setsid`, which macOS does not ship.
+
+To build and play, double-click `Play-Bend2Craft.command`, or run it directly:
+
+```bash
+./Play-Bend2Craft.command            # build, serve and open the browser
+./Play-Bend2Craft.command --no-open  # build and serve without opening a browser
+```
+
+It builds the current bundle, fails closed if the build is missing or invalid,
+serves with browser caching disabled, and opens the browser only after the port
+is listening. `npm run build` followed by `node scripts/play-server.mjs --open`
+does the same thing by hand.
+
 ## Commands
 
-Run these commands from WSL at the repository root:
+Run these commands at the repository root, from WSL on Windows and from a normal
+shell on macOS or Linux:
 
 ```bash
 npm run verify       # all Bend, proof, test, build and diff checks
@@ -186,9 +217,9 @@ npm run browser:streaming-smoke # measure radius-six chunk hydration and mesh re
 npm run build        # clean dist/ and create the current static bundle
 ```
 
-On Windows, double-click `Jogar-Bend2Craft.bat`. It builds the current bundle through WSL before serving, fails closed if the build is missing or invalid, serves with browser caching disabled, and opens the browser only after port `8080` is listening. Use `Jogar-Bend2Craft.bat --no-open` when launching manually.
+On Windows, double-click `Jogar-Bend2Craft.bat`. It builds the current bundle through WSL before serving, fails closed if the build is missing or invalid, serves with browser caching disabled, and opens the browser only after port `8080` is listening. Use `Jogar-Bend2Craft.bat --no-open` when launching manually. On macOS, `Play-Bend2Craft.command` is the equivalent and builds natively instead of through WSL.
 
-Open the URL printed by Bun in a Windows browser.
+Open the URL printed by the launcher in your browser.
 
 ## Development workflow
 

@@ -75,9 +75,8 @@ import {
   waterCurrentPush,
 } from "./game-state.js";
 import { createChunkedWorld } from "./chunk-world.js";
-import { quadCorners } from "./greedy-mesh.js";
 import { canPatchHiddenTerrain, quadContainsCell } from "./terrain-edit-visibility.js";
-import { dropBoxes, faceYaw, mobBoxes, villagerBoxes } from "./mob-models.js";
+import { MOB_BODY, dropBoxes, faceYaw, mobBoxes, villagerBoxes } from "./mob-models.js";
 import { createAsyncChunkMeshCache, shouldPublishMeshSnapshot } from "./mesh-cache.js";
 import { createMeshRebuildScheduler } from "./mesh-rebuild-scheduler.js";
 import { villagerEditsChanged } from "./villager-simulation.js";
@@ -98,23 +97,76 @@ import { characterRenderDescriptor, heldItemPose } from "./character-view.js";
 import { cameraMotion } from "./visual-motion.js";
 import { cameraFov } from "./camera.js";
 import { firstAimedMob } from "./aim.js";
-import { createAudioMixer } from "./audio.js";
+import { getAudioMixer } from "./audio.js";
 import { createFrameMetrics, framePercentiles, formatDebugText, sampleFrame } from "./frame-metrics.js";
 import { CLOUD_TEXTURE_SIZE, createCloudTextureData } from "./cloud-texture.js";
 import { entityShadow } from "./entity-shadow.js";
 import { drawFirstPersonOverlay } from "./first-person-overlay.js";
 import { nextFocusTarget, setShellInert } from "./modal-focus.js";
 import { furnaceControlHidden } from "./hud-visibility.js";
-import { TERRAIN_FACE_SHADES, litEntityFaceColor, litFaceColor } from "./material-lighting.js";
+import {
+  FACE_NORMALS,
+  quadCorners,
+} from "./greedy-mesh.js";
+import {
+  TERRAIN_FACE_SHADES,
+  blockLightLevel,
+  cornerOcclusion,
+  faceColorGrade,
+  litEntityFaceColor,
+} from "./material-lighting.js";
 import { createMiningState, miningStateMatches } from "./mining-controller.js";
 import { miningProgress } from "./mining-progress.js";
 import {
+  CLOUD_MAX_STEPS,
+  SHADOW_MAX_TAPS,
   WEBGL_SKY_FALLBACK_FRAGMENT_SHADER,
-  WEBGL_SKY_FRAGMENT_SHADER,
   WEBGL_SKY_VERTEX_SHADER,
+  WEBGL_TERRAIN_FALLBACK_FRAGMENT_SHADER,
+  WEBGL_TERRAIN_FALLBACK_VERTEX_SHADER,
+  createWebglSkyFragmentShader,
   createWebglTerrainShaderSources,
   isSoftwareRenderer,
 } from "./webgl-shaders.js";
+import {
+  SHADOW_FADE_END,
+  SHADOW_FADE_START,
+  SHADOW_FLOOR,
+  SHADOW_RADIUS,
+  createSunShadowPass,
+  createVogelDiskTexture,
+  fitSunShadowMatrix,
+} from "./webgl-shadow.js";
+import { createPostPipeline } from "./webgl-post.js";
+import {
+  appendVfxQuads,
+  createVfx,
+  emitBlockDebris,
+  emitDeathPuff,
+  emitFlame,
+  emitImpact,
+  emitSmoke,
+  emitSparkle,
+  hexToRgb,
+} from "./vfx.js";
+import { cross, dot, lookAt, multiply4, normalize, perspective, transformPoint } from "./gl-matrix.js";
+import {
+  AMBIENT_DESATURATION,
+  AMBIENT_STRENGTH,
+  BUMP_STRENGTH,
+  DETAIL_SCALE,
+  DETAIL_STRENGTH,
+  CLOUD_COVERAGE,
+  CLOUD_WIND_SPEED,
+  GROUND_BOUNCE,
+  SUN_INTENSITY,
+  WATER_DETAIL_STRENGTH,
+} from "./terrain-presentation.js";
+import {
+  createVisualQualityController,
+  parseVisualQuality,
+  VISUAL_QUALITY_TIERS,
+} from "./visual-quality.js";
 import { concatFloat32Arrays } from "./vertex-buffer-compose.js";
 import { skyPalette } from "./sky-palette.js";
 import { decodeSave } from "./save-state.js";
@@ -137,9 +189,16 @@ import {
   touchProfile,
   touchWorld,
 } from "./profiles.js";
-import { loadOptions, normalizeWorldMode, runtimeRendererMode, worldModeLabel } from "./settings.js";
+import {
+  audioVolumesFromOptions,
+  loadOptions,
+  normalizeWorldMode,
+  runtimeRendererMode,
+  worldModeLabel,
+} from "./settings.js";
 import { createWorkerScheduler } from "./worker-scheduler.js";
 import { chooseRenderer, probeWebGpu, withTimeout } from "./webgpu-capabilities.js";
+import { reportBackendFailureAndReturnToMenu } from "./backend-notice.js";
 import { createWebGpuTerrainRenderer } from "./webgpu-terrain-renderer.js";
 
 const canvas = document.getElementById("game");
@@ -344,22 +403,38 @@ let skyProgram;
 let skyPositionBuffer;
 let positionBuffer;
 let colorBuffer;
+let terrainLightBuffer;
+let terrainNormalBuffer;
 let uvBuffer;
 let terrainMaterialBuffer;
 let waterPositionBuffer;
 let waterColorBuffer;
+let waterLightBuffer;
+let waterNormalBuffer;
 let waterUvBuffer;
 let waterMaterialBuffer;
 let waterTileBuffer;
 let dynamicPositionBuffer;
 let dynamicColorBuffer;
+let dynamicLightBuffer;
+let dynamicNormalBuffer;
 let dynamicUvBuffer;
 let dynamicTileBuffer;
 let shadowPositionBuffer;
 let shadowColorBuffer;
+let shadowLightBuffer;
+let shadowNormalBuffer;
 let shadowUvBuffer;
+let vfxPositionBuffer;
+let vfxColorBuffer;
+let vfxLightBuffer;
+let vfxNormalBuffer;
+let vfxUvBuffer;
+let vfxTileBuffer;
 let positionLocation;
 let colorLocation;
+let lightLocation;
+let normalLocation;
 let uvLocation;
 let materialLocation;
 let tileLocation;
@@ -373,6 +448,7 @@ let terrainSunColorLocation;
 let atlasLocation;
 let terrainCloudMapLocation;
 let shadowPassLocation;
+let vfxPassLocation;
 let miningProgressLocation;
 let skyPositionLocation;
 let skyCameraForwardLocation;
@@ -386,18 +462,60 @@ let skyAspectLocation;
 let skyTanHalfFovLocation;
 let skyDaylightLocation;
 let skyTimeLocation;
-let skyCloudMapLocation;
+let skyCloudStepsLocation;
+let skyCloudLightStepsLocation;
+let skyCloudCoverageLocation;
+let skyWindSpeedLocation;
+let skyCameraPositionLocation;
+let terrainGroundBounceLocation;
+let terrainSunIntensityLocation;
+let terrainAmbientStrengthLocation;
+let terrainAmbientDesaturationLocation;
+let terrainBumpStrengthLocation;
+let terrainDetailStrengthLocation;
+let terrainDetailScaleLocation;
+let terrainWaterDetailLocation;
+let terrainCameraPositionLocation;
+let terrainNearLocation;
+let terrainFarLocation;
+let terrainSceneDepthLocation;
+// The terrain samplers. The unit a texture is *bound* to and the unit the shader
+// *reads* from are two separate pieces of state, and a sampler left at its
+// default of 0 silently reads whatever is on unit 0. Writing the numbers in one
+// place and using them for both is the only way they cannot drift apart.
+const TERRAIN_TEXTURE_UNIT = Object.freeze({
+  atlas: 0,
+  cloudMap: 1,
+  shadowMap: 2,
+  shadowDisk: 3,
+  sceneDepth: 4,
+});
+let shadowMapLocation;
+let shadowDiskLocation;
+let lightViewProjectionLocation;
+let shadowTexelSizeLocation;
+let shadowRadiusLocation;
+let shadowFadeLocation;
+let shadowStrengthLocation;
+let shadowTapsLocation;
+let shadowFloorLocation;
+let postPipeline = null;
+let shadowPass = null;
+let shadowDiskTexture = null;
+let shadowFallbackTexture = null;
+let visualQuality = null;
 let terrainVertexCount = 0;
 let waterVertexCount = 0;
 let dynamicVertexCount = 0;
 let shadowVertexCount = 0;
+let vfxVertexCount = 0;
 let terrainQuadCount = 0;
 let waterQuadCount = 0;
 let dynamicQuadCount = 0;
 let shadowQuadCount = 0;
 let horizonMesh = {
-  opaque: { positions: [], colors: [], uvs: [], tiles: [], materials: [], quadCount: 0 },
-  water: { positions: [], colors: [], uvs: [], materials: [], tiles: [], quadCount: 0 },
+  opaque: { positions: [], colors: [], lights: [], normals: [], uvs: [], tiles: [], materials: [], quadCount: 0 },
+  water: { positions: [], colors: [], lights: [], normals: [], uvs: [], materials: [], tiles: [], quadCount: 0 },
 };
 let visibleFaceCount = 0;
 let daylight = 1;
@@ -446,20 +564,44 @@ function configureWebglQuality() {
   if (testMode && sessionParams.get("quality") === "high") shaderQuality = 1;
 }
 
+function webgpuRequestedExplicitly(requested, configured) {
+  // A stored preference counts as explicit. The player chose WebGPU in the menu,
+  // so silently running something else would be a lie about what they asked for.
+  return requested === "webgpu" && configured !== "auto";
+}
+
 try {
   const configuredRenderer = sessionParams.get("renderer") ?? options.renderer ?? "auto";
   const requestedRenderer = runtimeRendererMode(configuredRenderer);
   webgpuProbe = requestedRenderer === "webgl"
     ? { supported: false, adapterName: null, reason: configuredRenderer === "auto" ? "renderer=auto-safe" : "renderer=webgl" }
     : await probeWebGpu(globalThis.navigator, canvas);
-  rendererKind = chooseRenderer({ requested: requestedRenderer, webgpu: webgpuProbe });
+  // `chooseRenderer` throws when WebGPU was asked for and is not there. That
+  // throw used to land in the outer handler and leave the player on a dead page
+  // with an error and no route back to the setting that would fix it, so the
+  // decision is caught here and turned into the same recovery the later failures
+  // use.
+  try {
+    rendererKind = chooseRenderer({ requested: requestedRenderer, webgpu: webgpuProbe });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    if (webgpuRequestedExplicitly(requestedRenderer, configuredRenderer)) {
+      reportBackendFailureAndReturnToMenu({ renderer: "webgpu", reason });
+      return;
+    }
+    throw error;
+  }
   if (rendererKind === "webgl") {
     // Keep the last frame readable for browser compositors and visual smoke tests.
     gl = createWebglContext();
     if (!gl) throw new Error("WebGL is not available in this browser.");
     configureWebglQuality();
   }
-  const audio = createAudioMixer();
+  // The shared instance, not a private one: the menu's volume sliders drive the
+  // same graph the game plays through, so what a player hears while adjusting is
+  // what they get in the world.
+  const audio = getAudioMixer();
+  audio.setVolumes(audioVolumesFromOptions(options));
 
   let savedGame = null;
   try {
@@ -537,15 +679,33 @@ try {
         "WebGPU renderer initialization timed out.",
       );
       atlasMipmapVerdict = gpuRenderer.getAtlasMipmapVerdict();
+      // A device can die long after boot, and nothing about it is visible: submits
+      // are dropped and reads stay pending, so the loop keeps running over a still
+      // image. Both the event and a per-frame poll are needed - the event alone
+      // misses a loss the implementation chooses not to report, and the poll alone
+      // would only notice on the next frame that is never drawn.
+      gpuRenderer.onDeviceFailure((failure) => {
+        reportBackendFailureAndReturnToMenu({ renderer: "webgpu", reason: failure.reason });
+      });
     } catch (error) {
-      if (requestedRenderer !== "auto") throw error;
+      // A backend that cannot start is not a reason to leave the player on a dead
+      // page. Falling back and telling them is the only recovery: the alternative
+      // is a frozen window with no way back to the setting that would fix it.
+      const reason = error instanceof Error ? error.message : String(error);
+      if (webgpuRequestedExplicitly(requestedRenderer, configuredRenderer)) {
+        reportBackendFailureAndReturnToMenu({ renderer: "webgpu", reason });
+        return;
+      }
       rendererKind = "webgl";
-      webgpuProbe = {
-        ...webgpuProbe,
-        reason: error instanceof Error ? error.message : String(error),
-      };
+      webgpuProbe = { ...webgpuProbe, reason };
       gl = createWebglContext();
-      if (!gl) throw new Error("WebGPU presentation failed and WebGL is unavailable.");
+      if (!gl) {
+        reportBackendFailureAndReturnToMenu({
+          renderer: "webgpu",
+          reason: `${reason} (and WebGL is unavailable too)`,
+        });
+        return;
+      }
       configureWebglQuality();
     }
   }
@@ -781,8 +941,20 @@ try {
   let blockCount = 0;
 
   if (rendererKind === "webgl") {
-    const advancedTerrainSources = createWebglTerrainShaderSources(FOG_DISTANCE, { advancedWater: true });
-    const fallbackTerrainSources = createWebglTerrainShaderSources(FOG_DISTANCE, { advancedWater: false });
+    // The derivative bump needs OES_standard_derivatives. SwiftShader and some
+    // older mobile drivers do not expose it, so the shader is built without the
+    // derivative path there instead of failing to compile.
+    const derivatives = Boolean(gl.getExtension("OES_standard_derivatives"));
+    const advancedTerrainSources = createWebglTerrainShaderSources(FOG_DISTANCE, {
+      bumpMapping: derivatives,
+      waterDetail: true,
+      grassWind: true,
+    });
+    const fallbackTerrainSources = createWebglTerrainShaderSources(FOG_DISTANCE, {
+      bumpMapping: false,
+      waterDetail: false,
+      grassWind: false,
+    });
     const terrainSources = shaderQuality >= 0.5 ? advancedTerrainSources : fallbackTerrainSources;
 
   function compileShader(type, source) {
@@ -834,6 +1006,9 @@ try {
     } catch (error) {
       if (vertexShaderSource === fallbackVertexShaderSource
         && fragmentShaderSource === fallbackFragmentShaderSource) throw error;
+      // Falling back silently would hide a real shader bug behind a flat-looking
+      // world, so the reason is reported rather than swallowed.
+      console.warn("[webgl] advanced shader failed to build, using the fallback:", error.message);
       return {
         program: linkProgram(fallbackVertexShaderSource, fallbackFragmentShaderSource),
         usedFallback: true,
@@ -852,23 +1027,39 @@ try {
 
   positionBuffer = gl.createBuffer();
   colorBuffer = gl.createBuffer();
+  terrainLightBuffer = gl.createBuffer();
+  terrainNormalBuffer = gl.createBuffer();
   uvBuffer = gl.createBuffer();
   terrainMaterialBuffer = gl.createBuffer();
   tileBuffer = gl.createBuffer();
   waterPositionBuffer = gl.createBuffer();
   waterColorBuffer = gl.createBuffer();
+  waterLightBuffer = gl.createBuffer();
+  waterNormalBuffer = gl.createBuffer();
   waterUvBuffer = gl.createBuffer();
   waterMaterialBuffer = gl.createBuffer();
   waterTileBuffer = gl.createBuffer();
   dynamicPositionBuffer = gl.createBuffer();
   dynamicColorBuffer = gl.createBuffer();
+  dynamicLightBuffer = gl.createBuffer();
+  dynamicNormalBuffer = gl.createBuffer();
   dynamicUvBuffer = gl.createBuffer();
   dynamicTileBuffer = gl.createBuffer();
   shadowPositionBuffer = gl.createBuffer();
   shadowColorBuffer = gl.createBuffer();
+  shadowLightBuffer = gl.createBuffer();
+  shadowNormalBuffer = gl.createBuffer();
   shadowUvBuffer = gl.createBuffer();
+  vfxPositionBuffer = gl.createBuffer();
+  vfxColorBuffer = gl.createBuffer();
+  vfxLightBuffer = gl.createBuffer();
+  vfxNormalBuffer = gl.createBuffer();
+  vfxUvBuffer = gl.createBuffer();
+  vfxTileBuffer = gl.createBuffer();
   positionLocation = gl.getAttribLocation(program, "aPosition");
   colorLocation = gl.getAttribLocation(program, "aColor");
+  lightLocation = gl.getAttribLocation(program, "aLight");
+  normalLocation = gl.getAttribLocation(program, "aNormal");
   uvLocation = gl.getAttribLocation(program, "aUV");
   materialLocation = gl.getAttribLocation(program, "aMaterial");
   tileLocation = gl.getAttribLocation(program, "aTileRect");
@@ -878,13 +1069,35 @@ try {
   daylightLocation = gl.getUniformLocation(program, "uDaylight");
   surfacePassLocation = gl.getUniformLocation(program, "uSurfacePass");
   shadowPassLocation = gl.getUniformLocation(program, "uShadowPass");
+  vfxPassLocation = gl.getUniformLocation(program, "uVfxPass");
   miningProgressLocation = gl.getUniformLocation(program, "uMiningProgress");
   terrainSkyColorLocation = gl.getUniformLocation(program, "uSkyColor");
   terrainSkyHorizonColorLocation = gl.getUniformLocation(program, "uSkyHorizonColor");
+  terrainGroundBounceLocation = gl.getUniformLocation(program, "uGroundBounce");
   terrainSunDirectionLocation = gl.getUniformLocation(program, "uSunDirection");
   terrainSunColorLocation = gl.getUniformLocation(program, "uSunColor");
+  terrainSunIntensityLocation = gl.getUniformLocation(program, "uSunIntensity");
+  terrainAmbientStrengthLocation = gl.getUniformLocation(program, "uAmbientStrength");
+  terrainAmbientDesaturationLocation = gl.getUniformLocation(program, "uAmbientDesaturation");
+  terrainBumpStrengthLocation = gl.getUniformLocation(program, "uBumpStrength");
+  terrainDetailStrengthLocation = gl.getUniformLocation(program, "uDetailStrength");
+  terrainDetailScaleLocation = gl.getUniformLocation(program, "uDetailScale");
+  terrainWaterDetailLocation = gl.getUniformLocation(program, "uWaterDetail");
+  terrainCameraPositionLocation = gl.getUniformLocation(program, "uCameraPosition");
+  terrainNearLocation = gl.getUniformLocation(program, "uNear");
+  terrainFarLocation = gl.getUniformLocation(program, "uFar");
   atlasLocation = gl.getUniformLocation(program, "uAtlas");
   terrainCloudMapLocation = gl.getUniformLocation(program, "uCloudMap");
+  terrainSceneDepthLocation = gl.getUniformLocation(program, "uSceneDepth");
+  shadowMapLocation = gl.getUniformLocation(program, "uShadowMap");
+  shadowDiskLocation = gl.getUniformLocation(program, "uShadowDisk");
+  lightViewProjectionLocation = gl.getUniformLocation(program, "uLightViewProjection");
+  shadowTexelSizeLocation = gl.getUniformLocation(program, "uShadowTexelSize");
+  shadowRadiusLocation = gl.getUniformLocation(program, "uShadowRadius");
+  shadowFadeLocation = gl.getUniformLocation(program, "uShadowFade");
+  shadowStrengthLocation = gl.getUniformLocation(program, "uShadowStrength");
+  shadowTapsLocation = gl.getUniformLocation(program, "uShadowTaps");
+  shadowFloorLocation = gl.getUniformLocation(program, "uShadowFloor");
   // Mipmaps stay off until the padded atlas is certified free of foreign tile
   // contamination on a throwaway mip chain, so a bad atlas can never ship. The
   // WebGPU path certifies on its own device before it builds its atlas, and its
@@ -897,12 +1110,15 @@ try {
   gl.useProgram(program);
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, atlasTexture);
-  gl.uniform1i(atlasLocation, 0);
-  gl.uniform1i(terrainCloudMapLocation, 1);
+  gl.uniform1i(atlasLocation, TERRAIN_TEXTURE_UNIT.atlas);
+  gl.uniform1i(terrainCloudMapLocation, TERRAIN_TEXTURE_UNIT.cloudMap);
+  gl.uniform1i(shadowMapLocation, TERRAIN_TEXTURE_UNIT.shadowMap);
+  gl.uniform1i(shadowDiskLocation, TERRAIN_TEXTURE_UNIT.shadowDisk);
+  gl.uniform1i(terrainSceneDepthLocation, TERRAIN_TEXTURE_UNIT.sceneDepth);
 
   const skyProgramAttempt = createPermutedProgram(
     WEBGL_SKY_VERTEX_SHADER,
-    shaderQuality >= 0.5 ? WEBGL_SKY_FRAGMENT_SHADER : WEBGL_SKY_FALLBACK_FRAGMENT_SHADER,
+    createWebglSkyFragmentShader({ volumetricClouds: shaderQuality >= 0.5 }),
     WEBGL_SKY_VERTEX_SHADER,
     WEBGL_SKY_FALLBACK_FRAGMENT_SHADER,
   );
@@ -915,6 +1131,7 @@ try {
   skyCameraForwardLocation = gl.getUniformLocation(skyProgram, "uCameraForward");
   skyCameraRightLocation = gl.getUniformLocation(skyProgram, "uCameraRight");
   skyCameraUpLocation = gl.getUniformLocation(skyProgram, "uCameraUp");
+  skyCameraPositionLocation = gl.getUniformLocation(skyProgram, "uCameraPosition");
   skyColorLocation = gl.getUniformLocation(skyProgram, "uSkyColor");
   skyHorizonColorLocation = gl.getUniformLocation(skyProgram, "uSkyHorizonColor");
   skySunDirectionLocation = gl.getUniformLocation(skyProgram, "uSunDirection");
@@ -923,7 +1140,10 @@ try {
   skyTanHalfFovLocation = gl.getUniformLocation(skyProgram, "uTanHalfFov");
   skyDaylightLocation = gl.getUniformLocation(skyProgram, "uDaylight");
   skyTimeLocation = gl.getUniformLocation(skyProgram, "uTime");
-  skyCloudMapLocation = gl.getUniformLocation(skyProgram, "uCloudMap");
+  skyCloudStepsLocation = gl.getUniformLocation(skyProgram, "uCloudSteps");
+  skyCloudLightStepsLocation = gl.getUniformLocation(skyProgram, "uCloudLightSteps");
+  skyCloudCoverageLocation = gl.getUniformLocation(skyProgram, "uCloudCoverage");
+  skyWindSpeedLocation = gl.getUniformLocation(skyProgram, "uWindSpeed");
   cloudTexture = gl.createTexture();
   gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, cloudTexture);
@@ -942,19 +1162,54 @@ try {
     gl.UNSIGNED_BYTE,
     createCloudTextureData(),
   );
-  gl.useProgram(skyProgram);
-  gl.uniform1i(skyCloudMapLocation, 1);
-  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+
+  // ---------------------------------------------------------------------------
+  // Presentation pipeline: HDR scene target, bloom, god rays, tonemap and
+  // grade, plus a single-cascade sun shadow map. Both degrade independently:
+  // no post target means the scene draws straight to the canvas, and no
+  // sampleable depth means no shadow cascade and no god rays.
+  // ---------------------------------------------------------------------------
+  // A `?graphics=` override pins the tier and switches adaptation off. It is how
+  // a player forces a look, and how the visual smoke test proves which effect
+  // belongs to which tier instead of guessing. The saved Options preference is
+  // the next authority, and only when the URL is silent: a URL is a deliberate
+  // per-session instruction and must not be shadowed by stored state.
+  const graphicsParam = parseVisualQuality(sessionParams.get("graphics"));
+  const savedGraphics = options.graphicsQuality;
+  const graphicsOverride = graphicsParam ?? (savedGraphics === "auto" ? null : parseVisualQuality(savedGraphics));
+  visualQuality = createVisualQualityController({
+    // A software rasteriser cannot afford the top tier; the visual smoke test
+    // opts in explicitly so it still exercises the advanced path.
+    initial: graphicsOverride ?? (isSoftwareRenderer(rendererName)
+      && !(testMode && sessionParams.get("quality") === "high")
+      ? 1
+      : VISUAL_QUALITY_TIERS.length - 1),
+    auto: graphicsOverride === null,
+  });
+  if (graphicsOverride !== null) visualQuality.setLevel(graphicsOverride);
+  postPipeline = createPostPipeline(gl, { quality: shaderQuality >= 0.5 ? 1 : 0 });
+  shadowPass = createSunShadowPass(gl, {
+    mapSize: visualQuality.tier.shadowMapSize,
+    depthSampling: postPipeline.depthSampling,
+  });
+  shadowDiskTexture = createVogelDiskTexture(gl, 64);
+  // A 1x1 white stand-in keeps the shadow sampler bound on contexts that cannot
+  // provide a depth texture, where uShadowStrength is pinned to zero anyway.
+  shadowFallbackTexture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, shadowFallbackTexture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.bindTexture(gl.TEXTURE_2D, null);
   }
 
-  function blockColor(block, faceIndex, x, z, light = 15) {
-    // Neutral shading only: the texture atlas carries each block's hue.
-    // (Multiplying a colored tint here double-colors every surface.)
-    const variation = (((x * 17 + z * 31) % 5) + 5) % 5 * 0.012;
-    const top = block === 3 && faceIndex === 0;
-    const shade = TERRAIN_FACE_SHADES[faceIndex] + (top ? variation : variation * 0.5);
-    return litFaceColor(faceIndex, 1, light, shade);
-  }
+  const lightViewProjection = new Float32Array(16);
+  const sunScreenPosition = [0.5, 0.5];
+  let sunVisibleForGodrays = 0;
+  // Exposed so the visual smoke test can assert the sun really is where the
+  // god-ray stage thinks it is, instead of trusting a constant.
+  let lastSunDirection = [0, 1, 0];
 
   let horizonCenterKey = null;
   function rebuildHorizon() {
@@ -977,8 +1232,8 @@ try {
       encodeCoordinate: storageCoordinate,
       sample: (count, points) => Horizon.surface_points(SEED, count, points),
     }).values;
-    const opaque = { positions: [], colors: [], uvs: [], tiles: [], materials: [], quadCount: 0 };
-    const waterMesh = { positions: [], colors: [], uvs: [], materials: [], tiles: [], quadCount: 0 };
+    const opaque = { positions: [], colors: [], lights: [], normals: [], uvs: [], tiles: [], materials: [], quadCount: 0 };
+    const waterMesh = { positions: [], colors: [], lights: [], normals: [], uvs: [], materials: [], tiles: [], quadCount: 0 };
     const innerRadius = CHUNK_RENDER_RADIUS * CHUNK_SIZE + step;
     for (let z = 0; z < columns - 1; z += 1) {
       for (let x = 0; x < columns - 1; x += 1) {
@@ -998,7 +1253,7 @@ try {
           [globalX, height, globalZ + step],
         ];
         const tile = isWater ? 7 : 3;
-        const color = blockColor(tile, 0, globalX, globalZ, 15);
+        const color = faceColorGrade(0, globalX, globalZ);
         const uv = atlasUV(blockFaceTileAt(tile, 0, globalX, globalZ));
         const tileRect = [uv[0], uv[1], uv[4], uv[5]];
         const localUv = [[0, 0], [step, 0], [step, step], [0, step]];
@@ -1007,6 +1262,10 @@ try {
           const corner = corners[cornerIndex];
           target.positions.push(corner[0], corner[1], corner[2]);
           target.colors.push(color[0], color[1], color[2]);
+          // The horizon skirt is a flat top surface far outside the shadow
+          // cascade: unoccluded, fully lit, facing straight up.
+          target.lights.push(1, 1);
+          target.normals.push(0, 1, 0);
           target.uvs.push(localUv[cornerIndex][0], localUv[cornerIndex][1]);
           target.tiles.push(...tileRect);
           if (isWater) target.materials.push(1);
@@ -1055,7 +1314,7 @@ try {
     ];
   }
 
-  function appendBox(positions, colors, uvs, tiles, part) {
+  function appendBox(positions, colors, lights, normals, uvs, tiles, part) {
     const uniformUv = part.faceTiles === undefined ? atlasUV(part.tile) : null;
     const localUv = [[0, 0], [1, 0], [1, 1], [0, 1]];
     for (let faceIndex = 0; faceIndex < FACES.length; faceIndex += 1) {
@@ -1064,6 +1323,7 @@ try {
         ? [uv[0], uv[5], uv[4], uv[1]]
         : [uv[0], uv[1], uv[4], uv[5]];
       const color = litEntityFaceColor(part.tint, faceIndex, 1, TERRAIN_FACE_SHADES[faceIndex]);
+      const faceDir = FACES[faceIndex].dir;
       for (const cornerIndex of [0, 1, 2, 0, 2, 3]) {
         const corner = FACES[faceIndex].corners[cornerIndex];
         const [px, py, pz] = rotatePartPoint(
@@ -1074,13 +1334,17 @@ try {
         );
         positions.push(px, py, pz);
         colors.push(color[0], color[1], color[2]);
+        // Entities are not part of the block light grid, so they read as
+        // unoccluded and fully sky-lit; the shadow map grounds them instead.
+        lights.push(1, 1);
+        normals.push(faceDir[0], faceDir[1], faceDir[2]);
         uvs.push(localUv[cornerIndex][0], localUv[cornerIndex][1]);
         tiles.push(...tileRect);
       }
     }
   }
 
-  function appendMiningCrack(positions, colors, uvs, tiles) {
+  function appendMiningCrack(positions, colors, lights, normals, uvs, tiles) {
     if (miningState === null) return;
     const target = raycast(world, player);
     if (target === null || target.place === null) return;
@@ -1103,16 +1367,20 @@ try {
       const corner = corners[cornerIndex];
       positions.push(corner[0], corner[1], corner[2]);
       colors.push(1, 1, 1);
+      lights.push(1, 1);
+      normals.push(normal[0], normal[1], normal[2]);
       uvs.push(localUv[cornerIndex][0], localUv[cornerIndex][1]);
       tiles.push(-1, -1, -1, -1);
     }
   }
 
-  function appendShadow(positions, colors, uvs, entity) {
+  function appendShadow(positions, colors, lights, normals, uvs, entity) {
     const shadow = entityShadow(entity);
     positions.push(...shadow.positions);
     for (let index = 0; index < 6; index += 1) {
       colors.push(1, 1, 1);
+      lights.push(1, 1);
+      normals.push(0, 1, 0);
     }
     uvs.push(0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1);
   }
@@ -1122,31 +1390,35 @@ try {
   function rebuildDynamicMesh(time) {
     const positions = [];
     const colors = [];
+    const lights = [];
+    const normals = [];
     const uvs = [];
     const tiles = [];
     const shadowPositions = [];
     const shadowColors = [];
+    const shadowLights = [];
+    const shadowNormals = [];
     const shadowUvs = [];
     for (const mob of mobs) {
       if (!mob.alive) continue;
-      appendShadow(shadowPositions, shadowColors, shadowUvs, mob);
+      appendShadow(shadowPositions, shadowColors, shadowLights, shadowNormals, shadowUvs, mob);
       const flashed = worldTime - (mobFlash.get(mob.id) ?? -10) < 0.3;
       const heading = Math.atan2(mob.headingX ?? 0, -(mob.headingZ ?? -1));
       for (const part of mobBoxes(mob, time, heading, flashed)) {
-        appendBox(positions, colors, uvs, tiles, part);
+        appendBox(positions, colors, lights, normals, uvs, tiles, part);
       }
     }
     for (const villager of villagers) {
-      appendShadow(shadowPositions, shadowColors, shadowUvs, villager);
+      appendShadow(shadowPositions, shadowColors, shadowLights, shadowNormals, shadowUvs, villager);
       for (const part of villagerBoxes(villager, time, faceYaw(villager.x, villager.z, player.x, player.z))) {
-        appendBox(positions, colors, uvs, tiles, part);
+        appendBox(positions, colors, lights, normals, uvs, tiles, part);
       }
     }
     for (const drop of drops) {
-      appendShadow(shadowPositions, shadowColors, shadowUvs, drop);
-      for (const part of dropBoxes(drop, time)) appendBox(positions, colors, uvs, tiles, part);
+      appendShadow(shadowPositions, shadowColors, shadowLights, shadowNormals, shadowUvs, drop);
+      for (const part of dropBoxes(drop, time)) appendBox(positions, colors, lights, normals, uvs, tiles, part);
     }
-    appendMiningCrack(positions, colors, uvs, tiles);
+    appendMiningCrack(positions, colors, lights, normals, uvs, tiles);
     shadowVertexCount = shadowPositions.length / 3;
     shadowQuadCount = shadowVertexCount / 6;
     dynamicVertexCount = positions.length / 3;
@@ -1156,12 +1428,16 @@ try {
         dynamic: {
           positions: new Float32Array(positions),
           colors: new Float32Array(colors),
+          lights: new Float32Array(lights),
+          normals: new Float32Array(normals),
           uvs: new Float32Array(uvs),
           tiles: new Float32Array(tiles),
         },
         shadow: {
           positions: new Float32Array(shadowPositions),
           colors: new Float32Array(shadowColors),
+          lights: new Float32Array(shadowLights),
+          normals: new Float32Array(shadowNormals),
           uvs: new Float32Array(shadowUvs),
           tiles: new Float32Array((shadowPositions.length / 3) * 4),
         },
@@ -1171,6 +1447,10 @@ try {
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.DYNAMIC_DRAW);
       gl.bindBuffer(gl.ARRAY_BUFFER, dynamicColorBuffer);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, dynamicLightBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(lights), gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, dynamicNormalBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(normals), gl.DYNAMIC_DRAW);
       gl.bindBuffer(gl.ARRAY_BUFFER, dynamicUvBuffer);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(uvs), gl.DYNAMIC_DRAW);
       gl.bindBuffer(gl.ARRAY_BUFFER, dynamicTileBuffer);
@@ -1179,6 +1459,10 @@ try {
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shadowPositions), gl.DYNAMIC_DRAW);
       gl.bindBuffer(gl.ARRAY_BUFFER, shadowColorBuffer);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shadowColors), gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, shadowLightBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shadowLights), gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, shadowNormalBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shadowNormals), gl.DYNAMIC_DRAW);
       gl.bindBuffer(gl.ARRAY_BUFFER, shadowUvBuffer);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(shadowUvs), gl.DYNAMIC_DRAW);
     }
@@ -1190,19 +1474,22 @@ try {
     }
   }
 
-  function appendTexturedQuad(positions, colors, uvs, quad, materials = null, tiles = null) {
-    const color = blockColor(quad.block, quad.faceIndex, quad.x, quad.z, quad.light);
+  function appendTexturedQuad(positions, colors, lights, normals, uvs, quad, materials = null, tiles = null) {
+    const color = faceColorGrade(quad.faceIndex, quad.x, quad.z);
     const corners = quadCorners(quad);
+    const normal = FACE_NORMALS[quad.faceIndex] ?? FACE_NORMALS[0];
     const uv = atlasUV(blockFaceTileAt(quad.block, quad.faceIndex, quad.x, quad.z));
     const tileRect = quad.faceIndex >= 2
       ? [uv[0], uv[5], uv[4], uv[1]]
       : [uv[0], uv[1], uv[4], uv[5]];
     const localUv = [[0, 0], [quad.width, 0], [quad.width, quad.height], [0, quad.height]];
+    const lightLevel = blockLightLevel(quad.light);
     for (const cornerIndex of [0, 1, 2, 0, 2, 3]) {
       const corner = corners[cornerIndex];
-      const ao = quad.ao?.[cornerIndex] ?? 1;
       positions.push(corner[0], corner[1], corner[2]);
-      colors.push(color[0] * ao, color[1] * ao, color[2] * ao);
+      colors.push(color[0], color[1], color[2]);
+      lights.push(cornerOcclusion(quad.ao?.[cornerIndex]), lightLevel);
+      normals.push(normal[0], normal[1], normal[2]);
       uvs.push(localUv[cornerIndex][0], localUv[cornerIndex][1]);
       if (tiles !== null) tiles.push(...tileRect);
       if (materials !== null) {
@@ -1278,11 +1565,15 @@ try {
     }
     let positions;
     let colors;
+    let lights;
+    let normals;
     let uvs;
     let terrainMaterials;
     let tiles;
     let waterPositions;
     let waterColors;
+    let waterLights;
+    let waterNormals;
     let waterUvs;
     let waterMaterials;
     let waterTiles;
@@ -1292,11 +1583,15 @@ try {
       const water = terrain.vertexData.water;
       positions = concatFloat32Arrays(opaque.positions, horizonMesh.opaque.positions);
       colors = concatFloat32Arrays(opaque.colors, horizonMesh.opaque.colors);
+      lights = concatFloat32Arrays(opaque.lights, horizonMesh.opaque.lights);
+      normals = concatFloat32Arrays(opaque.normals, horizonMesh.opaque.normals);
       uvs = concatFloat32Arrays(opaque.uvs, horizonMesh.opaque.uvs);
       terrainMaterials = concatFloat32Arrays(opaque.materials, horizonMesh.opaque.materials);
       tiles = concatFloat32Arrays(opaque.tiles, horizonMesh.opaque.tiles);
       waterPositions = concatFloat32Arrays(water.positions, horizonMesh.water.positions);
       waterColors = concatFloat32Arrays(water.colors, horizonMesh.water.colors);
+      waterLights = concatFloat32Arrays(water.lights, horizonMesh.water.lights);
+      waterNormals = concatFloat32Arrays(water.normals, horizonMesh.water.normals);
       waterUvs = concatFloat32Arrays(water.uvs, horizonMesh.water.uvs);
       waterMaterials = concatFloat32Arrays(water.materials, horizonMesh.water.materials);
       waterTiles = concatFloat32Arrays(water.tiles, horizonMesh.water.tiles);
@@ -1305,11 +1600,15 @@ try {
     } else {
       const positionValues = [];
       const colorValues = [];
+      const lightValues = [];
+      const normalValues = [];
       const uvValues = [];
       const terrainMaterialValues = [];
       const tileValues = [];
       const waterPositionValues = [];
       const waterColorValues = [];
+      const waterLightValues = [];
+      const waterNormalValues = [];
       const waterUvValues = [];
       const waterMaterialValues = [];
       const waterTileValues = [];
@@ -1317,32 +1616,46 @@ try {
       waterQuadCount = 0;
       for (const quad of terrain.quads) {
         if (quad.block === 7 || quad.block === 21 || quad.block === 24) {
-          appendTexturedQuad(waterPositionValues, waterColorValues, waterUvValues, quad, waterMaterialValues, waterTileValues);
+          appendTexturedQuad(
+            waterPositionValues, waterColorValues, waterLightValues, waterNormalValues,
+            waterUvValues, quad, waterMaterialValues, waterTileValues,
+          );
           waterQuadCount += 1;
         } else {
-          appendTexturedQuad(positionValues, colorValues, uvValues, quad, terrainMaterialValues, tileValues);
+          appendTexturedQuad(
+            positionValues, colorValues, lightValues, normalValues,
+            uvValues, quad, terrainMaterialValues, tileValues,
+          );
           terrainQuadCount += 1;
         }
       }
       positionValues.push(...horizonMesh.opaque.positions);
       colorValues.push(...horizonMesh.opaque.colors);
+      lightValues.push(...horizonMesh.opaque.lights);
+      normalValues.push(...horizonMesh.opaque.normals);
       uvValues.push(...horizonMesh.opaque.uvs);
       terrainMaterialValues.push(...horizonMesh.opaque.materials);
       tileValues.push(...horizonMesh.opaque.tiles);
       terrainQuadCount += horizonMesh.opaque.quadCount;
       waterPositionValues.push(...horizonMesh.water.positions);
       waterColorValues.push(...horizonMesh.water.colors);
+      waterLightValues.push(...horizonMesh.water.lights);
+      waterNormalValues.push(...horizonMesh.water.normals);
       waterUvValues.push(...horizonMesh.water.uvs);
       waterMaterialValues.push(...horizonMesh.water.materials);
       waterTileValues.push(...horizonMesh.water.tiles);
       waterQuadCount += horizonMesh.water.quadCount;
       positions = new Float32Array(positionValues);
       colors = new Float32Array(colorValues);
+      lights = new Float32Array(lightValues);
+      normals = new Float32Array(normalValues);
       uvs = new Float32Array(uvValues);
       terrainMaterials = new Float32Array(terrainMaterialValues);
       tiles = new Float32Array(tileValues);
       waterPositions = new Float32Array(waterPositionValues);
       waterColors = new Float32Array(waterColorValues);
+      waterLights = new Float32Array(waterLightValues);
+      waterNormals = new Float32Array(waterNormalValues);
       waterUvs = new Float32Array(waterUvValues);
       waterMaterials = new Float32Array(waterMaterialValues);
       waterTiles = new Float32Array(waterTileValues);
@@ -1361,6 +1674,10 @@ try {
     gl.bufferData(gl.ARRAY_BUFFER, positions, gl.DYNAMIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, colors, gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, terrainLightBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, lights, gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, terrainNormalBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, normals, gl.DYNAMIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.DYNAMIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER, terrainMaterialBuffer);
@@ -1371,6 +1688,10 @@ try {
     gl.bufferData(gl.ARRAY_BUFFER, waterPositions, gl.DYNAMIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER, waterColorBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, waterColors, gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, waterLightBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, waterLights, gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, waterNormalBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, waterNormals, gl.DYNAMIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER, waterUvBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, waterUvs, gl.DYNAMIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER, waterMaterialBuffer);
@@ -1387,52 +1708,8 @@ try {
     (callback) => window.setTimeout(() => window.requestAnimationFrame(callback), 100),
   );
 
-  function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
-  function cross(a, b) {
-    return [
-      a[1] * b[2] - a[2] * b[1],
-      a[2] * b[0] - a[0] * b[2],
-      a[0] * b[1] - a[1] * b[0],
-    ];
-  }
-  function normalize(v) {
-    const length = Math.hypot(v[0], v[1], v[2]) || 1;
-    return [v[0] / length, v[1] / length, v[2] / length];
-  }
-  function multiply4(a, b) {
-    const out = new Float32Array(16);
-    for (let column = 0; column < 4; column += 1) {
-      for (let row = 0; row < 4; row += 1) {
-        out[column * 4 + row] =
-          a[row] * b[column * 4] +
-          a[4 + row] * b[column * 4 + 1] +
-          a[8 + row] * b[column * 4 + 2] +
-          a[12 + row] * b[column * 4 + 3];
-      }
-    }
-    return out;
-  }
-  function perspective(fov, aspect, near, far) {
-    const f = 1 / Math.tan(fov / 2);
-    const range = 1 / (near - far);
-    return new Float32Array([
-      f / aspect, 0, 0, 0,
-      0, f, 0, 0,
-      0, 0, (far + near) * range, -1,
-      0, 0, 2 * far * near * range, 0,
-    ]);
-  }
-  function lookAt(eye, center, up) {
-    const z = normalize([eye[0] - center[0], eye[1] - center[1], eye[2] - center[2]]);
-    const x = normalize(cross(up, z));
-    const y = cross(z, x);
-    return new Float32Array([
-      x[0], y[0], z[0], 0,
-      x[1], y[1], z[1], 0,
-      x[2], y[2], z[2], 0,
-      -dot(x, eye), -dot(y, eye), -dot(z, eye), 1,
-    ]);
-  }
+  // Matrix and vector helpers live in ./gl-matrix.js so the shadow, post and
+  // terrain passes all build matrices the same way.
   function resizeCanvas() {
     const scale = Math.min(window.devicePixelRatio || 1, 2);
     const width = Math.floor(canvas.clientWidth * scale);
@@ -1441,7 +1718,6 @@ try {
       canvas.width = width;
       canvas.height = height;
     }
-    if (gl !== null) gl.viewport(0, 0, canvas.width, canvas.height);
   }
 
   const spawnContract = World.spawn_cell(SEED);
@@ -1986,6 +2262,10 @@ try {
         headingZ: Number(mob.heading_z ?? -1),
         health: Number(mob.health),
         alive: mob.alive,
+        // The domain's own fire flag, carried through untouched. A save written
+        // before the flag existed normalises to false, so an old world never
+        // loads with every mob already alight.
+        burning: mob.burning === true,
       });
     }
     return views;
@@ -2184,6 +2464,10 @@ try {
           solarKills += 1;
           killCount += 1;
           xpState = Experience.award(xpState, Number(previous.kind ?? 2));
+          // A body the sun finished off collapses where it stood. Without this
+          // the mob simply stops being drawn between two simulation ticks, which
+          // is the one thing that makes a death read as a glitch.
+          emitDeathPuff(vfx, previous.x, previous.y, previous.z, mobPuffTint(previous.kind), 18);
         }
       }
       if (solarKills > 0) {
@@ -2304,12 +2588,41 @@ try {
     handSwingTime = worldTime;
   }
 
+  // A mob comes apart in its own colours, so a zombie comes apart green and a
+  // pig pink. These are the tints the entity models already use, so the puff and
+  // the body it replaces cannot drift apart.
+  const MOB_PUFF_TINT = Object.freeze({
+    1: [0.94, 0.72, 0.74],
+    2: [0.42, 0.62, 0.36],
+    3: [0.96, 0.94, 0.9],
+    4: [0.3, 0.44, 0.3],
+  });
+  const HIT_SPARK_TINT = [1.0, 0.86, 0.52];
+
+  function mobPuffTint(kind) {
+    return MOB_PUFF_TINT[Number(kind)] ?? [0.8, 0.8, 0.8];
+  }
+
+  /**
+   * What a mob sounds like when it is hurt. A passive mob squeals and a hostile
+   * one groans, which is the only cue that tells the player which of the two
+   * things walking towards them is the one that fights back. The two tones
+   * existed in the schedule and nothing played them, so a struck mob was silent
+   * apart from the generic impact click.
+   */
+  function playMobHurtSound(kind) {
+    audio.play(Number(kind) === 2 || Number(kind) === 4 ? "groan" : "oink");
+  }
+
   function attackMob(target, damage, selectedId) {
     if (mobDomainState === null) return false;
     const result = Entities.attack(mobDomainState, BigInt(target.id), damage, player.x, player.y, player.z, MELEE_ATTACK_RANGE, dropDomainState);
     if (!result.hit) return false;
     audio.play("pop");
-    spawnParticles("#f2c65d", 6);
+    playMobHurtSound(target.kind);
+    // The spark lands on the body that was hit, at chest height, so it reads as
+    // contact rather than as a burst in the middle of the screen.
+    emitImpact(vfx, target.x, target.y + 0.9, target.z, HIT_SPARK_TINT, 6);
     if (["wooden_sword", "stone_sword", "iron_sword", "diamond_sword"].includes(selectedId)) {
       useTool(inventory, selectedSlot);
     }
@@ -2321,6 +2634,7 @@ try {
     if (slain !== undefined && !slain.alive) {
       killCount += 1;
       xpState = Experience.award(xpState, Number(target.kind ?? 2));
+      emitDeathPuff(vfx, target.x, target.y, target.z, mobPuffTint(target.kind), 16);
       setInventoryMessage(`Mob slain (+${Number(Experience.xp_for_kind(Number(target.kind ?? 2)))} XP).`);
     } else {
       setInventoryMessage("Mob hit.");
@@ -2436,6 +2750,11 @@ try {
     if (!result.hit) return false;
     useTool(inventory, selectedSlot);
     consume(inventory, arrowSlot, 1);
+    audio.play("pop");
+    playMobHurtSound(target.kind);
+    // An arrow used to land with no effect at all: the mob flashed for a third
+    // of a second and nothing marked where the shot went.
+    emitImpact(vfx, target.x, target.y + 0.9, target.z, HIT_SPARK_TINT, 7);
     mobDomainState = result.mobs;
     mobs = mobViews(mobDomainState);
     dropDomainState = result.drops;
@@ -2444,6 +2763,7 @@ try {
     if (slain !== undefined && !slain.alive) {
       killCount += 1;
       xpState = Experience.award(xpState, Number(target.kind ?? 2));
+      emitDeathPuff(vfx, target.x, target.y, target.z, mobPuffTint(target.kind), 16);
       setInventoryMessage(`Mob shot (+${Number(Experience.xp_for_kind(Number(target.kind ?? 2)))} XP).`);
     } else {
       setInventoryMessage("Arrow hit.");
@@ -2467,6 +2787,9 @@ try {
     if (target.$ !== "DropFound") return false;
     const item = itemNameFromId(target.item);
     if (item === null || !collectItem(inventory, item, Number(target.amount))) return false;
+    // Sparkle at the player's feet: the drop is gone from the world, and without
+    // a mark at the pickup point the item vanishes with nothing to explain it.
+    emitSparkle(vfx, player.x, player.y + 0.3, player.z, hexToRgb(itemColor({ item })), 6);
     dropDomainState = Entities.remove_drop(dropDomainState, BigInt(target.id));
     drops = dropViews(dropDomainState);
     setInventoryMessage(`${itemName({ item })} collected.`);
@@ -2518,6 +2841,97 @@ try {
       particlesEl.append(particle);
       window.setTimeout(() => particle.remove(), 500);
     }
+  }
+
+  /**
+   * World-space effects. Every emitter below places its particles at a real
+   * coordinate, so a block that shatters throws its own colour at the player
+   * instead of a burst in the middle of the display that could have come from
+   * anywhere on screen.
+   *
+   * The screen-space overlay above is still the right tool for feedback that is
+   * genuinely about the player rather than the world - the red flash on death
+   * has no position to point at.
+   */
+  const vfx = createVfx();
+
+  // Fire is emitted per burning body, per frame, at a rate that reads as a
+  // continuous plume rather than a flicker. The count is scaled by the frame
+  // time so a slow machine emits fewer, not a denser plume running slow.
+  const FLAME_RATE = 40;
+  const SMOKE_RATE = 8;
+
+  function updateVfx(dt) {
+    vfx.update(dt);
+    const flames = Math.min(6, Math.ceil(FLAME_RATE * dt));
+    const puffs = Math.ceil(SMOKE_RATE * dt);
+    for (const mob of mobs) {
+      if (!mob.alive || !mob.burning) continue;
+      // The plume wraps the body from the outside, because a particle behind the
+      // mob's own front faces loses the depth test and the mob looks unlit. It
+      // climbs the full height, because a ring at one height is a hoop.
+      emitFlame(vfx, mob.x, mob.y, mob.z, flames, MOB_BODY.radius, MOB_BODY.height);
+      if (puffs > 0 && vfx.random() < SMOKE_RATE * dt) {
+        emitSmoke(vfx, mob.x, mob.y + MOB_BODY.height, mob.z, puffs, MOB_BODY.radius * 0.7);
+      }
+    }
+  }
+
+  /**
+   * Fire is audible slightly before it is legible, but only from a body the
+   * player could plausibly be looking at. A crackle from a burning zombie
+   * across the map is a sound with no visible source, which reads as a bug
+   * rather than as atmosphere, so the range gate is part of the effect and not
+   * an optimisation.
+   */
+  const BURN_AUDIO_RANGE = 14;
+  const BURN_AUDIO_INTERVAL = 0.45;
+  let burnAudioCooldown = 0;
+
+  function updateBurnAudio(dt) {
+    if (burnAudioCooldown > 0) burnAudioCooldown -= dt;
+    if (burnAudioCooldown > 0) return;
+    for (const mob of mobs) {
+      if (!mob.alive || !mob.burning) continue;
+      const dx = mob.x - player.x;
+      const dy = mob.y - player.y;
+      const dz = mob.z - player.z;
+      if (dx * dx + dy * dy + dz * dz > BURN_AUDIO_RANGE * BURN_AUDIO_RANGE) continue;
+      if (audio.play("burn")) burnAudioCooldown = BURN_AUDIO_INTERVAL;
+      return;
+    }
+  }
+
+  /**
+   * Build the particle batch and upload it. This runs inside the frame rather
+   * than with the other dynamic geometry because the quads are camera-facing:
+   * they need the basis the camera was just built from, and a mob billboard
+   * baked against last frame's camera would swim when the player turned.
+   */
+  function rebuildVfxMesh(right, up) {
+    const particles = vfx.particles;
+    if (particles.length === 0) {
+      vfxVertexCount = 0;
+      return;
+    }
+    const batches = { positions: [], colors: [], lights: [], normals: [], uvs: [], tiles: [] };
+    vfxVertexCount = appendVfxQuads(batches, particles, right, up);
+    if (gpuRenderer !== null) {
+      gpuRenderer.uploadVfx(batches);
+      return;
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, vfxPositionBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(batches.positions), gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, vfxColorBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(batches.colors), gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, vfxLightBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(batches.lights), gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, vfxNormalBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(batches.normals), gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, vfxUvBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(batches.uvs), gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, vfxTileBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(batches.tiles), gl.DYNAMIC_DRAW);
   }
 
   function setInventoryMessage(message) {
@@ -3103,7 +3517,7 @@ try {
     if (!consume(inventory, selectedSlot)) return false;
     eatFood(player, nutrition);
     audio.play("eat");
-    spawnParticles("#d59b45", 5);
+    emitSparkle(vfx, player.x, player.y + 1.0, player.z, hexToRgb("#d59b45"), 5);
     if (itemId(item) === "rotten_flesh") {
       applyPoison(player, 10.0);
       setInventoryMessage("Rotten flesh eaten (you feel sick).");
@@ -3158,7 +3572,10 @@ try {
     }
     setBlock(x, y, z, Number(placement.edit.block));
     audio.play("place");
-    spawnParticles(itemColor(item), 8);
+    // A placed block puffs its own colour off the top face, tighter and slower
+    // than a mined one: the block is still standing, so the debris has less far
+    // to travel.
+    emitBlockDebris(vfx, x + 0.5, y + 1, z + 0.5, hexToRgb(itemColor(item)), 6, 0.7);
     invalidateVillagerPath(x, y, z);
     terrainMeshCache.invalidateBlock(x, z);
     if (block === 11) {
@@ -3318,7 +3735,11 @@ try {
     }
     setBlock(x, y, z, Number(mining.edit.block));
     audio.play("break");
-    spawnParticles(itemColor({ block: removedBlock }), 10);
+    // Debris comes off the cell that was just emptied, in that block's own
+    // colour. This is the effect the old screen-space burst was standing in for:
+    // it used to fire from the middle of the display, so a block mined off
+    // screen looked identical to one mined under the crosshair.
+    emitBlockDebris(vfx, x + 0.5, y + 0.5, z + 0.5, hexToRgb(itemColor({ block: removedBlock })), 12, 0.9);
     if (isCropBlock(removedBlock)) {
       cropState = Crops.remove(cropState, BigInt(x), BigInt(y), BigInt(z));
       simulationState = Simulation.with_crops(simulationState, cropState);
@@ -3751,6 +4172,9 @@ try {
     });
     const projection = perspective(fov * Math.PI / 180, canvas.width / canvas.height, 0.05, RENDER_FAR);
     if (gpuRenderer !== null) {
+      // The particle batch rides the same vertex layout as the entities, so the
+      // WebGPU path only has to upload it alongside them.
+      rebuildVfxMesh(cameraRight, cameraUp);
       gpuRenderer.render({
         viewProjection: multiply4(projection, view),
         camera: eye,
@@ -3770,47 +4194,113 @@ try {
       });
       return;
     }
+    // ---- adaptive quality -------------------------------------------------
+    const tier = visualQuality.sample(frameMetrics.frameMs || 16.7);
+    const viewProjectionMatrix = multiply4(projection, view);
+
+    // Project the sun into screen space once; both the god-ray mask and the
+    // shaft origin need it, and the camera basis is already at hand.
+    lastSunDirection = [...sunDirection];
+    const sunClip = transformPoint(viewProjectionMatrix, sunDirection);
+    const sunForward = dot(direction, sunDirection);
+    const behindCamera = sunForward < 0.05;
+    if (!behindCamera && Math.abs(sunClip[3]) > 1e-5) {
+      const inverseW = 1 / sunClip[3];
+      sunScreenPosition[0] = (sunClip[0] * inverseW) * 0.5 + 0.5;
+      sunScreenPosition[1] = (sunClip[1] * inverseW) * 0.5 + 0.5;
+    } else {
+      // Behind the camera: park the origin off-screen so the radial march has
+      // nothing to smear, and let sunVisibleForGodrays fade the stage out.
+      sunScreenPosition[0] = -4;
+      sunScreenPosition[1] = -4;
+    }
+    const onScreen = !behindCamera
+      && sunScreenPosition[0] > -0.35 && sunScreenPosition[0] < 1.35
+      && sunScreenPosition[1] > -0.35 && sunScreenPosition[1] < 1.35;
+    // Shafts need the sun above the horizon and reasonably in front, otherwise
+    // they are just a wash over the whole frame.
+    sunVisibleForGodrays = onScreen
+      ? Math.max(0, Math.min(1, (sunDirection[1] - 0.02) / 0.3)) * Math.max(0, Math.min(1, sunForward * 1.6))
+      : 0;
+
+    // ---- shadow cascade ---------------------------------------------------
+    // The cascade resolution follows the tier: a depth-only map that covers a
+    // fixed world area can easily out-rasterise the whole colour frame.
+    shadowPass.resize(tier.shadowMapSize);
+    if (shadowPass.supported) {
+      lightViewProjection.set(
+        fitSunShadowMatrix(sunDirection, [player.x, player.y, player.z], {
+          radius: SHADOW_RADIUS,
+          mapSize: shadowPass.mapSize,
+        }),
+      );
+      renderShadowPass(shaderTime);
+    }
+
+    // ---- scene into the HDR target ---------------------------------------
+    postPipeline.resize(canvas.width, canvas.height, tier.renderScale);
+    postPipeline.beginScene();
     gl.clearColor(sky[0], sky[1], sky[2], 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    gl.disable(gl.BLEND);
-    gl.enable(gl.DEPTH_TEST);
-    // Greedy and dynamic passes are not yet certified for one global winding
-    // order; culling here exposes missing faces as floating terrain at night.
-    gl.disable(gl.CULL_FACE);
-    gl.cullFace(gl.BACK);
-    gl.frontFace(gl.CCW);
     gl.useProgram(program);
 
-    gl.uniformMatrix4fv(viewProjectionLocation, false, multiply4(projection, view));
+    gl.uniformMatrix4fv(viewProjectionLocation, false, viewProjectionMatrix);
     gl.uniform3f(cameraLocation, eye[0], eye[1], eye[2]);
+    gl.uniform3f(terrainCameraPositionLocation, eye[0], eye[1], eye[2]);
     gl.uniform1f(timeLocation, shaderTime);
     gl.uniform1f(daylightLocation, daylight);
     gl.uniform3f(terrainSkyColorLocation, sky[0], sky[1], sky[2]);
     gl.uniform3f(terrainSkyHorizonColorLocation, skyHorizon[0], skyHorizon[1], skyHorizon[2]);
+    gl.uniform3f(terrainGroundBounceLocation, GROUND_BOUNCE[0], GROUND_BOUNCE[1], GROUND_BOUNCE[2]);
     gl.uniform3f(terrainSunDirectionLocation, sunDirection[0], sunDirection[1], sunDirection[2]);
     gl.uniform3f(terrainSunColorLocation, sunColor[0], sunColor[1], sunColor[2]);
+    gl.uniform1f(terrainSunIntensityLocation, SUN_INTENSITY);
+    gl.uniform1f(terrainAmbientStrengthLocation, AMBIENT_STRENGTH);
+    gl.uniform1f(terrainAmbientDesaturationLocation, AMBIENT_DESATURATION);
+    gl.uniform1f(terrainBumpStrengthLocation, shaderQuality >= 0.5 ? BUMP_STRENGTH : 0);
+    gl.uniform1f(terrainDetailStrengthLocation, DETAIL_STRENGTH);
+    gl.uniform1f(terrainDetailScaleLocation, DETAIL_SCALE);
+    gl.uniform1f(terrainWaterDetailLocation, WATER_DETAIL_STRENGTH * tier.waterDetail);
+    gl.uniform1f(terrainNearLocation, 0.05);
+    gl.uniform1f(terrainFarLocation, RENDER_FAR);
+    gl.uniformMatrix4fv(lightViewProjectionLocation, false, lightViewProjection);
+    gl.uniform1f(shadowTexelSizeLocation, 1 / shadowPass.mapSize);
+    gl.uniform1f(shadowRadiusLocation, SHADOW_RADIUS);
+    gl.uniform2f(shadowFadeLocation, SHADOW_FADE_START, SHADOW_FADE_END);
+    gl.uniform1f(
+      shadowStrengthLocation,
+      // A sun on the horizon casts almost no readable shadow, and the cascade
+      // would only produce noise there, so fade the term out with it.
+      shadowPass.supported ? Math.max(0, Math.min(1, (sunDirection[1] + 0.05) / 0.25)) * 0.94 : 0,
+    );
+    gl.uniform1f(shadowTapsLocation, tier.shadowTaps);
+    gl.uniform1f(shadowFloorLocation, SHADOW_FLOOR);
+    gl.activeTexture(gl.TEXTURE0 + TERRAIN_TEXTURE_UNIT.atlas);
+    gl.bindTexture(gl.TEXTURE_2D, atlasTexture);
+    gl.activeTexture(gl.TEXTURE0 + TERRAIN_TEXTURE_UNIT.cloudMap);
+    gl.bindTexture(gl.TEXTURE_2D, cloudTexture);
+    gl.activeTexture(gl.TEXTURE0 + TERRAIN_TEXTURE_UNIT.shadowMap);
+    gl.bindTexture(gl.TEXTURE_2D, shadowPass.texture ?? shadowFallbackTexture);
+    gl.activeTexture(gl.TEXTURE0 + TERRAIN_TEXTURE_UNIT.shadowDisk);
+    gl.bindTexture(gl.TEXTURE_2D, shadowDiskTexture);
+    gl.activeTexture(gl.TEXTURE0 + TERRAIN_TEXTURE_UNIT.sceneDepth);
+    gl.bindTexture(gl.TEXTURE_2D, postPipeline.scene.depthTexture ?? atlasTexture);
 
     gl.uniform1f(surfacePassLocation, 0);
     gl.uniform1f(shadowPassLocation, 0);
-    gl.bindBuffer(gl.ARRAY_BUFFER, terrainMaterialBuffer);
-    gl.enableVertexAttribArray(materialLocation);
-    gl.vertexAttribPointer(materialLocation, 1, gl.FLOAT, false, 0, 0);
-    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-    gl.enableVertexAttribArray(positionLocation);
-    gl.vertexAttribPointer(positionLocation, 3, gl.FLOAT, false, 0, 0);
-    gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
-    gl.enableVertexAttribArray(colorLocation);
-    gl.vertexAttribPointer(colorLocation, 3, gl.FLOAT, false, 0, 0);
-    gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffer);
-    gl.enableVertexAttribArray(uvLocation);
-    gl.vertexAttribPointer(uvLocation, 2, gl.FLOAT, false, 0, 0);
-    gl.bindBuffer(gl.ARRAY_BUFFER, tileBuffer);
-    gl.enableVertexAttribArray(tileLocation);
-    gl.vertexAttribPointer(tileLocation, 4, gl.FLOAT, false, 0, 0);
+    bindTerrainAttributes({
+      position: positionBuffer,
+      color: colorBuffer,
+      light: terrainLightBuffer,
+      normal: terrainNormalBuffer,
+      uv: uvBuffer,
+      material: terrainMaterialBuffer,
+      tile: tileBuffer,
+    }, true);
     gl.drawArrays(gl.TRIANGLES, 0, terrainVertexCount);
 
     // The sky only needs to shade untouched depth. Drawing it after opaque
-    // terrain avoids running cloud noise for pixels the world already covers.
+    // terrain avoids running the cloud march for pixels the world already covers.
     gl.depthMask(false);
     gl.depthFunc(gl.LEQUAL);
     gl.useProgram(skyProgram);
@@ -3820,6 +4310,7 @@ try {
     gl.uniform3f(skyCameraForwardLocation, direction[0], direction[1], direction[2]);
     gl.uniform3f(skyCameraRightLocation, cameraRight[0], cameraRight[1], cameraRight[2]);
     gl.uniform3f(skyCameraUpLocation, cameraUp[0], cameraUp[1], cameraUp[2]);
+    gl.uniform3f(skyCameraPositionLocation, eye[0], eye[1], eye[2]);
     gl.uniform3f(skyColorLocation, sky[0], sky[1], sky[2]);
     gl.uniform3f(skyHorizonColorLocation, skyHorizon[0], skyHorizon[1], skyHorizon[2]);
     gl.uniform3f(skySunDirectionLocation, sunDirection[0], sunDirection[1], sunDirection[2]);
@@ -3828,6 +4319,10 @@ try {
     gl.uniform1f(skyTanHalfFovLocation, Math.tan(fov * Math.PI / 360));
     gl.uniform1f(skyDaylightLocation, daylight);
     gl.uniform1f(skyTimeLocation, shaderTime);
+    gl.uniform1f(skyCloudStepsLocation, tier.cloudSteps);
+    gl.uniform1f(skyCloudLightStepsLocation, tier.cloudLightSteps);
+    gl.uniform1f(skyCloudCoverageLocation, CLOUD_COVERAGE);
+    gl.uniform1f(skyWindSpeedLocation, CLOUD_WIND_SPEED);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.depthFunc(gl.LESS);
     gl.depthMask(true);
@@ -3838,18 +4333,15 @@ try {
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       gl.depthMask(false);
       gl.uniform1f(surfacePassLocation, 1);
-      gl.bindBuffer(gl.ARRAY_BUFFER, waterPositionBuffer);
-      gl.vertexAttribPointer(positionLocation, 3, gl.FLOAT, false, 0, 0);
-      gl.bindBuffer(gl.ARRAY_BUFFER, waterColorBuffer);
-      gl.vertexAttribPointer(colorLocation, 3, gl.FLOAT, false, 0, 0);
-      gl.bindBuffer(gl.ARRAY_BUFFER, waterUvBuffer);
-      gl.vertexAttribPointer(uvLocation, 2, gl.FLOAT, false, 0, 0);
-      gl.bindBuffer(gl.ARRAY_BUFFER, waterMaterialBuffer);
-      gl.enableVertexAttribArray(materialLocation);
-      gl.vertexAttribPointer(materialLocation, 1, gl.FLOAT, false, 0, 0);
-      gl.bindBuffer(gl.ARRAY_BUFFER, waterTileBuffer);
-      gl.enableVertexAttribArray(tileLocation);
-      gl.vertexAttribPointer(tileLocation, 4, gl.FLOAT, false, 0, 0);
+      bindTerrainAttributes({
+        position: waterPositionBuffer,
+        color: waterColorBuffer,
+        light: waterLightBuffer,
+        normal: waterNormalBuffer,
+        uv: waterUvBuffer,
+        material: waterMaterialBuffer,
+        tile: waterTileBuffer,
+      }, true);
       gl.drawArrays(gl.TRIANGLES, 0, waterVertexCount);
       gl.depthMask(true);
       gl.disable(gl.BLEND);
@@ -3859,40 +4351,170 @@ try {
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       gl.depthMask(false);
       gl.uniform1f(shadowPassLocation, 1);
-      gl.disableVertexAttribArray(materialLocation);
-      gl.vertexAttrib1f(materialLocation, 0);
-      gl.disableVertexAttribArray(tileLocation);
-      gl.vertexAttrib4f(tileLocation, 0, 0, 1, 1);
-      gl.bindBuffer(gl.ARRAY_BUFFER, shadowPositionBuffer);
-      gl.vertexAttribPointer(positionLocation, 3, gl.FLOAT, false, 0, 0);
-      gl.bindBuffer(gl.ARRAY_BUFFER, shadowColorBuffer);
-      gl.vertexAttribPointer(colorLocation, 3, gl.FLOAT, false, 0, 0);
-      gl.bindBuffer(gl.ARRAY_BUFFER, shadowUvBuffer);
-      gl.vertexAttribPointer(uvLocation, 2, gl.FLOAT, false, 0, 0);
+      bindTerrainAttributes({
+        position: shadowPositionBuffer,
+        color: shadowColorBuffer,
+        light: shadowLightBuffer,
+        normal: shadowNormalBuffer,
+        uv: shadowUvBuffer,
+        material: null,
+        tile: null,
+      }, false);
       gl.drawArrays(gl.TRIANGLES, 0, shadowVertexCount);
       gl.depthMask(true);
       gl.disable(gl.BLEND);
     }
     gl.uniform1f(shadowPassLocation, 0);
     gl.uniform1f(surfacePassLocation, 0);
-    gl.disableVertexAttribArray(materialLocation);
-    gl.vertexAttrib1f(materialLocation, 0);
-    gl.disableVertexAttribArray(tileLocation);
-    gl.vertexAttrib4f(tileLocation, 0, 0, 1, 1);
-    gl.bindBuffer(gl.ARRAY_BUFFER, dynamicPositionBuffer);
-    gl.vertexAttribPointer(positionLocation, 3, gl.FLOAT, false, 0, 0);
-    gl.bindBuffer(gl.ARRAY_BUFFER, dynamicColorBuffer);
-    gl.vertexAttribPointer(colorLocation, 3, gl.FLOAT, false, 0, 0);
-    gl.bindBuffer(gl.ARRAY_BUFFER, dynamicUvBuffer);
-    gl.vertexAttribPointer(uvLocation, 2, gl.FLOAT, false, 0, 0);
-    gl.bindBuffer(gl.ARRAY_BUFFER, dynamicTileBuffer);
-    gl.enableVertexAttribArray(tileLocation);
-    gl.vertexAttribPointer(tileLocation, 4, gl.FLOAT, false, 0, 0);
+    bindTerrainAttributes({
+      position: dynamicPositionBuffer,
+      color: dynamicColorBuffer,
+      light: dynamicLightBuffer,
+      normal: dynamicNormalBuffer,
+      uv: dynamicUvBuffer,
+      material: null,
+      tile: dynamicTileBuffer,
+    }, false);
     gl.uniform1f(miningProgressLocation, miningProgress(miningState, performance.now()));
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.drawArrays(gl.TRIANGLES, 0, dynamicVertexCount);
     gl.disable(gl.BLEND);
+
+    // ---- particles --------------------------------------------------------
+    // Drawn last in the scene, over the entities, so a burning mob is visibly
+    // alight. Premultiplied output means one batch and one blend state cover
+    // both an additive spark and a covering puff of smoke: the shader writes a
+    // zero destination weight for the additive ones. Depth writes stay off, or
+    // a particle would carve its own silhouette into the depth buffer and cull
+    // every particle behind it.
+    rebuildVfxMesh(cameraRight, cameraUp);
+    if (vfxVertexCount > 0) {
+      gl.useProgram(program);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      gl.depthMask(false);
+      gl.uniform1f(vfxPassLocation, 1);
+      bindTerrainAttributes({
+        position: vfxPositionBuffer,
+        color: vfxColorBuffer,
+        light: vfxLightBuffer,
+        normal: vfxNormalBuffer,
+        uv: vfxUvBuffer,
+        material: null,
+        tile: vfxTileBuffer,
+      }, false);
+      gl.drawArrays(gl.TRIANGLES, 0, vfxVertexCount);
+      gl.uniform1f(vfxPassLocation, 0);
+      gl.depthMask(true);
+      gl.disable(gl.BLEND);
+    }
+
+    // ---- composite --------------------------------------------------------
+    const headUnderwater = isHeadUnderwater(world, player);
+    postPipeline.composite({
+      // Exposure sets how much of the HDR range the tonemapper gets to work with.
+      // A front-lit surface with a 0.35 albedo already lands near 1.0 under a 2.35
+      // sun, so a higher exposure pushes the whole midtone band into the shoulder
+      // of the ACES curve, where tonal separation - and therefore the texture
+      // detail the atlas just gained - is compressed away. Sitting lower keeps the
+      // highlights for the bloom and the god rays and leaves the midtones legible.
+      exposure: headUnderwater ? 1.6 : 1.9,
+      bloomThreshold: 0.42,
+      bloomStrength: 0.062,
+      bloomRadius: 1.0,
+      godrayStrength: sunVisibleForGodrays * 0.34,
+      godrayColor: sunColor,
+      godrayDensity: 0.78,
+      godrayDecay: 0.955,
+      godrayWeight: 1.0,
+      sunUv: sunScreenPosition,
+      sunVisible: sunVisibleForGodrays,
+      vignette: 0.3,
+      // Lateral chromatic aberration, scaled by the squared radius. This is a
+      // lens artefact and it only reads as one at the very edge of the frame: at
+      // 0.0018 it was fringing the red and green channels apart along every
+      // high-contrast edge, including near the centre, which is a defect rather
+      // than an effect. Keep it just visible in the corners.
+      aberration: 0.0007,
+      grain: 0.02,
+      sharpen: 0.2,
+      saturation: 1.0,
+      contrast: 1.06,
+      lift: [-0.004, -0.002, 0.004],
+      gain: [1.0, 0.995, 0.985],
+      fxaa: 0.9,
+      underwater: headUnderwater ? 1 : 0,
+      underwaterColor: [0.26, 0.55, 0.64],
+      caustics: 0.75,
+      time: shaderTime,
+      near: 0.05,
+      far: RENDER_FAR,
+    });
+  }
+
+  /**
+   * Bind the terrain program's attribute set for one draw batch. The four
+   * batches (terrain, water, entity blobs, entities) share one program and one
+   * layout, so a single helper keeps them from drifting apart. `withMaterial`
+   * is false for the batches that carry no material band, which is pinned to
+   * zero instead of being left pointing at the previous batch's buffer.
+   */
+  function bindTerrainAttributes(buffers, withMaterial) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
+    gl.enableVertexAttribArray(positionLocation);
+    gl.vertexAttribPointer(positionLocation, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.color);
+    gl.enableVertexAttribArray(colorLocation);
+    gl.vertexAttribPointer(colorLocation, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.light);
+    gl.enableVertexAttribArray(lightLocation);
+    gl.vertexAttribPointer(lightLocation, 2, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.normal);
+    gl.enableVertexAttribArray(normalLocation);
+    gl.vertexAttribPointer(normalLocation, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.uv);
+    gl.enableVertexAttribArray(uvLocation);
+    gl.vertexAttribPointer(uvLocation, 2, gl.FLOAT, false, 0, 0);
+    if (withMaterial && buffers.material !== null) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffers.material);
+      gl.enableVertexAttribArray(materialLocation);
+      gl.vertexAttribPointer(materialLocation, 1, gl.FLOAT, false, 0, 0);
+    } else {
+      gl.disableVertexAttribArray(materialLocation);
+      gl.vertexAttrib1f(materialLocation, 0);
+    }
+    if (buffers.tile !== null) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffers.tile);
+      gl.enableVertexAttribArray(tileLocation);
+      gl.vertexAttribPointer(tileLocation, 4, gl.FLOAT, false, 0, 0);
+    } else {
+      gl.disableVertexAttribArray(tileLocation);
+      gl.vertexAttrib4f(tileLocation, 0, 0, 1, 1);
+    }
+  }
+
+  /** Depth-only pass from the sun, drawing everything that can cast. */
+  function renderShadowPass(shaderTimeValue) {
+    const depthProgram = shadowPass.begin();
+    gl.uniformMatrix4fv(depthProgram.lightViewProjection, false, lightViewProjection);
+    gl.uniform1f(depthProgram.time, shaderTimeValue);
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, terrainVertexCount);
+    if (waterVertexCount > 0) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, waterPositionBuffer);
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+      gl.drawArrays(gl.TRIANGLES, 0, waterVertexCount);
+    }
+    if (dynamicVertexCount > 0) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, dynamicPositionBuffer);
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+      gl.drawArrays(gl.TRIANGLES, 0, dynamicVertexCount);
+    }
+    gl.disableVertexAttribArray(0);
+    shadowPass.end();
   }
 
   function updateLockHint() {
@@ -4106,7 +4728,11 @@ try {
     cancelMining();
     closeContainerPanels();
     audio.play("death");
+    // The player has no body to come apart, so the red burst stays in
+    // screen-space where it reads as "you died" rather than as a thing that
+    // happened at a coordinate. The world-space puff marks where they fell.
     spawnParticles("#d03030", 14);
+    emitDeathPuff(vfx, player.x, player.y, player.z, [0.62, 0.16, 0.14], 18);
     scatterDeathDrops();
     saveGame();
     if (document.pointerLockElement === canvas && typeof document.exitPointerLock === "function") {
@@ -4345,6 +4971,35 @@ try {
   } : {};
 
   window.__bend2craft = {
+    presentation: {
+      get renderer() { return rendererKind; },
+      get shaderQuality() { return shaderQuality; },
+      get postColorFormat() { return postPipeline?.capabilities.name ?? null; },
+      get depthSampling() { return postPipeline?.depthSampling.supported ?? false; },
+      get shadowSupported() { return shadowPass?.supported ?? false; },
+      get shadowMapSize() { return shadowPass?.mapSize ?? 0; },
+      get visualQualityLevel() { return visualQuality?.level ?? -1; },
+      get visualQualityName() { return visualQuality?.tier.name ?? null; },
+      // A pinned tier turns the frame-time safety net off, so the diagnostic
+      // has to report that or a smooth frame is indistinguishable from a
+      // deliberately held tier.
+      get visualQualityAuto() { return visualQuality?.auto ?? false; },
+      get cloudSteps() { return visualQuality?.tier.cloudSteps ?? 0; },
+      get smoothedFrameMs() { return visualQuality?.smoothedFrameMs ?? 0; },
+      get sunScreen() { return [...sunScreenPosition]; },
+      get sunVisibleForGodrays() { return sunVisibleForGodrays; },
+      get sceneTargetSize() {
+        return postPipeline === null ? null : [postPipeline.scene.width, postPipeline.scene.height];
+      },
+      get sunDirection() { return lastSunDirection; },
+      // Effect diagnostics. A particle system that silently stops emitting looks
+      // exactly like a particle system that is drawing perfectly, so the count
+      // of live particles and of burning bodies has to be observable from
+      // outside for a browser check to mean anything.
+      get vfxParticles() { return vfx.count; },
+      get vfxVertexCount() { return vfxVertexCount; },
+      get burningMobs() { return mobs.filter((mob) => mob.alive && mob.burning).length; },
+    },
     world: {
       seed: seedLabel(SEED),
       mode: WORLD_MODE,
@@ -4810,6 +5465,11 @@ try {
         rebuildMesh(false);
       }
       rebuildDynamicMesh(worldTime);
+      // Fire is emitted from the frame, not the simulation tick: the domain
+      // decides which mobs are burning, but the plume has to run at the rate the
+      // player sees, and the simulation only steps at 5Hz.
+      updateVfx(dt);
+      updateBurnAudio(dt);
       updateHud();
       highlightFrame = (highlightFrame + 1) % 6;
       if (highlightFrame === 0) updateTargetHighlight();

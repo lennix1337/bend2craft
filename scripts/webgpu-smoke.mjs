@@ -9,6 +9,10 @@ import {
   frameReadbackReason,
   probeSceneFrame,
 } from "../web/webgpu-frame-readback.js";
+// The same layout the renderer declares. This used to be a hand-copied list that
+// fell behind the shader, so a layout change surfaced here as a bogus shader
+// error instead of as the stale copy it was.
+import { TERRAIN_VERTEX_LAYOUT } from "../web/webgpu-chunk-buffers.js";
 
 const baseUrl = process.argv[2] ?? null;
 const browser = await chromium.launch({
@@ -155,7 +159,7 @@ try {
       const page = await browser.newPage();
       try {
         await page.goto(baseUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-        return await page.evaluate(async ({ terrainCode, skyCode }) => {
+        return await page.evaluate(async ({ terrainCode, skyCode, vertexLayout }) => {
           const adapter = await navigator.gpu.requestAdapter();
           if (adapter === null) return { supported: false, errors: ["no adapter"] };
           const device = await adapter.requestDevice();
@@ -189,16 +193,7 @@ try {
             vertex: {
               module: terrainModule,
               entryPoint: "vs_main",
-              buffers: [{
-                arrayStride: 52,
-                attributes: [
-                  { shaderLocation: 0, offset: 0, format: "float32x3" },
-                  { shaderLocation: 1, offset: 12, format: "float32x3" },
-                  { shaderLocation: 2, offset: 24, format: "float32x2" },
-                  { shaderLocation: 3, offset: 32, format: "float32" },
-                  { shaderLocation: 4, offset: 36, format: "float32x4" },
-                ],
-              }],
+              buffers: [vertexLayout],
             },
             fragment: {
               module: terrainModule,
@@ -220,7 +215,12 @@ try {
             depthStencil: { format: "depth24plus", depthWriteEnabled: false, depthCompare: "less-equal" },
           });
           return { supported: true, errors: [] };
-        }, { terrainCode: WEBGPU_TERRAIN_SHADER, skyCode: WEBGPU_SKY_SHADER });
+        }, {
+          terrainCode: WEBGPU_TERRAIN_SHADER,
+          skyCode: WEBGPU_SKY_SHADER,
+          // Serialised into the page, so the frozen object has to cross as data.
+          vertexLayout: JSON.parse(JSON.stringify(TERRAIN_VERTEX_LAYOUT)),
+        });
       } finally {
         await page.close();
       }

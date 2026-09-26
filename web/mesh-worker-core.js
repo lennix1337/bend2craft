@@ -28,6 +28,8 @@ function composeVertexData(meshes) {
   const composeLayer = (layers, quadCount) => ({
     positions: concatFloat32Arrays(layers.map((layer) => layer.positions)),
     colors: concatFloat32Arrays(layers.map((layer) => layer.colors)),
+    lights: concatFloat32Arrays(layers.map((layer) => layer.lights)),
+    normals: concatFloat32Arrays(layers.map((layer) => layer.normals)),
     uvs: concatFloat32Arrays(layers.map((layer) => layer.uvs)),
     materials: concatFloat32Arrays(layers.map((layer) => layer.materials)),
     tiles: concatFloat32Arrays(layers.map((layer) => layer.tiles)),
@@ -50,7 +52,6 @@ export function buildChunkMeshes({
   activeKeys,
   targets,
   chunks,
-  daylight = 1,
 }) {
   if (!Number.isInteger(chunkSize) || chunkSize < 1 || !Number.isInteger(maxY) || maxY < 1) {
     throw new RangeError("mesh worker dimensions must be positive integers");
@@ -115,7 +116,7 @@ export function buildChunkMeshes({
       chunkX: chunk.chunkX,
       chunkZ: chunk.chunkZ,
       ...mesh,
-      vertexData: buildTerrainVertexArrays(mesh.quads, daylight),
+      vertexData: buildTerrainVertexArrays(mesh.quads),
     });
   }
   return meshes;
@@ -150,7 +151,7 @@ export function buildChunkMeshBatch({
     blockCount,
     quads: mergedQuads,
     vertexData: merge
-      ? buildTerrainVertexArrays(mergedQuads, options.daylight ?? 1)
+      ? buildTerrainVertexArrays(mergedQuads)
       : composeVertexData(allMeshes),
     activeKeys,
     perChunkOnly: false,

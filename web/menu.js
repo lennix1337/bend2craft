@@ -17,16 +17,26 @@ import {
   touchWorld,
 } from "./profiles.js";
 import {
+  audioVolumesFromOptions,
+  createDefaultOptions,
   createWorldConfig,
+  DEFAULT_GRAPHICS_QUALITY,
   DEFAULT_RENDER_DISTANCE,
+  GRAPHICS_QUALITY_CHOICES,
   MAX_RENDER_DISTANCE,
+  MAX_VOLUME,
   MIN_RENDER_DISTANCE,
+  MIN_VOLUME,
   loadOptions,
   randomSeedText,
   saveOptions,
   validateWorldConfig,
   worldModeLabel,
 } from "./settings.js";
+import { VISUAL_QUALITY_TIERS } from "./visual-quality.js";
+import { getAudioMixer } from "./audio.js";
+import { probeWebGpu } from "./webgpu-capabilities.js";
+import { describeBackendNotice, takeBackendNotice } from "./backend-notice.js";
 import { clearTransactional } from "./persistent-save.js";
 import { continueTarget } from "./menu-navigation.js";
 import { nextFocusTarget, setShellInert } from "./modal-focus.js";
@@ -246,6 +256,93 @@ export function runMenu() {
     beginWorldNavigation(selectedProfileId, selectedWorldId, world.name);
   }
 
+  // The tier list is built from the same table the runtime walks, so adding a tier
+  // cannot leave the menu offering a name the controller does not have, and a
+  // rename cannot leave a stale option behind. Each entry carries what it costs,
+  // because "Ultra" on its own tells a player nothing about the trade.
+  const TIER_SUMMARY = Object.freeze({
+    minimal: "Lowest cost: reduced render resolution, no god rays, small shadow map.",
+    low: "Adds water detail and foliage wind at a reduced render resolution.",
+    medium: "Adds god rays and a deeper bloom chain.",
+    high: "Full detail at native resolution with a large shadow map.",
+    ultra: "Highest cost: densest cloud march, widest shadow filter, full resolution.",
+  });
+
+  function buildGraphicsQualityOptions(select) {
+    if (select === null || select.dataset.built === "true") return;
+    const labels = {
+      auto: "Auto (match frame rate)",
+      minimal: "Minimal",
+      low: "Low",
+      medium: "Medium",
+      high: "High",
+      ultra: "Ultra",
+    };
+    for (const choice of GRAPHICS_QUALITY_CHOICES) {
+      // `document`, not `doc`: in this module `doc` is the saved profiles data,
+      // and reaching for it here throws inside the click handler, which then
+      // never reaches the screen switch at all.
+      const option = document.createElement("option");
+      option.value = choice;
+      option.textContent = labels[choice] ?? choice;
+      select.append(option);
+    }
+    select.dataset.built = "true";
+  }
+
+  // A WebGPU option the player can select but cannot run is worse than no option:
+  // it looks like the browser is supported and the failure only shows up as a hang
+  // at boot. So the menu probes the same way the runtime does and disables the
+  // choice when it is not actually there, with the reason visible.
+  const backendProbe = { webgpu: { supported: false, adapterName: null, reason: "not probed" } };
+
+  async function probeBackends() {
+    backendProbe.webgpu = await probeWebGpu(globalThis.navigator, null);
+    applyRendererAvailability();
+    return backendProbe.webgpu;
+  }
+
+  function applyRendererAvailability() {
+    const select = element("input-renderer");
+    if (select === null) return;
+    const option = select.querySelector('option[value="webgpu"]');
+    if (option === null) return;
+    const probe = backendProbe.webgpu;
+    option.disabled = !probe.supported;
+    option.textContent = probe.supported
+      ? `WebGPU${probe.adapterName ? ` (${probe.adapterName})` : ""}`
+      : `WebGPU (unavailable: ${probe.reason})`;
+    const hint = select.parentElement?.querySelector(".field-hint");
+    if (hint !== null && hint !== undefined && !probe.supported) {
+      hint.textContent = `This browser reports no usable WebGPU adapter (${probe.reason}), so the option is disabled. Auto already selects the verified WebGL path.`;
+    }
+    releaseUnusablePin();
+  }
+
+  /**
+   * A stored WebGPU pin that cannot run would bounce the player between the world
+   * and this menu on every attempt, because the pin survives the recovery unless
+   * something here clears it. Two independent reasons release it, and they are
+   * not the same question: the probe answers "is there a usable adapter", while a
+   * failure notice answers "did it actually run here", which is the only evidence
+   * that matters for this machine.
+   */
+  function releaseUnusablePin() {
+    const current = loadOptions(window.localStorage);
+    if (current.renderer !== "webgpu") return;
+    const probeUnavailable = backendProbe.webgpu.reason !== "not probed" && !backendProbe.webgpu.supported;
+    if (!probeUnavailable && !failedBackendNotice) return;
+    saveOptions(window.localStorage, { ...current, renderer: "auto" });
+    const select = element("input-renderer");
+    if (select !== null && select.value === "webgpu") select.value = "auto";
+  }
+
+
+
+  function applyStoredVolumes() {
+    getAudioMixer().setVolumes(audioVolumesFromOptions(loadOptions(window.localStorage)));
+  }
+
   function renderOptions() {
     const fresh = loadOptions(window.localStorage);
     element("input-fov").value = String(fresh.fov);
@@ -258,12 +355,29 @@ export function runMenu() {
     renderDistance.value = String(fresh.renderDistance ?? DEFAULT_RENDER_DISTANCE);
     element("render-distance-value").textContent = String(fresh.renderDistance ?? DEFAULT_RENDER_DISTANCE);
     element("input-renderer").value = fresh.renderer;
+    const quality = element("input-graphics-quality");
+    buildGraphicsQualityOptions(quality);
+    quality.value = fresh.graphicsQuality ?? DEFAULT_GRAPHICS_QUALITY;
+    // The hint follows the selection, so the panel explains the tier in hand
+    // rather than describing the ladder in the abstract.
+    const summary = quality.parentElement?.querySelector(".field-hint");
+    if (summary !== null && summary !== undefined) {
+      const chosen = VISUAL_QUALITY_TIERS.find((tier) => tier.name === quality.value);
+      summary.textContent = chosen === undefined
+        ? "Auto scales shadows, volumetric clouds, water detail, cascade resolution and internal render resolution to hold the frame rate. Pinning a tier turns that off."
+        : TIER_SUMMARY[chosen.name] ?? "";
+    }
+    for (const [key, option] of [["master", "volumeMaster"], ["music", "volumeMusic"], ["effects", "volumeEffects"]]) {
+      const value = fresh[option];
+      element(`input-volume-${key}`).value = String(Math.round(value * 100));
+      element(`volume-${key}-value`).textContent = String(Math.round(value * 100));
+    }
+    element("input-show-coords").value = fresh.showCoords ? "on" : "off";
     for (const key of ["sneak", "sprint", "inventory", "drop", "attack"]) {
       const input = document.getElementById(`input-control-${key}`);
       if (input !== null) input.value = fresh.controls[key];
     }
-    const coords = menu.querySelector('[data-action="toggle-coords"]');
-    if (coords !== null) coords.textContent = `Coordinates: ${fresh.showCoords ? "ON" : "OFF"}`;
+    applyStoredVolumes();
   }
 
   menu.addEventListener("click", (event) => {
@@ -387,9 +501,10 @@ export function runMenu() {
       selectedWorldId = null;
       updateTitle();
       renderWorlds();
-    } else if (action === "toggle-coords") {
-      const fresh = { ...loadOptions(window.localStorage), showCoords: !loadOptions(window.localStorage).showCoords };
-      saveOptions(window.localStorage, fresh);
+    } else if (action === "options-reset") {
+      // Reset writes the whole default document rather than clearing the key, so
+      // a stored option this build no longer knows about cannot survive the reset.
+      saveOptions(window.localStorage, createDefaultOptions());
       renderOptions();
     } else if (action === "options-done") {
       showScreen(optionsReturn);
@@ -411,6 +526,24 @@ export function runMenu() {
       saveOptions(window.localStorage, { ...loadOptions(window.localStorage), renderDistance: value });
     } else if (event.target.id === "input-renderer") {
       saveOptions(window.localStorage, { ...loadOptions(window.localStorage), renderer: event.target.value });
+    } else if (event.target.id === "input-graphics-quality") {
+      saveOptions(window.localStorage, { ...loadOptions(window.localStorage), graphicsQuality: event.target.value });
+      renderOptions();
+    } else if (event.target.id === "input-show-coords") {
+      saveOptions(window.localStorage, { ...loadOptions(window.localStorage), showCoords: event.target.value === "on" });
+    } else if (event.target.id.startsWith("input-volume-")) {
+      const bus = event.target.id.replace("input-volume-", "");
+      const option = bus === "master" ? "volumeMaster" : bus === "music" ? "volumeMusic" : "volumeEffects";
+      if (option === "volumeEffects" && bus !== "effects") return;
+      const value = Math.max(MIN_VOLUME, Math.min(MAX_VOLUME, Number(event.target.value) / 100));
+      element(`volume-${bus}-value`).textContent = String(Math.round(value * 100));
+      const fresh = { ...loadOptions(window.localStorage), [option]: value };
+      saveOptions(window.localStorage, fresh);
+      // Applied immediately and previewed, so the level can be judged from the
+      // menu rather than only after entering the world.
+      const mixer = getAudioMixer();
+      mixer.setVolumes(audioVolumesFromOptions(fresh));
+      mixer.play(bus === "music" ? "ambient" : "click");
     } else if (event.target.id?.startsWith("input-control-")) {
       const key = event.target.id.replace("input-control-", "");
       saveOptions(window.localStorage, {
@@ -425,4 +558,31 @@ export function runMenu() {
   element("input-seed").value = "";
   updateTitle();
   showScreen("screen-title");
+
+  // Surface a backend that failed during the last attempt, before anything else
+  // draws attention, and start the capability probe. The probe resolves on its
+  // own; the menu is usable while it is in flight, because the default is already
+  // the verified path.
+  showBackendNotice();
+  probeBackends();
+}
+
+// Whether the last session reported a backend failure. The pin check below needs
+// it and the notice reader produces it, so it lives beside the reader rather than
+// inside the menu closure - a flag the reader cannot see is a flag that never gets
+// set, and the pin is then never released.
+let failedBackendNotice = false;
+
+/** A one-shot banner explaining why the previous session ended up back here. */
+function showBackendNotice() {
+  const banner = document.getElementById("backend-notice");
+  const notice = takeBackendNotice();
+  failedBackendNotice = notice !== null && notice.renderer === "webgpu";
+  if (banner === null) return;
+  if (notice === null) {
+    banner.hidden = true;
+    return;
+  }
+  banner.textContent = describeBackendNotice(notice);
+  banner.hidden = false;
 }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  atlasMipLevelGeometry,
   atlasUV,
   atlasCellOrigin,
   atlasTile,
@@ -7,6 +8,7 @@ import {
   ATLAS_COLUMNS,
   ATLAS_ROWS,
   ATLAS_CAPACITY,
+  ATLAS_MIPMAP_SAFE_LEVELS,
   ATLAS_TILE_GUTTER,
   ATLAS_TILE_SIZE,
   ATLAS_TILE_STRIDE,
@@ -26,11 +28,32 @@ import {
 assert.equal(ATLAS_COLUMNS, 8);
 assert.equal(ATLAS_ROWS, 8);
 assert.equal(ATLAS_CAPACITY, 64);
-assert.equal(ATLAS_TILE_SIZE, 32);
+assert.equal(ATLAS_TILE_SIZE, 64, "a face is ~30-60 screen pixels, so a 32-texel tile was magnified 1:1");
 assert.ok(ATLAS_TILE_GUTTER > 0, "each tile must own padding so the mip chain cannot blend materials");
 assert.equal(ATLAS_TILE_STRIDE, ATLAS_TILE_SIZE + 2 * ATLAS_TILE_GUTTER);
-assert.equal(ATLAS_WIDTH, 512, "the padded terrain atlas must remain power-of-two for mipmaps");
-assert.equal(ATLAS_HEIGHT, 512, "the padded terrain atlas must remain power-of-two for mipmaps");
+assert.equal(ATLAS_WIDTH, 1024, "the padded terrain atlas must remain power-of-two for mipmaps");
+assert.equal(ATLAS_HEIGHT, 1024, "the padded terrain atlas must remain power-of-two for mipmaps");
+// Every certified mip level has to be backed by its own padding, or the chain
+// blends a tile into its neighbour at a level the shader is allowed to sample.
+for (const level of ATLAS_MIPMAP_SAFE_LEVELS) {
+  const geometry = atlasMipLevelGeometry(ATLAS_TILE_GUTTER, ATLAS_TILE_SIZE, level);
+  assert.ok(
+    geometry.padding >= 1,
+    `mip level ${level} leaves no padding, so a tile would blend into its neighbour`,
+  );
+  assert.ok(
+    geometry.interior >= 1,
+    `mip level ${level} shrinks the tile below a pixel`,
+  );
+}
+// The chain must stop at the last level that still has both padding and more
+// than one interior texel, and must not certify a level past it.
+const lastCertified = atlasMipLevelGeometry(ATLAS_TILE_GUTTER, ATLAS_TILE_SIZE, ATLAS_MIPMAP_SAFE_LEVELS.at(-1));
+assert.ok(lastCertified.interior >= 2 && lastCertified.padding >= 1,
+  "the last certified level must still keep a tile and its padding apart");
+const nextLevel = atlasMipLevelGeometry(ATLAS_TILE_GUTTER, ATLAS_TILE_SIZE, ATLAS_MIPMAP_SAFE_LEVELS.at(-1) + 1);
+assert.ok(nextLevel.interior < 2 || nextLevel.padding < 1,
+  "the level past the certified range must genuinely be unusable");
 assert.equal(TEXTURE_PASS.id, "fallback-pixel-pass-v1");
 assert.equal(TEXTURE_PASS.referenceSheet, null);
 assert.equal(TEXTURE_PASS.gridSize, 8);
@@ -115,6 +138,7 @@ assert.equal(blockFaceTileAt(6, 0, 4, 8), 6);
 const fills = [];
 const strokes = [];
 const draws = [];
+const imagePlacements = [];
 const context = {
   imageSmoothingEnabled: true,
   fillStyle: "",
@@ -140,6 +164,16 @@ const context = {
   },
   drawImage(...args) {
     draws.push(args);
+  },
+  // The atlas painter writes each tile through ImageData so the material
+  // surface can be applied per texel, so the stub has to model a real pixel
+  // buffer rather than pretend the call did nothing.
+  createImageData(width, height) {
+    const size = width * height * 4;
+    return { width, height, data: new Uint8ClampedArray(size) };
+  },
+  putImageData(image, x, y) {
+    imagePlacements.push({ x, y, width: image.width, height: image.height, image });
   },
 };
 const canvas = {
@@ -281,14 +315,81 @@ assert.ok(stoneOperations.some(({ x, y, width, height, globalAlpha }) => (
   x === 0 && y === ATLAS_TILE_SIZE - 1 && width === ATLAS_TILE_SIZE && height === 1
     && globalAlpha === TEXTURE_PASS.edgeShadowAlpha
 )));
-assert.ok(tileOperations(3).filter(({ fillStyle }) => fillStyle === BLOCK_TEXTURES[3].palette.base).length >= 2);
-assert.ok(tileOperations(5).filter(({ fillStyle }) => fillStyle === BLOCK_TEXTURES[5].palette.base).length >= 2);
+// Tiles are painted through ImageData now, so the base colour lands per texel
+// rather than as a fillRect. That is the whole point of the change: the old
+// path filled one flat rect and the surface had nothing to shade.
+function tilePixels(block) {
+  const { x: cellX, y: cellY } = atlasCellOrigin(block);
+  const x0 = cellX + ATLAS_TILE_GUTTER;
+  const y0 = cellY + ATLAS_TILE_GUTTER;
+  const placement = imagePlacements.find((entry) => entry.x === x0 && entry.y === y0);
+  return placement?.image?.data ?? null;
+}
+function parseHex(value) {
+  const parsed = Number.parseInt(value.replace("#", ""), 16);
+  return [(parsed >> 16) & 0xff, (parsed >> 8) & 0xff, parsed & 0xff];
+}
+for (const block of [3, 5, 1]) {
+  const pixels = tilePixels(block);
+  assert.ok(pixels instanceof Uint8ClampedArray, `block ${block} must paint through ImageData`);
+  assert.equal(pixels.length, ATLAS_TILE_SIZE * ATLAS_TILE_SIZE * 4);
+  // Opaque blocks paint every texel opaque: a hole in the alpha channel would
+  // let the gutter bleed into the tile. Water and fire are deliberately
+  // translucent, so they are checked separately below.
+  if (block !== 7 && block !== 24) {
+    for (let index = 3; index < pixels.length; index += 4) {
+      assert.equal(pixels[index], 255, `block ${block} must paint every texel opaque`);
+    }
+  }
+}
+// The material surface must actually vary the texels, or the tiles are flat.
+const stonePixels = tilePixels(1);
+const stoneLuma = [];
+for (let index = 0; index < stonePixels.length; index += 4) {
+  stoneLuma.push(0.2126 * stonePixels[index] + 0.7152 * stonePixels[index + 1] + 0.0722 * stonePixels[index + 2]);
+}
+const stoneMin = Math.min(...stoneLuma);
+const stoneMax = Math.max(...stoneLuma);
+assert.ok(stoneMax - stoneMin > 4, `a stone tile must carry surface variation, got ${stoneMax - stoneMin}`);
+// The variation stays in the material's own neighbourhood, so a tile never
+// drifts to a colour the block does not own.
+const stonePalette = Object.values(BLOCK_TEXTURES[1].palette).map(parseHex);
+for (let index = 0; index < stonePixels.length; index += 4) {
+  const channels = [stonePixels[index], stonePixels[index + 1], stonePixels[index + 2]];
+  const nearest = Math.min(...stonePalette.map(([r, g, b]) => (
+    Math.abs(channels[0] - r) + Math.abs(channels[1] - g) + Math.abs(channels[2] - b)
+  )));
+  assert.ok(nearest < 150, `a stone texel ${channels} drifted far from the palette`);
+}
 assert.equal(fills.some(({ globalCompositeOperation }) => globalCompositeOperation === "destination-in"), false);
-assert.ok(tileOperations(7).some(({ globalAlpha, globalCompositeOperation }) => (
-  globalAlpha === 0.78 && globalCompositeOperation === "source-over"
-)));
-assert.ok(tileOperations(3).some(({ width, height }) => width === 1 && height === 1));
-assert.ok(tileOperations(7).some(({ width, height }) => width === 1 && height === 1));
+// A translucent tile has to keep its translucency. putImageData ignores
+// globalAlpha, so the painter bakes the opacity into the alpha channel and this
+// is the assertion that stops water silently turning opaque.
+const waterPixels = tilePixels(7);
+for (let index = 3; index < waterPixels.length; index += 4) {
+  assert.ok(
+    waterPixels[index] > 150 && waterPixels[index] < 210,
+    `a water texel must stay translucent, got alpha ${waterPixels[index]}`,
+  );
+}
+// The old painter scattered 1x1 noise rects; the new one bakes the grain into
+// the tile, so the equivalent guarantee is that adjacent texels differ. Without
+// it a surface is perfectly smooth and the derivative bump has nothing to read.
+for (const block of [3, 7]) {
+  const pixels = tilePixels(block);
+  let differing = 0;
+  for (let y = 0; y < ATLAS_TILE_SIZE; y += 1) {
+    for (let x = 1; x < ATLAS_TILE_SIZE; x += 1) {
+      const left = (y * ATLAS_TILE_SIZE + x - 1) * 4;
+      const right = (y * ATLAS_TILE_SIZE + x) * 4;
+      if (pixels[left] !== pixels[right] || pixels[left + 1] !== pixels[right + 1]) differing += 1;
+    }
+  }
+  assert.ok(
+    differing > ATLAS_TILE_SIZE * 2,
+    `block ${block} must carry per-texel grain, only ${differing} adjacent texel pairs differ`,
+  );
+}
 
 function tileOperations(block) {
   const { x: cellX, y: cellY } = atlasCellOrigin(block);

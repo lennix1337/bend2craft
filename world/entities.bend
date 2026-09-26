@@ -4,7 +4,7 @@ import ./player.bend as Player
 import ./world_state.bend as WorldState
 
 type Mob is Data:
-  Mob{id: Nat, kind: U32, x: F32, y: F32, z: F32, heading_x: F32, heading_z: F32, health: F32, alive: Bool}
+  Mob{id: Nat, kind: U32, x: F32, y: F32, z: F32, heading_x: F32, heading_z: F32, health: F32, alive: Bool, burning: Bool}
 
 type Region is Data:
   Region{blocks: List<&2, U32>, origin_x: Nat, origin_y: Nat, origin_z: Nat, width: Nat, height: Nat, depth: Nat}
@@ -31,13 +31,18 @@ def choose_f32(c: Bool, yes: F32, no: F32) -> F32:
 def make_mob(
   id: Nat, kind: U32, x: F32, y: F32, z: F32, health: F32, alive: Bool
 ) -> Mob:
-  Mob{id, kind, x, y, z, 0.0, F32.neg(1.0), health, alive}
+  Mob{id, kind, x, y, z, 0.0, F32.neg(1.0), health, alive, False{}}
 
+# `burning` is the authoritative "this body is on fire right now" flag. The
+# sunlight tick is the only writer that sets it; every other tick that rebuilds a
+# Mob has to hand the current value straight through, so a mob on fire does not
+# flicker every time it takes a step or gets knocked back. The browser presents
+# the flag as flames and smoke; it never infers fire of its own.
 def make_mob_heading(
   id: Nat, kind: U32, x: F32, y: F32, z: F32,
-  heading_x: F32, heading_z: F32, health: F32, alive: Bool
+  heading_x: F32, heading_z: F32, health: F32, alive: Bool, burning: Bool
 ) -> Mob:
-  Mob{id, kind, x, y, z, heading_x, heading_z, health, alive}
+  Mob{id, kind, x, y, z, heading_x, heading_z, health, alive, burning}
 
 def cons_mob(mob: Mob, tail: List<&2, Mob>) -> List<&2, Mob>:
   Con{mob, tail}
@@ -67,7 +72,7 @@ def make_drop(id: Nat, item: U32, x: F32, y: F32, z: F32, amount: U32) -> Drop:
   Drop{id, item, x, y, z, amount, 0.0, False{}}
 
 def drop_for(mob: Mob) -> Drop:
-  Mob{id, +kind, x, y, z, heading_x, heading_z, health, alive} = mob
+  Mob{id, +kind, x, y, z, heading_x, heading_z, health, alive, burning} = mob
   +wool = Bool.or(U32.is_eq(kind, 1), U32.is_eq(kind, 3))
   +item = Bool.pick(U32, wool, 12, 13)
   Drop{id, item, x, y, z, 1, 0.0, False{}}
@@ -148,7 +153,7 @@ def peaceful_mobs(+mobs: List<&2, Mob>) -> List<&2, Mob>:
     case Nil{}:
       Nil{}
     case Con{+head, +tail}:
-      Mob{+id, +kind, +x, +y, +z, heading_x, heading_z, +health, +alive} = head
+      Mob{+id, +kind, +x, +y, +z, heading_x, heading_z, +health, +alive, burning} = head
       +rest = peaceful_mobs(tail)
       Bool.pick(List<&2, Mob>, U32.is_eq(kind, 1), cons_mob(head, rest), rest)
 
@@ -171,7 +176,7 @@ def remove_spawn_area(
     case Nil{}:
       Nil{}
     case Con{+head, +tail}:
-      Mob{+id, +kind, +x, +y, +z, heading_x, heading_z, +health, +alive} = head
+      Mob{+id, +kind, +x, +y, +z, heading_x, heading_z, +health, +alive, burning} = head
       +rest = remove_spawn_area(tail, safe_x, safe_z)
       +same_area = Bool.and(spawn_area_cell(x, safe_x), spawn_area_cell(z, safe_z))
       Bool.pick(List<&2, Mob>, same_area, rest, cons_mob(head, rest))
@@ -278,7 +283,7 @@ def step_grounded(
   mob: Mob, player_x: F32, player_z: F32, +dt: F32, +time: F32, +offset: Nat,
   +region: Region
 ) -> Mob:
-  Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive} = mob
+  Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive, +burning} = mob
   Region{+blocks, +origin_x, +origin_y, +origin_z, +width, +height, +depth} = region
   +offset_f = U32.to_f32(U32.from_nat(offset))
   +hostile = Bool.or(U32.is_eq(kind, 2), U32.is_eq(kind, 4))
@@ -316,7 +321,7 @@ def step_grounded(
     Bool.pick(F32, F32.is_gt(ground, F32.neg(999.0)), ground, fall))
   +next_heading_x = Bool.pick(F32, alive, F32.div(dir_x, safe_distance), heading_x)
   +next_heading_z = Bool.pick(F32, alive, F32.div(dir_z, safe_distance), heading_z)
-  make_mob_heading(id, kind, next_x, next_y, next_z, next_heading_x, next_heading_z, health, alive)
+  make_mob_heading(id, kind, next_x, next_y, next_z, next_heading_x, next_heading_z, health, alive, burning)
 
 def step_world(
   +mobs: List<&2, Mob>, +player_x: F32, +player_z: F32,
@@ -336,7 +341,7 @@ def step_world(
 def step_mob_budgeted(
   +mob: Mob, player_x: F32, player_z: F32, +dt: F32, +active_radius: F32
 ) -> Mob:
-  Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive} = mob
+  Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive, +burning} = mob
   +dx = F32.sub(player_x, x)
   +dz = F32.sub(player_z, z)
   +distance = F32.sqrt(F32.add(F32.mul(dx, dx), F32.mul(dz, dz)))
@@ -359,7 +364,7 @@ def step_mob_budgeted(
   +face_z = Bool.pick(F32, fleer, F32.neg(F32.div(dz, safe_distance)), F32.div(dz, safe_distance))
   +next_heading_x = Bool.pick(F32, Bool.or(chaser, fleer), face_x, heading_x)
   +next_heading_z = Bool.pick(F32, Bool.or(chaser, fleer), face_z, heading_z)
-  make_mob_heading(id, kind, next_x, y, next_z, next_heading_x, next_heading_z, health, alive)
+  make_mob_heading(id, kind, next_x, y, next_z, next_heading_x, next_heading_z, health, alive, burning)
 
 def step_budgeted(
   +mobs: List<&2, Mob>, +player_x: F32, +player_z: F32,
@@ -554,7 +559,7 @@ def threat_damage(
     case Nil{}:
       0.0
     case Con{+head, tail}:
-      Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive} = head
+      Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive, burning} = head
       match regions:
         case Nil{}:
           0.0
@@ -572,7 +577,7 @@ def attack.go(
     case Nil{}:
       CombatResult{Nil{}, drops, False{}}
     case Con{+head, tail}:
-      Mob{+id, +kind, +x, +y, +z, heading_x, heading_z, +health, +alive} = head
+      Mob{+id, +kind, +x, +y, +z, heading_x, heading_z, +health, +alive, +burning} = head
       +from_dx = F32.sub(x, from_x)
       +from_dy = F32.sub(y, from_y)
       +from_dz = F32.sub(z, from_z)
@@ -597,7 +602,7 @@ def attack.go(
       +updated = make_mob_heading(
         id, kind, Bool.pick(F32, target, knock_x, x), y,
         Bool.pick(F32, target, knock_z, z), next_heading_x, next_heading_z,
-        next_health, next_alive
+        next_health, next_alive, burning
       )
       +rest = attack.go(tail, target_id, damage, from_x, from_y, from_z, max_range, next_drops)
       CombatResult{cons_mob(updated, combat_mobs(rest)), combat_drops(rest), Bool.or(target, combat_hit(rest))}
@@ -677,16 +682,20 @@ def sunlight_damage.go(
     case Nil{}:
       CombatResult{Nil{}, drops, False{}}
     case Con{+head, tail}:
-      Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive} = head
+      Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive, _} = head
       +day = F32.is_gt(daylight, 0.5)
-      +burning = sun_burning(day, kind, alive, edits, seed, x, y, z)
-      +next_health = choose_f32(burning, F32.sub(health, F32.mul(dt, 1.0)), health)
-      +next_alive = Bool.pick(Bool, burning, F32.is_gt(next_health, 0.0), alive)
-      +killed = Bool.and(burning, Bool.not(next_alive))
+      +exposed = sun_burning(day, kind, alive, edits, seed, x, y, z)
+      +next_health = choose_f32(exposed, F32.sub(health, F32.mul(dt, 1.0)), health)
+      +next_alive = Bool.pick(Bool, exposed, F32.is_gt(next_health, 0.0), alive)
+      # A body the sun just finished off is not on fire any more, so the flag is
+      # published per mob rather than left as the bare exposure test. That is the
+      # only place it is set, and it is what the browser draws flames from.
+      +burning = Bool.and(exposed, next_alive)
+      +killed = Bool.and(exposed, Bool.not(next_alive))
       +next_drops = Bool.pick(List<&2, Drop>, killed, cons_drop(drop_for(head), drops), drops)
-      +updated = make_mob_heading(id, kind, x, y, z, heading_x, heading_z, next_health, next_alive)
+      +updated = make_mob_heading(id, kind, x, y, z, heading_x, heading_z, next_health, next_alive, burning)
       +rest = sunlight_damage.go(tail, edits, seed, daylight, dt, next_drops)
-      CombatResult{cons_mob(updated, combat_mobs(rest)), combat_drops(rest), Bool.or(burning, combat_hit(rest))}
+      CombatResult{cons_mob(updated, combat_mobs(rest)), combat_drops(rest), Bool.or(exposed, combat_hit(rest))}
 
 def sunlight_damage(
   +mobs: List<&2, Mob>, +edits: List<&2, WorldState.Edit>, +seed: Nat,
@@ -761,7 +770,7 @@ def despawn(
     case Nil{}:
       Nil{}
     case Con{+head, tail}:
-      Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive} = head
+      Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive, burning} = head
       +rest = despawn(tail, player_x, player_z, radius)
       +gone = far_away(x, z, player_x, player_z, radius)
       Bool.pick(List<&2, Mob>, gone, rest, cons_mob(head, rest))
@@ -771,5 +780,5 @@ def count_alive(mobs: List<&2, Mob>, +total: Nat) -> Nat:
     case Nil{}:
       total
     case Con{+head, tail}:
-      Mob{id, kind, x, y, z, heading_x, heading_z, health, +alive} = head
+      Mob{id, kind, x, y, z, heading_x, heading_z, health, +alive, burning} = head
       count_alive(tail, Bool.pick(Nat, alive, Nat.add(total, 1n), total))

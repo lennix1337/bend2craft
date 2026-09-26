@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  MOB_BODY,
   dropBoxes,
   faceYaw,
   blinkFactor,
@@ -74,4 +75,31 @@ for (const part of flashed) {
   assert.deepEqual(part.tint, [1.0, 0.3, 0.25]);
 }
 assert.notDeepEqual(flashed, zombieBoxes);
+// MOB_BODY is the published envelope, and the fire plume is emitted in a ring at
+// its radius. If a model grows past it the plume goes back inside the body and
+// the depth test discards every particle, which reads as "the fire stopped
+// working" rather than as a stale constant. So the envelope is measured from the
+// models instead of trusted.
+const AXIS = ["x", "y", "z"];
+const atRest = (entity) => [
+  ...mobBoxes(entity, 0),
+  ...mobBoxes({ ...entity, kind: 1 }, 0),
+  ...villagerBoxes({ id: 1, profession: 0, x: entity.x, y: entity.y, z: entity.z }, 0),
+];
+for (const entity of [{ id: 1, kind: 2, x: 10, y: 5, z: 20 }, { id: 2, kind: 1, x: 0, y: 0, z: 0 }]) {
+  for (const part of atRest(entity)) {
+    assert.equal(part.s.length, 3, "every box needs three extents for the envelope check");
+    for (let axis = 0; axis < 3; axis += 1) {
+      const extent = Math.abs(part.c[axis] - entity[AXIS[axis]]) + part.s[axis] / 2;
+      const limit = axis === 1 ? MOB_BODY.height : MOB_BODY.radius;
+      assert.ok(extent <= limit + 1e-9,
+        `a model box reaches ${extent.toFixed(3)} on ${AXIS[axis]}, outside MOB_BODY.${limit}`);
+    }
+  }
+}
+// The ring has to clear the widest part of the widest model, not merely reach it:
+// a particle exactly on the surface is still behind the body's front faces.
+assert.ok(MOB_BODY.radius >= 0.82, "the plume ring must clear the widest model, arms and snout included");
+assert.ok(MOB_BODY.height >= 1.92, "the envelope must clear the tallest model");
+
 console.log("mob models ok");

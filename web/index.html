@@ -166,6 +166,7 @@
       </div>
     </section>
     <section id="menu" role="dialog" aria-modal="true" aria-label="Main menu" hidden>
+      <p id="backend-notice" class="backend-notice" role="status" hidden></p>
       <div id="world-preview" aria-hidden="true" data-preview-state="ready"></div>
       <div class="world-preview-shade" aria-hidden="true"></div>
       <div class="title-screen" id="screen-title" data-screen>
@@ -257,40 +258,83 @@
           <button class="mc-button" type="button" data-action="back-worlds">Cancel</button>
         </div>
       </div>
-      <div class="menu-panel" id="screen-options" data-screen hidden>
+      <div class="menu-panel wide" id="screen-options" data-screen hidden>
         <h2>Options</h2>
-        <label class="field">
-          <span>Field of View: <output id="fov-value">75</output></span>
-          <input id="input-fov" type="range" min="60" max="110" step="1" value="75">
-        </label>
-        <label class="field">
-          <span>Mouse Sensitivity: <output id="sensitivity-value">1.0</output></span>
-          <input id="input-sensitivity" type="range" min="0.5" max="3" step="0.1" value="1">
-        </label>
-        <label class="field">
-          <span>Render Distance: <output id="render-distance-value">2</output> chunks</span>
-          <input id="input-render-distance" type="range" min="2" max="6" step="1" value="2">
-          <span class="field-hint">Higher values load more terrain and use more memory.</span>
-        </label>
-        <label class="field">
-          <span>Graphics API</span>
-          <select id="input-renderer">
-            <option value="auto">Auto (safe WebGL)</option>
-            <option value="webgpu">WebGPU</option>
-            <option value="webgl">WebGL fallback</option>
-          </select>
-          <span class="field-hint">Auto uses the verified WebGL path; choose WebGPU explicitly to opt into the optional renderer.</span>
-        </label>
-        <div class="controls-grid" aria-label="Control remapping">
-          <label class="field"><span>Sneak key</span><input id="input-control-sneak" type="text" maxlength="24" autocomplete="off"></label>
-          <label class="field"><span>Sprint key</span><input id="input-control-sprint" type="text" maxlength="24" autocomplete="off"></label>
-          <label class="field"><span>Inventory key</span><input id="input-control-inventory" type="text" maxlength="24" autocomplete="off"></label>
-          <label class="field"><span>Drop key</span><input id="input-control-drop" type="text" maxlength="24" autocomplete="off"></label>
-          <label class="field"><span>Attack key</span><input id="input-control-attack" type="text" maxlength="24" autocomplete="off"></label>
+        <div class="options-scroll">
+          <section class="options-section" aria-labelledby="options-video-heading">
+            <h3 id="options-video-heading">Video</h3>
+            <label class="field">
+              <span>Graphics Quality</span>
+              <select id="input-graphics-quality" aria-describedby="graphics-quality-hint"></select>
+              <span class="field-hint" id="graphics-quality-hint">Auto scales shadows, volumetric clouds, water detail, cascade resolution and internal render resolution to hold the frame rate. Pinning a tier turns that off.</span>
+            </label>
+            <label class="field">
+              <span>Graphics API</span>
+              <select id="input-renderer" aria-describedby="renderer-hint">
+                <option value="auto">Auto (safe WebGL)</option>
+                <option value="webgpu">WebGPU</option>
+                <option value="webgl">WebGL fallback</option>
+              </select>
+              <span class="field-hint" id="renderer-hint">Auto uses the verified WebGL path; choose WebGPU explicitly to opt into the optional renderer.</span>
+            </label>
+            <label class="field">
+              <span>Field of View: <output id="fov-value">75</output></span>
+              <input id="input-fov" type="range" min="60" max="110" step="1" value="75">
+            </label>
+            <label class="field">
+              <span>Render Distance: <output id="render-distance-value">2</output> chunks</span>
+              <input id="input-render-distance" type="range" min="2" max="6" step="1" value="2">
+              <span class="field-hint">Higher values load more terrain and use more memory.</span>
+            </label>
+          </section>
+
+          <section class="options-section" aria-labelledby="options-audio-heading">
+            <h3 id="options-audio-heading">Audio</h3>
+            <label class="field">
+              <span>Master Volume: <output id="volume-master-value">70</output>%</span>
+              <input id="input-volume-master" type="range" min="0" max="100" step="1" value="70">
+            </label>
+            <label class="field">
+              <span>Ambience: <output id="volume-music-value">70</output>%</span>
+              <input id="input-volume-music" type="range" min="0" max="100" step="1" value="70">
+            </label>
+            <label class="field">
+              <span>Sound Effects: <output id="volume-effects-value">90</output>%</span>
+              <input id="input-volume-effects" type="range" min="0" max="100" step="1" value="90">
+            </label>
+            <span class="field-hint">Adjusting a slider plays a preview so the level can be judged before entering the world.</span>
+          </section>
+
+          <section class="options-section" aria-labelledby="options-controls-heading">
+            <h3 id="options-controls-heading">Controls</h3>
+            <label class="field">
+              <span>Mouse Sensitivity: <output id="sensitivity-value">1.0</output></span>
+              <input id="input-sensitivity" type="range" min="0.5" max="3" step="0.1" value="1">
+            </label>
+            <div class="controls-grid" aria-label="Control remapping">
+              <label class="field"><span>Sneak key</span><input id="input-control-sneak" type="text" maxlength="24" autocomplete="off"></label>
+              <label class="field"><span>Sprint key</span><input id="input-control-sprint" type="text" maxlength="24" autocomplete="off"></label>
+              <label class="field"><span>Inventory key</span><input id="input-control-inventory" type="text" maxlength="24" autocomplete="off"></label>
+              <label class="field"><span>Drop key</span><input id="input-control-drop" type="text" maxlength="24" autocomplete="off"></label>
+              <label class="field"><span>Attack key</span><input id="input-control-attack" type="text" maxlength="24" autocomplete="off"></label>
+            </div>
+            <span class="field-hint">Use browser KeyboardEvent codes, for example <code>KeyQ</code>, <code>ShiftLeft</code> or <code>ControlLeft</code>.</span>
+          </section>
+
+          <section class="options-section" aria-labelledby="options-interface-heading">
+            <h3 id="options-interface-heading">Interface</h3>
+            <label class="field">
+              <span>Coordinates readout</span>
+              <select id="input-show-coords">
+                <option value="on">On</option>
+                <option value="off">Off</option>
+              </select>
+              <span class="field-hint">Shows the player position and seed in the heads-up display.</span>
+            </label>
+          </section>
         </div>
-        <span class="field-hint">Use browser KeyboardEvent codes, for example <code>KeyQ</code>, <code>ShiftLeft</code> or <code>ControlLeft</code>.</span>
         <div class="menu-buttons">
-          <button class="mc-button small" type="button" data-action="toggle-coords">Coordinates: ON</button>
+          <button class="mc-button small" type="button" data-action="options-reset">Reset to defaults</button>
           <button class="mc-button primary" type="button" data-action="options-done">Done</button>
         </div>
       </div>

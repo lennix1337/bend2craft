@@ -177,6 +177,17 @@ try {
     null,
     { timeout: 5000 },
   );
+  // The HUD fades in over a CSS transition. Reading the computed opacity while
+  // that transition is still running reads a value between 0 and 1, so wait for
+  // it to settle before asserting the opacity is exactly 1.
+  await page.waitForFunction(
+    () => {
+      const read = (id) => Number(getComputedStyle(document.getElementById(id)).opacity);
+      return Math.abs(read("hud") - 1) < 0.001 && Math.abs(read("hotbar") - 1) < 0.001;
+    },
+    null,
+    { timeout: 10000 },
+  );
   const state = await page.evaluate(() => ({
     errorHidden: document.getElementById("error")?.hidden ?? false,
     activeChunks: window.__bend2craft?.world?.activeChunks ?? 0,

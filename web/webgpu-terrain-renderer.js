@@ -1,5 +1,6 @@
 import { CLOUD_TEXTURE_SIZE, createCloudTextureData } from "./cloud-texture.js";
 import {
+  TERRAIN_VERTEX_LAYOUT,
   TERRAIN_VERTEX_STRIDE_BYTES,
   classifyChunkUpdate,
   packTerrainLayer,
@@ -20,6 +21,7 @@ import {
   maxChannelDelta,
 } from "./texture-atlas.js";
 import { spreadProbeTiles } from "./atlas-probe.js";
+import { withTimeout } from "./webgpu-capabilities.js";
 import {
   COPY_SRC,
   FRAME_READBACK_BYTES_PER_PIXEL,
@@ -45,6 +47,8 @@ import {
 import {
   AERIAL_FOG_HEIGHT_FALLOFF,
   AERIAL_FOG_MIN_DENSITY,
+  AMBIENT_DESATURATION,
+  AMBIENT_STRENGTH,
   FIRE_ALPHA,
   FIRE_PULSE_AMPLITUDE,
   FIRE_PULSE_SPEED,
@@ -59,10 +63,7 @@ import {
   MATERIAL_ROUGHNESS_MIN,
   MATERIAL_SPECULAR_POWER,
   MATERIAL_SPECULAR_STRENGTH,
-  MOON_FILL_STRENGTH,
-  NIGHT_AMBIENT_G,
-  NIGHT_AMBIENT_R,
-  NIGHT_AMBIENT_STRENGTH,
+  SUN_INTENSITY,
   TERRAIN_FOG_START,
   TERRAIN_MATERIAL_VARIATION_MAX,
   TERRAIN_MATERIAL_VARIATION_MIN,
@@ -85,6 +86,21 @@ import {
   WATER_FOAM_STRENGTH,
   WATER_SPECULAR_POWER,
 } from "./terrain-presentation.js";
+
+// `mapAsync` is the one WebGPU call that can stay pending indefinitely when the
+// device stops making progress, and a pending promise is not an error: to the
+// caller it is indistinguishable from a slow read. Racing it against a timeout
+// turns a permanent stall into a reported failure, which is the difference
+// between a frozen window and a message the player can act on.
+const GPU_READBACK_TIMEOUT_MS = 4000;
+
+async function mapBufferWithin(buffer, mode) {
+  await withTimeout(
+    buffer.mapAsync(mode),
+    GPU_READBACK_TIMEOUT_MS,
+    "WebGPU buffer readback timed out; the device stopped completing work.",
+  );
+}
 
 const BUFFER_USAGE = {
   COPY_DST: 0x0008,
@@ -123,24 +139,31 @@ struct Frame {
 @group(0) @binding(3) var cloudSampler: sampler;
 @group(0) @binding(4) var cloudTexture: texture_2d<f32>;
 
+// Mirrors the WebGL attribute set: colour is a per-face grade only, and the
+// lighting inputs (occlusion, block light, normal) arrive separately so the
+// fragment stage owns the lighting on both backends.
 struct VertexInput {
   @location(0) position: vec3<f32>,
   @location(1) color: vec3<f32>,
-  @location(2) uv: vec2<f32>,
-  @location(3) material: f32,
-  @location(4) tileRect: vec4<f32>,
+  @location(2) light: vec2<f32>,
+  @location(3) normal: vec3<f32>,
+  @location(4) uv: vec2<f32>,
+  @location(5) material: f32,
+  @location(6) tileRect: vec4<f32>,
 };
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) color: vec3<f32>,
-  @location(1) uv: vec2<f32>,
-  @location(2) worldPosition: vec3<f32>,
-  @location(3) tileRect: vec4<f32>,
-  @location(4) fog: f32,
-  @location(5) material: f32,
-  @location(6) viewDirection: vec3<f32>,
-  @location(7) aerialFog: f32,
+  @location(1) light: vec2<f32>,
+  @location(2) normal: vec3<f32>,
+  @location(3) uv: vec2<f32>,
+  @location(4) worldPosition: vec3<f32>,
+  @location(5) tileRect: vec4<f32>,
+  @location(6) fog: f32,
+  @location(7) material: f32,
+  @location(8) viewDirection: vec3<f32>,
+  @location(9) aerialFog: f32,
 };
 
 @vertex
@@ -158,6 +181,8 @@ fn vs_main(input: VertexInput) -> VertexOutput {
   var output: VertexOutput;
   output.position = frame.viewProjection * vec4<f32>(position, 1.0);
   output.color = input.color;
+  output.light = input.light;
+  output.normal = input.normal;
   output.uv = input.uv;
   output.worldPosition = position;
   output.tileRect = input.tileRect;
@@ -178,6 +203,19 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let textureColor = textureSample(atlasTexture, atlasSampler, atlasUv);
   var color = input.color * frame.params.x;
   var alpha = 1.0;
+  if (surfacePass > 3.5) {
+    // Particle mode 4. Mirrors the WebGL branch exactly: a procedural soft disc
+    // with a hotter core, shaded from the vertex colour, premultiplied so
+    // additive sparks and covering smoke share one batch and one blend state.
+    let particleUv = input.uv * 2.0 - vec2<f32>(1.0, 1.0);
+    let radius = length(particleUv);
+    let falloff = 1.0 - smoothstep(0.18, 1.0, radius);
+    let core = 1.0 - smoothstep(0.0, 0.5, radius);
+    let additive = select(0.0, 1.0, input.light.y > 0.5);
+    let particleAlpha = clamp(input.light.x, 0.0, 1.0) * falloff * (1.0 - input.fog * 0.8);
+    let particleColor = input.color * (1.0 + additive * (core * 1.9 - 0.25));
+    return vec4<f32>(particleColor * particleAlpha, particleAlpha * (1.0 - additive));
+  }
   if (miningPass) {
     let fractureUv = input.uv * 4.0 + floor(frame.params.w * 6.0);
     let fractureA = 1.0 - smoothstep(0.0, 0.045, abs(fractureUv.x + fractureUv.y) - 0.5);
@@ -197,15 +235,24 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let detailAmplitude = ${MATERIAL_DETAIL_STRENGTH} * (0.5 + 0.5 * surfaceRoughness);
     let detail = 1.0 + detailAmplitude * (clamp(textureColor.r, 0.0, 1.0) * 2.0 - 1.0);
     let albedo = input.color * textureColor.rgb * mix(${TERRAIN_MATERIAL_VARIATION_MIN}, ${TERRAIN_MATERIAL_VARIATION_MAX}, materialVariation) * detail;
-    // Stage 2 - lighting: the day/ambient model over the albedo.
-    let coolLight = vec3<f32>(0.95, 0.99, 1.06);
-    let warmLight = vec3<f32>(1.05, 1.01, 0.94);
-    var litColor = albedo * mix(coolLight, warmLight, frame.params.x) * frame.params.x;
-    litColor += frame.skyHorizon.rgb * 0.012 * (0.35 + frame.params.x * 0.65);
-    let moonFill = vec3<f32>(0.1, 0.14, 0.23) * (1.0 - frame.params.x) * ${MOON_FILL_STRENGTH};
-    litColor += moonFill * albedo;
-    let nightAmbient = (1.0 - smoothstep(0.18, 0.55, frame.params.x)) * ${NIGHT_AMBIENT_STRENGTH};
-    litColor += vec3<f32>(${NIGHT_AMBIENT_R}, ${NIGHT_AMBIENT_G}, 0.09) * nightAmbient;
+    // Stage 2 - lighting: a real directional sun plus a hemispheric sky
+    // ambient, so a face pointing at the sun is brighter than one pointing
+    // away. Occlusion gates the ambient only, which is what it represents.
+    let normal = normalize(input.normal);
+    let occlusion = clamp(input.light.x, 0.0, 1.0);
+    let skyLightLevel = clamp(input.light.y, 0.0, 1.0);
+    let sunVisibility = smoothstep(-0.16, 0.14, frame.sunDirection.y);
+    let ndotl = max(dot(normal, frame.sunDirection.xyz), 0.0);
+    let wrapped = max((ndotl + 0.18) / 1.18, 0.0);
+    let sunTerm = frame.sunColor.rgb * ${SUN_INTENSITY} * sunVisibility * mix(ndotl, wrapped, 0.35);
+    // Hemispheric ambient: sky above, bounced ground below, pulled part way to
+    // neutral so a shadowed surface does not turn cyan.
+    let up = normal.y * 0.5 + 0.5;
+    var ambient = mix(frame.skyHorizon.rgb, frame.skyColor.rgb, up) * ${AMBIENT_STRENGTH};
+    let ambientLuma = dot(ambient, vec3<f32>(0.2126, 0.7152, 0.0722));
+    ambient = mix(ambient, vec3<f32>(ambientLuma), ${AMBIENT_DESATURATION});
+    ambient *= mix(0.24, 1.0, skyLightLevel) * occlusion;
+    let litColor = albedo * (sunTerm + ambient);
     // Stage 3 - material lobe: a roughness-controlled specular highlight.
     let materialView = normalize(-input.viewDirection);
     let materialFacing = max(dot(vec3<f32>(0.0, 1.0, 0.0), materialView), 0.0);
@@ -213,7 +260,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // These assign the fragment-scope color and alpha. Re-declaring them here
     // would shadow the outer pair, and the final return would then ship the
     // unshaded seed value instead of the material result.
-    color = litColor + frame.sunColor.rgb * materialSpecular * smoothstep(-0.08, 0.08, frame.sunDirection.y);
+    color = litColor + frame.sunColor.rgb * materialSpecular * sunVisibility;
     alpha = textureColor.a;
     if (surfacePass > 0.5 && surfacePass < 1.5 && input.material >= ${SURFACE_MATERIAL_WATER} && input.material < ${SURFACE_MATERIAL_LAVA}) {
       let phaseA = frame.params.y * 1.8 + input.worldPosition.x * 0.42 + input.worldPosition.z * 0.28;
@@ -575,7 +622,7 @@ async function readTextureRegion(device, texture, level, x, y, width, height) {
       { width, height, depthOrArrayLayers: 1 },
     );
     device.queue.submit([encoder.finish()]);
-    await buffer.mapAsync(mapMode());
+    await mapBufferWithin(buffer, mapMode());
     const mapped = new Uint8Array(buffer.getMappedRange());
     const rowBytes = width * 4;
     const pixels = new Uint8Array(rowBytes * height);
@@ -801,32 +848,45 @@ async function validateCanvasPresentation(canvas, canvasContext, device) {
   }
 }
 
+/**
+ * Blend modes the terrain pipelines ask for. "opaque" is no blend at all;
+ * "alpha" is the ordinary covering blend; "premultiplied" is the one the
+ * particle pass needs, so a single batch can carry an additive spark
+ * (destination weight zero) and a puff of covering smoke (destination weight
+ * one minus its own alpha) at once.
+ */
+const BLEND_STATES = Object.freeze({
+  alpha: {
+    color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+    alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+  },
+  premultiplied: {
+    color: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+    alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+  },
+});
+
+function resolveBlend(mode) {
+  if (mode === "opaque") return undefined;
+  const state = BLEND_STATES[mode];
+  if (state === undefined) throw new Error(`unknown blend mode: ${mode}`);
+  return state;
+}
+
 async function createPipeline(device, layout, module, format, depthFormat, blend, depthWriteEnabled) {
   const descriptor = {
     layout,
     vertex: {
       module,
       entryPoint: "vs_main",
-      buffers: [{
-        arrayStride: TERRAIN_VERTEX_STRIDE_BYTES,
-        attributes: [
-          { shaderLocation: 0, offset: 0, format: "float32x3" },
-          { shaderLocation: 1, offset: 12, format: "float32x3" },
-          { shaderLocation: 2, offset: 24, format: "float32x2" },
-          { shaderLocation: 3, offset: 32, format: "float32" },
-          { shaderLocation: 4, offset: 36, format: "float32x4" },
-        ],
-      }],
+      buffers: [TERRAIN_VERTEX_LAYOUT],
     },
     fragment: {
       module,
       entryPoint: "fs_main",
       targets: [{
         format,
-        blend: blend ? {
-          color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
-          alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
-        } : undefined,
+        blend: resolveBlend(blend),
       }],
     },
     // Keep parity with the WebGL fallback until every greedy/dynamic face
@@ -878,6 +938,35 @@ export async function createWebGpuTerrainRenderer({
   const adapter = await gpu.requestAdapter();
   if (adapter === null) throw new Error("No WebGPU adapter was returned.");
   const device = await adapter.requestDevice();
+  // A lost device is the one WebGPU failure that looks like nothing at all: every
+  // later submit is silently dropped and every mapAsync promise stays pending
+  // forever, so the frame loop keeps requesting animation frames and the image
+  // simply stops changing. Without these two handlers the browser cannot tell the
+  // difference between a slow frame and a dead device, and the player is left
+  // looking at a frozen picture with no way out.
+  let destroyed = false;
+  let deviceFailure = null;
+  const noteDeviceFailure = (reason) => {
+    if (deviceFailure !== null) return;
+    deviceFailure = { reason: String(reason ?? "device lost") };
+    for (const listener of failureListeners) {
+      try {
+        listener(deviceFailure);
+      } catch {
+        // A listener that throws must not take the renderer down with it.
+      }
+    }
+  };
+  const failureListeners = new Set();
+  device.lost?.then((info) => {
+    // A destroy we asked for is not a failure.
+    if (destroyed) return;
+    noteDeviceFailure(info?.reason ? `device lost: ${info.reason}` : "device lost");
+  });
+  device.addEventListener?.("uncapturederror", (event) => {
+    if (destroyed) return;
+    noteDeviceFailure(event?.error?.message ?? "uncaptured GPU error");
+  });
   const format = gpu.getPreferredCanvasFormat?.() ?? "bgra8unorm";
   const depthFormat = "depth24plus";
   let depthTexture = null;
@@ -896,11 +985,14 @@ export async function createWebGpuTerrainRenderer({
   ] });
   const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
   const skyPipeline = await createSkyPipeline(device, pipelineLayout, skyShaderModule, format, depthFormat);
-  const opaquePipeline = await createPipeline(device, pipelineLayout, shaderModule, format, depthFormat, false, true);
-  const alphaPipeline = await createPipeline(device, pipelineLayout, shaderModule, format, depthFormat, true, false);
-  const dynamicPipeline = await createPipeline(device, pipelineLayout, shaderModule, format, depthFormat, true, true);
-  const shadowPipeline = await createPipeline(device, pipelineLayout, shaderModule, format, depthFormat, true, false);
-  const frameBuffers = Array.from({ length: 4 }, () => device.createBuffer({
+  const opaquePipeline = await createPipeline(device, pipelineLayout, shaderModule, format, depthFormat, "opaque", true);
+  const alphaPipeline = await createPipeline(device, pipelineLayout, shaderModule, format, depthFormat, "alpha", false);
+  const dynamicPipeline = await createPipeline(device, pipelineLayout, shaderModule, format, depthFormat, "alpha", true);
+  const shadowPipeline = await createPipeline(device, pipelineLayout, shaderModule, format, depthFormat, "alpha", false);
+  // Mode 4. Depth writes stay off so a particle cannot carve its own silhouette
+  // out of the depth buffer and cull every particle behind it.
+  const vfxPipeline = await createPipeline(device, pipelineLayout, shaderModule, format, depthFormat, "premultiplied", false);
+  const frameBuffers = Array.from({ length: 5 }, () => device.createBuffer({
     size: FRAME_UNIFORM_BYTES,
     usage: bufferUsage("UNIFORM") | bufferUsage("COPY_DST"),
   }));
@@ -965,6 +1057,7 @@ export async function createWebGpuTerrainRenderer({
   const terrain = new Map();
   let dynamic = null;
   let shadow = null;
+  let vfx = null;
   let uploadedOpaqueVertices = 0;
   let uploadedWaterVertices = 0;
   let terrainBufferUploads = 0;
@@ -1071,6 +1164,18 @@ export async function createWebGpuTerrainRenderer({
     shadow = { buffer: createVertexBuffer(device, packedShadow), vertexCount: packedShadow.vertexCount };
   }
 
+  /**
+   * The particle layer is uploaded on its own, not through `uploadDynamic`.
+   * That one reallocates every layer it is handed, so calling it a second time
+   * in the same frame - once for the entities, once for the particles - would
+   * replace the entity buffers with empty ones and silently drop every mob.
+   */
+  function uploadVfx(layer) {
+    const packed = createPackedDynamicLayer(layer);
+    vfx?.buffer?.destroy();
+    vfx = { buffer: createVertexBuffer(device, packed), vertexCount: packed.vertexCount };
+  }
+
   function writeFrame(frame, mode) {
     const values = new Float32Array(FRAME_UNIFORM_BYTES / 4);
     values.set(frame.viewProjection, 0);
@@ -1164,7 +1269,7 @@ export async function createWebGpuTerrainRenderer({
       if (!request.captured) {
         throw new Error("WebGPU frame readback timed out waiting for a rendered frame");
       }
-      await buffer.mapAsync(mapMode());
+      await mapBufferWithin(buffer, mapMode());
       const mapped = new Uint8Array(buffer.getMappedRange());
       const rowBytes = pixelWidth * FRAME_READBACK_BYTES_PER_PIXEL;
       const pixels = new Uint8Array(rowBytes * pixelHeight);
@@ -1188,6 +1293,7 @@ export async function createWebGpuTerrainRenderer({
     writeFrame(frame, 1);
     writeFrame(frame, 2);
     writeFrame(frame, 3);
+    writeFrame(frame, 4);
     // Cull per chunk before the pass is encoded. A chunk that only touches the
     // frustum edge is kept, so culling can never pop terrain that is on screen.
     const planes = extractClipPlanes(frame.viewProjection);
@@ -1196,6 +1302,7 @@ export async function createWebGpuTerrainRenderer({
     metrics.drawCalls += 1; // the sky triangle
     if ((shadow?.vertexCount ?? 0) > 0) metrics.drawCalls += 1;
     if ((dynamic?.vertexCount ?? 0) > 0) metrics.drawCalls += 1;
+    if ((vfx?.vertexCount ?? 0) > 0) metrics.drawCalls += 1;
     const encoder = device.createCommandEncoder();
     const presented = canvasContext.getCurrentTexture();
     const pass = encoder.beginRenderPass({
@@ -1224,6 +1331,7 @@ export async function createWebGpuTerrainRenderer({
     for (const chunk of visible) drawLayer(pass, alphaPipeline, chunk.water, chunk.waterVertices, 1);
     drawLayer(pass, shadowPipeline, shadow?.buffer ?? null, shadow?.vertexCount ?? 0, 2);
     drawLayer(pass, dynamicPipeline, dynamic?.buffer ?? null, dynamic?.vertexCount ?? 0, 3);
+    drawLayer(pass, vfxPipeline, vfx?.buffer ?? null, vfx?.vertexCount ?? 0, 4);
     pass.end();
     // The readback copy has to be part of this submission. A canvas texture is
     // only valid until the frame is presented, so copying it afterwards would
@@ -1245,6 +1353,8 @@ export async function createWebGpuTerrainRenderer({
   }
 
   function destroy() {
+    destroyed = true;
+    failureListeners.clear();
     for (const buffers of terrain.values()) {
       buffers.opaque?.destroy();
       buffers.water?.destroy();
@@ -1264,9 +1374,26 @@ export async function createWebGpuTerrainRenderer({
     uploadTerrain,
     updateChunks,
     uploadDynamic,
+    uploadVfx,
     render,
     readFramePixels,
     getReadbackSupport: () => ({ ...readbackSupport }),
+    /**
+     * The first device failure seen, or null. A caller checks this each frame and
+     * switches to the WebGL path, which is the only recovery from a lost device:
+     * nothing the renderer does afterwards can make it draw again.
+     */
+    getDeviceFailure: () => (deviceFailure === null ? null : { ...deviceFailure }),
+    /** Notified once, on the first failure, so a caller can react immediately. */
+    onDeviceFailure: (listener) => {
+      if (typeof listener !== "function") return () => {};
+      if (deviceFailure !== null) {
+        try { listener({ ...deviceFailure }); } catch { /* a bad listener is not a render failure */ }
+        return () => {};
+      }
+      failureListeners.add(listener);
+      return () => failureListeners.delete(listener);
+    },
     getAtlasMipmapVerdict: () => ({ ...atlasMipmapVerdict }),
     destroy,
     getStats: () => ({

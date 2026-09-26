@@ -32,6 +32,11 @@ TESTS=(
   tests/villager-terrain.test.mjs
   tests/mesh-worker.test.mjs
   tests/terrain-vertex-builder.test.mjs
+  tests/material-textures.test.mjs
+  tests/visual-quality.test.mjs
+  tests/gl-render-target.test.mjs
+  tests/sun-shadow.test.mjs
+  tests/sun-shadow-wiring.test.mjs
   tests/vertex-buffer-compose.test.mjs
   tests/chunk-frustum.test.mjs
   tests/webgpu-capabilities.test.mjs
@@ -47,6 +52,8 @@ TESTS=(
   tests/mining-controller.test.mjs
   tests/mining-progress.test.mjs
   tests/entity-shadow.test.mjs
+  tests/vfx.test.mjs
+  tests/vfx-wiring.test.mjs
   tests/first-person-hand.test.mjs
   tests/material-lighting.test.mjs
   tests/sky-palette.test.mjs
@@ -84,6 +91,8 @@ TESTS=(
   tests/menu-navigation.test.mjs
   tests/modal-focus.test.mjs
   tests/settings.test.mjs
+  tests/options-panel.test.mjs
+  tests/backend-fallback.test.mjs
   tests/ui-shell.test.mjs
   tests/startup-contract.test.mjs
   tests/boot-resilience.test.mjs

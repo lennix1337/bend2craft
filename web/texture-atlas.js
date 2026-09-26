@@ -1,17 +1,24 @@
 import { TEXTURE_PASS } from "../assets/generated/textures/fallback-style.js";
+import { MATERIAL_RECIPES, shadeBySurface, synthesizeSurface } from "./material-textures.js";
 
 export { TEXTURE_PASS };
 export const ATLAS_COLUMNS = 8;
 export const ATLAS_ROWS = 8;
-export const ATLAS_TILE_SIZE = 32;
+// A block face is roughly 30-60 screen pixels at the distances a player actually
+// stands at, so a 32-texel tile was being magnified to about 1:1: every texel of
+// the material synthesis landed on about one pixel, which is why surfaces read as
+// flat and noisy rather than detailed. 64 texels gives two texels per pixel of
+// headroom, and the whole atlas is still only 4 MB.
+export const ATLAS_TILE_SIZE = 64;
 // Mip levels average 2x2 texels, so a tile with no padding blends into its
-// neighbour as soon as the surface is minified. A tile of 32 texels with a
-// 16-texel gutter keeps its interior free of foreign material while
-// 2^(level-1) <= 16, which certifies mip levels 1..4. Past level 4 a tile is
-// already well under a pixel, so the residual blend is not visible.
-export const ATLAS_TILE_GUTTER = 16;
+// neighbour as soon as the surface is minified. Padding has to survive the
+// averaging, so a certified level needs both a non-zero padding and an interior
+// of at least two texels. A 32-texel gutter with a 64-texel tile reaches that at
+// level 5; level 6 would leave a single texel with no padding, which is one pixel
+// of the whole cell and nothing left to keep separate.
+export const ATLAS_TILE_GUTTER = 32;
 export const ATLAS_TILE_STRIDE = ATLAS_TILE_SIZE + 2 * ATLAS_TILE_GUTTER;
-export const ATLAS_MIPMAP_SAFE_LEVELS = Object.freeze([1, 2, 3, 4]);
+export const ATLAS_MIPMAP_SAFE_LEVELS = Object.freeze([1, 2, 3, 4, 5]);
 export const ATLAS_CAPACITY = ATLAS_COLUMNS * ATLAS_ROWS;
 export const ATLAS_WIDTH = ATLAS_COLUMNS * ATLAS_TILE_STRIDE;
 export const ATLAS_HEIGHT = ATLAS_ROWS * ATLAS_TILE_STRIDE;
@@ -1172,11 +1179,6 @@ function colorCss(color) {
   return `rgb(${Math.round(color[0] * 255)}, ${Math.round(color[1] * 255)}, ${Math.round(color[2] * 255)})`;
 }
 
-function materialNoise(seed, x, y) {
-  const value = Math.sin(seed * 17.13 + x * 12.9898 + y * 78.233) * 43758.5453;
-  return value - Math.floor(value);
-}
-
 function colorLuminance(color) {
   const match = /^#([0-9a-f]{6})$/i.exec(color);
   if (match === null) return 0;
@@ -1213,11 +1215,18 @@ function drawEdgeLighting(context, x, y, texture) {
 function drawTexture(context, x, y, texture, opacity = 1) {
   const previousAlpha = context.globalAlpha;
   const gridSize = texture.pattern[0]?.length ?? TEXTURE_PASS.blockGridSize;
-  const pixelSize = ATLAS_TILE_SIZE / gridSize;
-  context.globalAlpha = previousAlpha * opacity;
-  context.fillStyle = texture.palette.base;
-  context.fillRect(x, y, ATLAS_TILE_SIZE, ATLAS_TILE_SIZE);
+  const size = ATLAS_TILE_SIZE;
+  const recipe = recipeForTexture(texture);
+  const surface = synthesizeSurface(recipe, size, texture.id * 2654435761 + 17);
+  const baseColor = parseHexColor(texture.palette.base);
 
+  // The authored macro pattern is painted into an ImageData first so the material
+  // surface can be applied per texel afterwards. Going through ImageData is the
+  // whole point: the old path filled 4x4 pattern cells with one flat colour,
+  // which is why every surface in the world read as a solid block of paint.
+  const image = context.createImageData(size, size);
+  const data = image.data;
+  const cellPixels = size / gridSize;
   for (let row = 0; row < gridSize; row += 1) {
     const pattern = texture.pattern[row];
     let start = 0;
@@ -1228,54 +1237,152 @@ function drawTexture(context, x, y, texture, opacity = 1) {
       if (key !== ".") {
         const color = texture.palette[key];
         if (color === undefined) throw new Error(`Unknown texture color ${key}.`);
-        context.fillStyle = color;
-        context.fillRect(
-          x + start * pixelSize,
-          y + row * pixelSize,
-          (end - start) * pixelSize,
-          pixelSize,
-        );
+        fillMacroCell(data, size, gridSize, row, start, end, parseHexColor(color), cellPixels);
       }
       start = end;
     }
   }
-  const textureAlpha = context.globalAlpha;
+  // A "." cell is a hole in the pattern; the base colour is what shows through.
+  for (let index = 0; index < size * size; index += 1) {
+    if (data[index * 4 + 3] === 0) {
+      data[index * 4] = Math.round(baseColor[0] * 255);
+      data[index * 4 + 1] = Math.round(baseColor[1] * 255);
+      data[index * 4 + 2] = Math.round(baseColor[2] * 255);
+      data[index * 4 + 3] = 255;
+    }
+  }
+
   const { highlight, shadow } = paletteEdgeColors(texture.palette);
-  for (let row = 0; row < gridSize; row += 1) {
-    for (let column = 0; column < gridSize; column += 1) {
-      const noise = (texture.id * 31 + row * 17 + column * 13) % 19;
-      if (noise !== 0 && noise !== 7) continue;
-      context.globalAlpha = textureAlpha * (
-        noise === 0 ? TEXTURE_PASS.noiseHighlightAlpha : TEXTURE_PASS.noiseShadowAlpha
-      );
-      context.fillStyle = noise === 0 ? highlight : shadow;
-      context.fillRect(
-        x + column * pixelSize + Math.min(0.5, pixelSize * 0.25),
-        y + row * pixelSize + Math.min(0.5, pixelSize * 0.25),
-        Math.max(0.5, pixelSize * 0.5),
-        Math.max(0.5, pixelSize * 0.5),
-      );
+  // putImageData ignores globalAlpha by specification, so a tile that has to be
+  // translucent carries its opacity in the alpha channel instead. Water and
+  // fire are drawn at 0.78, and losing that would make them fully opaque.
+  const alpha = Math.max(0, Math.min(1, previousAlpha * opacity)) * 255;
+  for (let py = 0; py < size; py += 1) {
+    for (let px = 0; px < size; px += 1) {
+      const index = py * size + px;
+      const offset = index * 4;
+      const height = surface.heights[index];
+      const grain = surface.grains[index];
+      const current = [data[offset] / 255, data[offset + 1] / 255, data[offset + 2] / 255];
+      let rgb = shadeBySurface(current, height, grain, recipe);
+      // Mineral flecks, kept deliberately faint on both ends. The grain field is
+      // smooth, so a threshold on it selects thin connected filaments, but a tile
+      // is displayed at roughly one texel per pixel, so a strong blend of a palette
+      // extreme lands as isolated hard dots. That is the single clearest "cheap
+      // texture" signal there is, and it costs more than the sparkle it buys: at
+      // half strength a light fleck already reads as mineral grain, and a dark one
+      // only ever reads as dirt.
+      const fleck = grain;
+      if (fleck > 0.994) rgb = blendRgb(rgb, parseHexColor(highlight), 0.22);
+      else if (fleck < 0.002) rgb = blendRgb(rgb, parseHexColor(shadow), 0.1);
+      data[offset] = Math.round(rgb[0] * 255);
+      data[offset + 1] = Math.round(rgb[1] * 255);
+      data[offset + 2] = Math.round(rgb[2] * 255);
+      data[offset + 3] = Math.round(alpha);
     }
   }
-  context.globalAlpha = textureAlpha;
-  for (let pixelY = 0; pixelY < ATLAS_TILE_SIZE; pixelY += 2) {
-    for (let pixelX = 0; pixelX < ATLAS_TILE_SIZE; pixelX += 2) {
-      const cluster = materialNoise(texture.id, Math.floor(pixelX / 4), Math.floor(pixelY / 4));
-      const grain = materialNoise(texture.id + 31, pixelX, pixelY);
-      if (cluster < 0.18 && grain < 0.56) {
-        context.globalAlpha = textureAlpha * TEXTURE_PASS.noiseShadowAlpha * 0.7;
-        context.fillStyle = shadow;
-        context.fillRect(x + pixelX, y + pixelY, 1, 1);
-      } else if (cluster > 0.82 && grain > 0.44) {
-        context.globalAlpha = textureAlpha * TEXTURE_PASS.noiseHighlightAlpha * 0.7;
-        context.fillStyle = highlight;
-        context.fillRect(x + pixelX, y + pixelY, 1, 1);
-      }
-    }
-  }
-  context.globalAlpha = textureAlpha;
+
+  context.putImageData(image, x, y);
+  context.globalAlpha = previousAlpha;
   drawEdgeLighting(context, x, y, texture);
   context.globalAlpha = previousAlpha;
+}
+
+function fillMacroCell(data, size, gridSize, row, start, end, rgb, cellPixels) {
+  const red = Math.round(rgb[0] * 255);
+  const green = Math.round(rgb[1] * 255);
+  const blue = Math.round(rgb[2] * 255);
+  const originY = Math.round(row * cellPixels);
+  const endY = Math.min(size, Math.round((row + 1) * cellPixels));
+  for (let py = originY; py < endY; py += 1) {
+    const originX = Math.round(start * cellPixels);
+    const endX = Math.min(size, Math.round(end * cellPixels));
+    for (let px = originX; px < endX; px += 1) {
+      const offset = (py * size + px) * 4;
+      data[offset] = red;
+      data[offset + 1] = green;
+      data[offset + 2] = blue;
+      data[offset + 3] = 255;
+    }
+  }
+  void gridSize;
+}
+
+function blendRgb(a, b, amount) {
+  return [
+    a[0] + (b[0] - a[0]) * amount,
+    a[1] + (b[1] - a[1]) * amount,
+    a[2] + (b[2] - a[2]) * amount,
+  ];
+}
+
+const HEX_COLOR_CACHE = new Map();
+
+function parseHexColor(hex) {
+  const cached = HEX_COLOR_CACHE.get(hex);
+  if (cached !== undefined) return cached;
+  const match = /^#([0-9a-f]{6})$/i.exec(hex);
+  const value = match === null ? 0 : Number.parseInt(match[1], 16);
+  const rgb = [
+    ((value >> 16) & 0xff) / 255,
+    ((value >> 8) & 0xff) / 255,
+    (value & 0xff) / 255,
+  ];
+  HEX_COLOR_CACHE.set(hex, rgb);
+  return rgb;
+}
+
+/**
+ * Which material recipe paints each tile. Keyed by texture name so a new block
+ * is an explicit choice rather than silently inheriting stone's facets.
+ */
+const TEXTURE_RECIPES = Object.freeze({
+  stone: "cellular",
+  cobblestone: "cellular",
+  obsidian: "cellular",
+  bedrock: "cellular",
+  bricks: "banded",
+  dirt: "clumpy",
+  grass: "blade",
+  grass_side: "blade",
+  farmland: "clumpy",
+  leaves: "clumpy",
+  wood: "grain",
+  wood_side: "grain",
+  planks: "grain",
+  sand: "speckle",
+  sandstone: "banded",
+  // Water deliberately does not use the speckle recipe. A water surface reads as
+  // water through its shading, not its albedo, so a high-frequency albedo only
+  // shows up as stipple: the tile is displayed roughly one texel per pixel on a
+  // near quad, and the bed tint then multiplies that contrast straight into the
+  // colour. A low-frequency grain keeps the tile from reading as a flat plate
+  // without competing with the waves.
+  water: "grain",
+  lava: "speckle",
+  glass: "speckle",
+  ice: "cellular",
+  snow: "speckle",
+  coal_ore: "cellular",
+  iron_ore: "cellular",
+  gold_ore: "cellular",
+  diamond_ore: "cellular",
+  emerald_ore: "cellular",
+  chest: "grain",
+  crafting_table: "grain",
+  furnace: "cellular",
+  torch: "speckle",
+  crops: "blade",
+  flower: "blade",
+  tall_grass: "blade",
+  zombie_skin: "clumpy",
+  villager_skin: "clumpy",
+  pig_skin: "clumpy",
+});
+
+function recipeForTexture(texture) {
+  const key = TEXTURE_RECIPES[texture.name] ?? "clumpy";
+  return MATERIAL_RECIPES[key] ?? MATERIAL_RECIPES.clumpy;
 }
 
 // Bleed a tile's own material into its padding. Without this, the mip chain

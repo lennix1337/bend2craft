@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import {
+  audioVolumesFromOptions,
   createDefaultOptions,
   createWorldConfig,
   DEFAULT_CONTROLS,
+  GRAPHICS_QUALITY_CHOICES,
+  normalizeGraphicsQuality,
   DEFAULT_RENDERER,
   DEFAULT_RENDER_DISTANCE,
+  DEFAULT_VOLUME_EFFECTS,
+  DEFAULT_VOLUME_MASTER,
+  DEFAULT_VOLUME_MUSIC,
   MAX_RENDER_DISTANCE,
   MIN_RENDER_DISTANCE,
   loadJson,
@@ -19,6 +25,7 @@ import {
   WORLD_MODES,
   worldModeLabel,
 } from "../web/settings.js";
+import { VISUAL_QUALITY_TIERS } from "../web/visual-quality.js";
 
 function memoryStore(entries = {}) {
   const data = new Map(Object.entries(entries));
@@ -41,6 +48,10 @@ assert.deepEqual(createDefaultOptions(), {
   showCoords: true,
   renderDistance: 2,
   renderer: "webgl",
+  graphicsQuality: "auto",
+  volumeMaster: 0.7,
+  volumeMusic: 0.7,
+  volumeEffects: 0.9,
   controls: DEFAULT_CONTROLS,
 });
 assert.deepEqual(sanitizeOptions({ fov: 200, sensitivity: -1, renderDistance: 99 }), {
@@ -49,8 +60,34 @@ assert.deepEqual(sanitizeOptions({ fov: 200, sensitivity: -1, renderDistance: 99
   showCoords: true,
   renderDistance: 6,
   renderer: "webgl",
+  graphicsQuality: "auto",
+  volumeMaster: 0.7,
+  volumeMusic: 0.7,
+  volumeEffects: 0.9,
   controls: DEFAULT_CONTROLS,
 });
+
+// The graphics tier must only ever hold a name the runtime has a tier for, and
+// a corrupted preference must fall back to `auto` rather than to a specific
+// tier: pinning a tier also switches off the frame-time safety net.
+assert.equal(GRAPHICS_QUALITY_CHOICES[0], "auto");
+assert.deepEqual(GRAPHICS_QUALITY_CHOICES.slice(1), VISUAL_QUALITY_TIERS.map((tier) => tier.name));
+for (const name of GRAPHICS_QUALITY_CHOICES) {
+  assert.equal(normalizeGraphicsQuality(name), name);
+  assert.equal(sanitizeOptions({ graphicsQuality: name }).graphicsQuality, name);
+}
+for (const bad of ["nope", "", 7, null, undefined, "ULTRA", [], {}]) {
+  assert.equal(
+    normalizeGraphicsQuality(bad),
+    "auto",
+    `a bad graphics preference (${String(bad)}) must fall back to auto`,
+  );
+  assert.equal(sanitizeOptions({ graphicsQuality: bad }).graphicsQuality, "auto");
+}
+// A stored pin must survive a round trip, or the player silently loses it.
+const qualityStore = memoryStore();
+assert.equal(saveOptions(qualityStore, { ...createDefaultOptions(), graphicsQuality: "ultra" }), true);
+assert.equal(loadOptions(qualityStore).graphicsQuality, "ultra");
 assert.deepEqual(sanitizeOptions({ fov: "wide" }), createDefaultOptions());
 assert.deepEqual(loadOptions(memoryStore()), createDefaultOptions());
 assert.deepEqual(loadOptions(memoryStore({ "bend2craft-options": "{\"fov\":90}" })), {
@@ -59,6 +96,10 @@ assert.deepEqual(loadOptions(memoryStore({ "bend2craft-options": "{\"fov\":90}" 
   showCoords: true,
   renderDistance: 2,
   renderer: "webgl",
+  graphicsQuality: "auto",
+  volumeMaster: 0.7,
+  volumeMusic: 0.7,
+  volumeEffects: 0.9,
   controls: DEFAULT_CONTROLS,
 });
 assert.equal(sanitizeOptions({ renderDistance: MIN_RENDER_DISTANCE - 1 }).renderDistance, MIN_RENDER_DISTANCE);
@@ -78,6 +119,10 @@ assert.deepEqual(loadOptions(store), {
   showCoords: false,
   renderDistance: 6,
   renderer: "webgpu",
+  graphicsQuality: "auto",
+  volumeMaster: 0.7,
+  volumeMusic: 0.7,
+  volumeEffects: 0.9,
   controls: DEFAULT_CONTROLS,
 });
 const rebound = sanitizeOptions({ controls: { drop: "KeyX", attack: "Mouse4" } });

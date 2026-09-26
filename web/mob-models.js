@@ -27,6 +27,19 @@ const VILLAGER_SKIN = [0.89, 0.67, 0.52];
 const VILLAGER_GREEN_ROBE = [0.35, 0.62, 0.35];
 const VILLAGER_BROWN_ROBE = [0.72, 0.56, 0.36];
 
+/**
+ * The envelope every articulated model in this module fits inside, measured from
+ * the feet origin and taken as the worst case across all of them - so a pig is
+ * not measured by a zombie's arms. The fire plume is emitted in a ring at this
+ * radius for a reason: a particle spawned inside the body is behind the body's
+ * own front faces, and the depth test throws it away against the very thing it
+ * is meant to be licking. Anything that needs to know how big a mob is - the
+ * plume, a highlight, a sound origin - should read it from here rather than
+ * hardcode a number that silently drifts when a model changes.
+ * `tests/mob-models.test.mjs` measures every box against it.
+ */
+export const MOB_BODY = Object.freeze({ radius: 0.82, height: 1.93 });
+
 /** Yaw (radians) that faces a model at (fromX, fromZ) toward (toX, toZ). */
 export function faceYaw(fromX, fromZ, toX, toZ) {
   return Math.atan2(toX - fromX, -(toZ - fromZ));

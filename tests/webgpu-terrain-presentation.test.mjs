@@ -65,8 +65,8 @@ import {
 } from "../web/cloud-texture.js";
 import {
   WEBGL_SKY_FALLBACK_FRAGMENT_SHADER,
-  WEBGL_SKY_FRAGMENT_SHADER,
   WEBGL_SKY_VERTEX_SHADER,
+  createWebglSkyFragmentShader,
   createWebglTerrainShaderSources,
   isSoftwareRenderer,
 } from "../web/webgl-shaders.js";
@@ -74,6 +74,7 @@ import {
   WEBGPU_SKY_SHADER,
   WEBGPU_TERRAIN_SHADER,
 } from "../web/webgpu-terrain-renderer.js";
+import { SURFACE_MATERIAL_OPAQUE_BASE } from "../web/surface-materials.js";
 const rendererSource = await readFile(new URL("../web/webgpu-terrain-renderer.js", import.meta.url), "utf8");
 const gameSource = await readFile(new URL("../web/game.js", import.meta.url), "utf8");
 
@@ -276,10 +277,25 @@ assert.ok(fragmentStart > vertexStart);
 const vertexSource = WEBGPU_TERRAIN_SHADER.slice(vertexStart, fragmentStart);
 const fragmentSource = WEBGPU_TERRAIN_SHADER.slice(fragmentStart);
 
-assert.match(WEBGPU_TERRAIN_SHADER, /@location\(4\) fog: f32/);
-assert.match(WEBGPU_TERRAIN_SHADER, /@location\(5\) material: f32/);
-assert.doesNotMatch(WEBGPU_TERRAIN_SHADER, /\bpass\b/);
+// The varying locations shift because the vertex stage now carries the normal
+// and the occlusion/block-light pair; fog and material sit after them.
+assert.match(WEBGPU_TERRAIN_SHADER, /@location\(6\) fog: f32/);
+assert.match(WEBGPU_TERRAIN_SHADER, /@location\(7\) material: f32/);
+assert.match(WEBGPU_TERRAIN_SHADER, /@location\(1\) light: vec2<f32>/);
+assert.match(WEBGPU_TERRAIN_SHADER, /@location\(2\) normal: vec3<f32>/);
 assert.match(WEBGPU_TERRAIN_SHADER, /output\.material = input\.material/);
+assert.match(WEBGPU_TERRAIN_SHADER, /output\.normal = input\.normal/);
+assert.match(WEBGPU_TERRAIN_SHADER, /output\.light = input\.light/);
+assert.doesNotMatch(WEBGPU_TERRAIN_SHADER, /\bpass\b/);
+// The WebGPU stage must light from the interpolated normal, like the WebGL one.
+assert.match(fragmentSource, /normalize\(input\.normal\)/);
+// WGSL has no implicit truncation and `dot` needs two vectors of the same width,
+// so the sun direction has to be narrowed to its xyz here. Written without the
+// `.xyz` this reads as an assertion about a shader that cannot compile, which is
+// how a real shader bug sat in this file being asserted as correct.
+assert.match(fragmentSource, /dot\(normal, frame\.sunDirection\.xyz\)/);
+assert.doesNotMatch(fragmentSource, /dot\(normal, frame\.sunDirection\)/);
+assert.match(fragmentSource, /mix\(0\.24, 1\.0, skyLightLevel\) \* occlusion/);
 assert.match(vertexSource, /output\.fog\s*=\s*clamp\(\(distance\(position, frame\.camera\.xyz\) - 24/);
 assert.doesNotMatch(fragmentSource, /distance\(input\.worldPosition/);
 assert.match(fragmentSource, /input\.aerialFog/);
@@ -307,8 +323,13 @@ assert.equal((WEBGPU_TERRAIN_SHADER.match(/@group\(0\)/g) ?? []).length, 5);
 assert.doesNotMatch(WEBGPU_TERRAIN_SHADER, /@group\([1-9]/);
 assert.match(fragmentSource, /aerialFog/);
 assert.match(fragmentSource, /frame\.skyHorizon\.rgb/);
-assert.match(fragmentSource, /moonFill/);
 assert.match(fragmentSource, /frame\.sunDirection\.xyz/);
+assert.match(fragmentSource, /sunVisibility/);
+assert.match(fragmentSource, /ambientLuma/);
+// The old baked night-fill helpers are gone: a single hemispheric ambient now
+// covers daylight and night, so a dead reference would mean the night term
+// silently stopped applying.
+assert.doesNotMatch(fragmentSource, /moonFill|nightAmbient|coolLight|warmLight/);
 assert.match(fragmentSource, /caustic/);
 assert.match(fragmentSource, /textureSampleLevel\(cloudTexture, cloudSampler/);
 assert.match(fragmentSource, /smoothstep\(0\.54, 0\.72, causticPattern\)/);
@@ -387,121 +408,133 @@ assert.doesNotMatch(
   /WebGPU frame readback is not enabled in this diagnostic path/,
   "the old readback stub must be gone",
 );
-const webglSources = createWebglTerrainShaderSources(96);
-const fallbackWebglSources = createWebglTerrainShaderSources(96, { advancedWater: false });
-// WebGL and WGSL must grade a pixel through the same three ordered stages, and
-// must agree on the material band bounds and the water depth tint.
+const webglSources = createWebglTerrainShaderSources(96, {
+  bumpMapping: true,
+  waterDetail: true,
+  grassWind: true,
+});
+const fallbackWebglSources = createWebglTerrainShaderSources(96, {
+  bumpMapping: false,
+  waterDetail: false,
+  grassWind: false,
+});
+const WEBGL_SKY_FRAGMENT_SHADER = createWebglSkyFragmentShader({ volumetricClouds: true });
+// WebGL and WGSL must agree on the material band bounds, the water depth tint
+// and the per-pixel lighting model, so a pixel grades the same on both backends.
 const webglFragment = webglSources.fragmentSource;
 const wgslFragment = fragmentSource;
 for (const [name, source] of [["webgl", webglFragment], ["wgsl", wgslFragment]]) {
-  const albedo = source.search(/(?:vec3<)?(?:vec3<f32>\()? ?albedo/);
-  const lighting = source.search(/litColor/);
-  const material = source.search(/materialSpecular/);
+  // Anchor on the declaration, not on the bare word "albedo", which also
+  // appears in the comments that explain the stages. WGSL types it with `let`,
+  // GLSL with `vec3`, so match the assignment itself.
+  const albedo = source.search(/(?:vec3|vec3<f32>|let)\s+albedo\s*=/);
+  // WebGL accumulates into a pre-declared `color`, WGSL into a `litColor`
+  // local; both must come after the albedo they shade.
+  const lighting = source.search(/litColor\s*=|=\s*diffuse\s*\+\s*ambient/);
   assert.ok(albedo >= 0, `${name} must build an albedo stage`);
   assert.ok(lighting > albedo, `${name} must apply lighting after albedo`);
-  assert.ok(material > lighting, `${name} must apply the material lobe after lighting`);
-  assert.match(source, /surfaceRoughness/, `${name} must derive a roughness`);
-  assert.match(source, /detailAmplitude/, `${name} must derive detail shading`);
-  assert.match(source, /waterDepth/, `${name} must tint water by depth`);
+  // The two backends spell these differently; what matters is that each one has
+  // a roughness, a micro-detail term and a water depth term.
+  assert.match(source, /surfaceRoughness|float roughness/, `${name} must derive a roughness`);
+  assert.match(source, /detailAmplitude|float detail =/, `${name} must derive detail shading`);
+  assert.match(source, /waterDepth|depthInColumn/, `${name} must tint water by depth`);
+  // The sun term must be driven by the interpolated face normal, not by a baked
+  // vertex colour, and the ambient must be gated by occlusion.
+  // The backends spell the uniform uSunDirection and sunDirection respectively.
+  assert.match(source, /[Ss]unDirection/, `${name} must light from a sun direction`);
+  assert.match(source, /occlusion/, `${name} must gate ambient by occlusion`);
   assert.match(
     source,
-    new RegExp(`0\\.55 \\+ \\(0\\.95 - 0\\.55\\)`),
-    `${name} must use the documented roughness range`,
-  );
-  assert.match(
-    source,
-    /clamp\((?:vMaterial|input\.material) - 1\.0, 0\.0, 1\.0\)/,
+    /clamp\((?:vMaterial|input\.material) - 1\.0, 0\.0, 1\.0\)|depthInColumn = clamp\(vMaterial - 1\.0, 0\.0, 1\.0\)/,
     `${name} must decode the water depth from the material band`,
   );
-  assert.match(
-    source,
-    /deepWater/,
-    `${name} must tint toward a bounded deep-water color`,
-  );
+  assert.match(source, /deepColor|deepWater/, `${name} must tint toward a bounded deep-water colour`);
   // The material bands must not overlap, or a lava or fire quad would be graded
-  // as water. The exact bounds are asserted below; here we only reject a
-  // material comparison that still uses the old half-open bands.
+  // as water. The exact bounds are asserted below.
   assert.doesNotMatch(
     source,
     /(?:vMaterial|input\.material) [<>=]+ 1\.5/,
     `${name} must not use the old half-open water band`,
   );
-  assert.doesNotMatch(
-    source,
-    /(?:vMaterial|input\.material) [<>=]+ 2\.5/,
-    `${name} must not use the old half-open lava band`,
-  );
-  // Opaque terrain encodes `10 + block`, so an unbounded fire band would grade
-  // stone and dirt as fire.
-  assert.doesNotMatch(
-    source,
-    /(?:vMaterial|input\.material) >= 3\)/,
-    `${name} must bound the fire band so opaque terrain cannot match it`,
-  );
-}
-assert.match(webglFragment, /vMaterial >= 1\.0 && vMaterial < 2\.0/, "the WebGL water band must be [water, lava)");
-assert.match(wgslFragment, /input\.material >= 1 && input\.material < 2/, "the WGSL water band must match WebGL");
-assert.match(webglFragment, /vMaterial >= 2\.0 && vMaterial < 3\.0/, "the WebGL lava band must be [lava, fire)");
-assert.match(wgslFragment, /input\.material >= 2 && input\.material < 3/, "the WGSL lava band must match WebGL");
-assert.match(webglFragment, /vMaterial >= 3\.0 && vMaterial < 4\.0/, "the WebGL fire band must be [fire, fire+1)");
-assert.match(wgslFragment, /input\.material >= 3 && input\.material < 4/, "the WGSL fire band must match WebGL");
-// GLSL ES 1.00 has no implicit int-to-float promotion, so a band bound emitted
-// as an int literal fails to compile on a real context.
-for (const [name, source] of [["webgl", webglFragment]]) {
-  assert.doesNotMatch(
-    source,
-    /[aA]Material >= \d[^.0-9]/,
-    `${name} must emit float band bounds, not int literals`,
-  );
 }
 assert.doesNotMatch(fragmentSource, /depthTint/);
 assert.match(webglSources.vertexSource, /vViewDirection/);
 assert.match(webglSources.vertexSource, /vAerialFog/);
+assert.match(webglSources.vertexSource, /aNormal/, "the vertex stage must carry the face normal");
+assert.match(webglSources.vertexSource, /aLight/, "the vertex stage must carry occlusion and block light");
 assert.match(webglSources.fragmentSource, /vAerialFog/);
 assert.match(webglSources.fragmentSource, /uSkyHorizonColor/);
-assert.match(webglSources.fragmentSource, /moonFill/);
 assert.match(webglSources.fragmentSource, /uSunDirection/);
+assert.match(webglSources.fragmentSource, /uGroundBounce/, "ambient needs a ground bounce colour");
+assert.match(webglSources.fragmentSource, /specularLobe/, "a real specular lobe replaces the world-up fake");
 assert.match(webglSources.fragmentSource, /caustic/);
 assert.match(webglSources.fragmentSource, /uniform sampler2D uCloudMap/);
 assert.match(webglSources.fragmentSource, /texture2D\(uCloudMap, causticUv\)/);
-assert.match(webglSources.fragmentSource, /smoothstep\(0\.54, 0\.72, causticPattern\)/);
-assert.doesNotMatch(webglSources.fragmentSource, /fallbackWater/);
-assert.match(fallbackWebglSources.fragmentSource, /fallbackWater/);
-// The software fallback drops the expensive water terms but keeps the cheap
-// three-stage material contract, so land materials grade identically on both
-// quality tiers.
-assert.doesNotMatch(fallbackWebglSources.fragmentSource, /causticUv|waterNormal/);
-assert.doesNotMatch(fallbackWebglSources.fragmentSource, /float specular\b/);
-for (const [name, source] of [["webgl", webglSources.fragmentSource], ["fallback", fallbackWebglSources.fragmentSource]]) {
-  assert.match(source, /albedo/, `${name} must keep the albedo stage`);
-  assert.match(source, /litColor/, `${name} must keep the lighting stage`);
-  assert.match(source, /materialSpecular/, `${name} must keep the material lobe`);
-  assert.match(source, /surfaceRoughness/, `${name} must keep the roughness term`);
-  assert.match(source, /detailAmplitude/, `${name} must keep the detail term`);
-}
-assert.doesNotMatch(fallbackWebglSources.vertexSource, /position\.y \+=|position\.x \+=/);
-assert.doesNotMatch(webglSources.fragmentSource, /filmicToneMap/);
+// Sun shadows: the terrain shader must sample the cascade, and the cascade must
+// be fed the light matrix the shadow pass renders with.
+assert.match(webglSources.fragmentSource, /uniform sampler2D uShadowMap/);
+assert.match(webglSources.fragmentSource, /sunShadow\(/);
+assert.match(webglSources.fragmentSource, /uShadowStrength/);
+assert.match(gameSource, /uLightViewProjection/, "the frame must upload the light matrix");
+assert.match(gameSource, /renderShadowPass/, "the frame must render the shadow cascade");
+
+// The fallback drops the expensive water terms but keeps the same lighting
+// contract, so land materials grade identically on both quality tiers.
+assert.doesNotMatch(fallbackWebglSources.fragmentSource, /causticUv/);
+assert.doesNotMatch(fallbackWebglSources.vertexSource, /position\.y \+=/);
+assert.match(fallbackWebglSources.fragmentSource, /uSunDirection/);
+
+// The wind may only move what is not a solid surface. Terrain quads are
+// greedy-merged, so a merged grass top is one quad with four corners however
+// large it is, and a world-space field sampled at four corners can only tilt
+// that quad. A plain therefore read as a handful of big facets rolling like
+// ocean swell, and the block surface is the surface the player collides
+// against, so moving it desyncs what is drawn from what is stood on. Only the
+// water surface and the per-cell leaf quads may be displaced.
+const GRASS_BAND = (SURFACE_MATERIAL_OPAQUE_BASE + 3).toFixed(1);
+assert.doesNotMatch(
+  webglSources.vertexSource,
+  new RegExp(`aMaterial - ${GRASS_BAND.replace(".", "\\.")}`),
+  "the terrain vertex stage must not displace the grass band",
+);
+// Gating the wind on the face normal slides a cell's top face off its own
+// sides, because the sides stay put while the top moves, so a leaf block opens
+// a slit around its whole top rim.
+assert.doesNotMatch(
+  webglSources.vertexSource,
+  /aNormal\.y/,
+  "the wind must not be gated on the face normal, or a leaf cell tears along its top rim",
+);
+// The same rule on the WGSL side, so swapping the backend cannot reintroduce
+// terrain that rolls.
+assert.doesNotMatch(
+  vertexSource,
+  new RegExp(`input\\.material - ${GRASS_BAND.replace(".", "\\.")}`),
+  "the WGSL terrain vertex stage must not displace the grass band either",
+);
 assert.match(WEBGL_SKY_VERTEX_SHADER, /gl_Position = vec4\(aPosition, 1\.0, 1\.0\)/);
 assert.match(WEBGL_SKY_FRAGMENT_SHADER, /skyRay/);
-assert.match(WEBGL_SKY_FRAGMENT_SHADER, /cloudNoise/);
-assert.match(WEBGL_SKY_FRAGMENT_SHADER, /uniform sampler2D uCloudMap/);
-assert.doesNotMatch(WEBGL_SKY_FRAGMENT_SHADER, /float valueNoise/);
-assert.match(WEBGL_SKY_FRAGMENT_SHADER, /texture2D\(uCloudMap/);
-assert.match(WEBGL_SKY_FRAGMENT_SHADER, /sunDisk/);
-assert.match(WEBGL_SKY_FRAGMENT_SHADER, /starField/);
-assert.match(WEBGL_SKY_FRAGMENT_SHADER, /starLocal = fract\(skyRay \* 460\.0\)\.xy - vec2\(0\.5\)/);
-assert.match(WEBGPU_SKY_SHADER, /starLocal = fract\(skyRay \* 460\.0\)\.xy - vec2<f32>\(0\.5\)/);
-assert.match(WEBGL_SKY_FRAGMENT_SHADER, /horizonHaze/);
+// The cloud deck is fully procedural now, so the sky must not reach for the
+// shared 2D cloud map that only the water caustics still use.
+assert.doesNotMatch(WEBGL_SKY_FRAGMENT_SHADER, /uCloudMap/);
+assert.doesNotMatch(WEBGL_SKY_FRAGMENT_SHADER, /uAtlas/);
+// The advanced sky raymarches a cloud deck and scatters light inside it.
+assert.match(WEBGL_SKY_FRAGMENT_SHADER, /cloudDensity\(/);
+assert.match(WEBGL_SKY_FRAGMENT_SHADER, /uCloudSteps/);
+assert.match(WEBGL_SKY_FRAGMENT_SHADER, /phaseHG\(/);
+assert.match(WEBGL_SKY_FRAGMENT_SHADER, /transmittance/);
+assert.match(WEBGL_SKY_FRAGMENT_SHADER, /#define CLOUD_MAX_STEPS/);
+assert.match(WEBGL_SKY_FRAGMENT_SHADER, /#define MAX_CLOUD_SPAN/);
+assert.match(WEBGL_SKY_FRAGMENT_SHADER, /sunDisc/);
+assert.match(WEBGL_SKY_FRAGMENT_SHADER, /starBrightness/);
+assert.match(WEBGL_SKY_FRAGMENT_SHADER, /milkyWay/);
 assert.match(WEBGL_SKY_FALLBACK_FRAGMENT_SHADER, /skyRay/);
 assert.match(WEBGL_SKY_FALLBACK_FRAGMENT_SHADER, /horizonHaze/);
-assert.doesNotMatch(WEBGL_SKY_FALLBACK_FRAGMENT_SHADER, /cloudNoise|starField|sunDisk/);
+assert.doesNotMatch(
+  WEBGL_SKY_FALLBACK_FRAGMENT_SHADER,
+  /cloudDensity|starField|sunDisc|transmittance/,
+);
 
-assert.equal(typeof WEBGPU_SKY_SHADER, "string");
-assert.match(WEBGPU_SKY_SHADER, /fn sky_vs/);
-assert.match(WEBGPU_SKY_SHADER, /fn sky_fs/);
-assert.match(WEBGPU_SKY_SHADER, /cloudNoise/);
-assert.match(WEBGPU_SKY_SHADER, /@binding\(3\) var cloudSampler/);
-assert.match(WEBGPU_SKY_SHADER, /@binding\(4\) var cloudTexture/);
 assert.match(WEBGPU_SKY_SHADER, /textureSample\(cloudTexture, cloudSampler/);
 assert.match(WEBGPU_SKY_SHADER, /sunDisk/);
 assert.match(WEBGPU_SKY_SHADER, /starField/);
@@ -532,7 +565,13 @@ assert.match(rendererSource, /spreadProbeTiles\(ATLAS_TEXTURES\.length, ATLAS_CO
 assert.match(rendererSource, /buildIsolationReference/);
 assert.match(rendererSource, /foreignTileContamination\(/);
 assert.match(rendererSource, /maxChannelDelta\(/);
-assert.match(rendererSource, /await buffer\.mapAsync\(/, "the gate must await its own readback");
+// The readback still has to be awaited, but through the bounded helper: a
+// mapAsync on a device that has stopped making progress never settles, and an
+// unbounded await there is a permanent freeze rather than a slow read.
+assert.match(rendererSource, /await mapBufferWithin\(buffer, mapMode\(\)\)/,
+  "the gate must await its own readback through the bounded helper");
+assert.match(rendererSource, /GPU_READBACK_TIMEOUT_MS/,
+  "a stalled readback must be bounded by a timeout");
 assert.doesNotMatch(
   rendererSource,
   /the WebGPU mip chain needs an async readback to certify/,

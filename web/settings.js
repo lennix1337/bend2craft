@@ -1,11 +1,41 @@
 // Menu options and world creation settings.
 // Pure and dependency-free; persistence is injected by the caller so the
 // rules stay testable without a browser. Only options the game implements
-// are exposed: field of view, mouse sensitivity, render distance and the
-// coordinates readout.
+// are exposed: field of view, mouse sensitivity, render distance, the
+// coordinates readout, the renderer backend and the graphics quality tier.
 import { normalizeRendererMode, RENDERER_MODES } from "./webgpu-capabilities.js";
+import { VISUAL_QUALITY_TIERS } from "./visual-quality.js";
 
 export { RENDERER_MODES };
+
+/** Tier names, cheapest first, with `auto` in front to leave adaptation on. */
+export const GRAPHICS_QUALITY_CHOICES = Object.freeze([
+  "auto",
+  ...VISUAL_QUALITY_TIERS.map((tier) => tier.name),
+]);
+export const DEFAULT_GRAPHICS_QUALITY = "auto";
+export const MIN_VOLUME = 0;
+export const MAX_VOLUME = 1;
+/** The mixer's own default was 0.18, which is far too quiet to be a menu default. */
+export const DEFAULT_VOLUME_MASTER = 0.7;
+export const DEFAULT_VOLUME_MUSIC = 0.7;
+export const DEFAULT_VOLUME_EFFECTS = 0.9;
+
+function clampVolume(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(MAX_VOLUME, Math.max(MIN_VOLUME, parsed));
+}
+
+/**
+ * A stored value is either a tier name or `auto`. Anything else falls back to
+ * `auto` rather than to a specific tier: a corrupted preference must not leave
+ * the game pinned to a quality the player never asked for, which would also
+ * disable the frame-time safety net.
+ */
+export function normalizeGraphicsQuality(value) {
+  return GRAPHICS_QUALITY_CHOICES.includes(value) ? value : DEFAULT_GRAPHICS_QUALITY;
+}
 
 export function runtimeRendererMode(value) {
   const mode = normalizeRendererMode(value);
@@ -55,6 +85,10 @@ export function createDefaultOptions() {
     showCoords: true,
     renderDistance: DEFAULT_RENDER_DISTANCE,
     renderer: DEFAULT_RENDERER,
+    graphicsQuality: DEFAULT_GRAPHICS_QUALITY,
+    volumeMaster: DEFAULT_VOLUME_MASTER,
+    volumeMusic: DEFAULT_VOLUME_MUSIC,
+    volumeEffects: DEFAULT_VOLUME_EFFECTS,
     controls: { ...DEFAULT_CONTROLS },
   };
 }
@@ -87,6 +121,10 @@ export function sanitizeOptions(raw = {}) {
     showCoords: raw.showCoords === undefined ? fallback.showCoords : Boolean(raw.showCoords),
     renderDistance: clampInteger(raw.renderDistance, MIN_RENDER_DISTANCE, MAX_RENDER_DISTANCE, fallback.renderDistance),
     renderer: runtimeRendererMode(raw.renderer),
+    graphicsQuality: normalizeGraphicsQuality(raw.graphicsQuality),
+    volumeMaster: clampVolume(raw.volumeMaster, fallback.volumeMaster),
+    volumeMusic: clampVolume(raw.volumeMusic, fallback.volumeMusic),
+    volumeEffects: clampVolume(raw.volumeEffects, fallback.volumeEffects),
     controls,
   };
 }
@@ -108,6 +146,16 @@ export function saveOptions(store, options) {
   } catch {
     return false;
   }
+}
+
+/** The three stored volumes in the shape the mixer expects. */
+export function audioVolumesFromOptions(options) {
+  const source = options ?? {};
+  return {
+    master: clampVolume(source.volumeMaster, DEFAULT_VOLUME_MASTER),
+    music: clampVolume(source.volumeMusic, DEFAULT_VOLUME_MUSIC),
+    effects: clampVolume(source.volumeEffects, DEFAULT_VOLUME_EFFECTS),
+  };
 }
 
 export function createWorldConfig({ name = "", seedText = "", mode = DEFAULT_WORLD_MODE } = {}) {

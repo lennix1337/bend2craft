@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
 
+// All throwaway output goes in the repo's single gitignored scratch folder, so
+// no session ever needs a new directory or a new permission grant.
+const SCRATCHPAD = "scratchpad";
+
 const baseUrl = process.argv[2] ?? "http://127.0.0.1:3000";
-const captureDir = process.env.BEND2CRAFT_CAPTURE_DIR ?? "/tmp/bend2craft-quality";
+const captureDir = process.env.BEND2CRAFT_CAPTURE_DIR ?? `${SCRATCHPAD}/quality`;
 const browser = await chromium.launch({ headless: true, args: ["--use-angle=swiftshader"] });
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
 const consoleErrors = [];
@@ -19,10 +23,42 @@ try {
     { timeout: 30000 },
   );
 
+  // The camera looks along [sin(yaw), sin(pitch), -cos(yaw)], so aiming at the
+  // sun is yaw = atan2(sunX, -sunZ) for sunDirection = [-cos(0.08t), sin(0.08t), 0.28].
+  // Poses are chosen to actually look at the sun and at open ground: a pose that
+  // points into a tree canopy checks the frame is non-blank but nothing else.
+  // The teleport helper pauses the game, which raises the pause dialog over the
+  // scene. Hide the overlays so a capture is evidence about the rendered world
+  // rather than about the pause menu.
+  // Remove the overlays from the DOM rather than hiding them with CSS: the
+  // stylesheet uses `!important` on several of them, and a specificity fight
+  // over a cosmetic rule is not worth it in a check whose job is to capture the
+  // rendered world.
+  await page.evaluate(() => {
+    // Removing rather than hiding: the stylesheet marks several of these
+    // `!important`, and a specificity fight over a cosmetic rule is not worth it
+    // in a check whose job is to capture the rendered world. The list is the set
+    // of nodes that still paint over the canvas, measured rather than guessed.
+    for (const id of ["pause", "hud", "help", "toast", "lock-hint", "hotbar", "vitals", "crosshair", "xp-hud", "inventory-toggle", "selected", "vignette", "particles"]) {
+      document.getElementById(id)?.remove();
+    }
+  });
+
+  const sunYaw = (time) => {
+    const phase = time * 0.08;
+    return Math.atan2(-Math.cos(phase), -0.28);
+  };
   const poses = [
-    { name: "spawn-day", time: 12, x: 25.5, z: 16.5, yaw: 0.0, pitch: -0.18 },
-    { name: "terrain-detail", time: 12, x: 25.5, z: 24.5, yaw: 0.65, pitch: -0.22 },
-    { name: "spawn-night", time: 58.9, x: 25.5, z: 16.5, yaw: 0.0, pitch: -0.18 },
+    { name: "sun-facing-day", time: 32, x: 25.5, z: 16.5, yaw: sunYaw(32), pitch: 0.14 },
+    { name: "open-terrain", time: 32, x: 25.5, z: 16.5, yaw: sunYaw(32) + Math.PI, pitch: 0.02 },
+    { name: "golden-hour", time: 36, x: 25.5, z: 16.5, yaw: sunYaw(36), pitch: 0.1 },
+    { name: "spawn-night", time: 58.9, x: 25.5, z: 16.5, yaw: sunYaw(58.9), pitch: 0.3 },
+    // Eye height with the ground filling the lower frame. Every other pose looks
+    // across the world from far enough that a moving block surface is sub-pixel,
+    // so a capture set without this one cannot show whether the ground a player
+    // is standing on is actually still. This is the pose the wind-on-terrain
+    // regression showed up in: 29k pixels of near ground moved with it.
+    { name: "ground-level-grass", time: 32, x: 25.5, z: 16.5, yaw: sunYaw(32) + Math.PI, pitch: 0.3 },
   ];
   const captures = [];
   for (const pose of poses) {

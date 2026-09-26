@@ -12,6 +12,17 @@ const FACE_DIRECTIONS = [
   [0, 0, -1],
 ];
 
+/**
+ * Outward face normal per FACE_DIRECTIONS index. The presentation shaders light
+ * every surface from a real sun direction, so the mesh has to carry the normal
+ * instead of inferring a fake face shade from the vertex colour.
+ */
+export const FACE_NORMALS = Object.freeze(FACE_DIRECTIONS.map((direction) => Object.freeze([...direction])));
+
+export function faceNormal(faceIndex) {
+  return FACE_NORMALS[faceIndex] ?? FACE_NORMALS[0];
+}
+
 function cellKey(u, v) {
   return `${u},${v}`;
 }

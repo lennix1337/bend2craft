@@ -30,8 +30,8 @@ const atlasWidth = ATLAS_COLUMNS * ATLAS_TILE_STRIDE;
 const atlasHeight = ATLAS_ROWS * ATLAS_TILE_STRIDE;
 assert.ok(Number.isInteger(Math.log2(atlasWidth)), `atlas width ${atlasWidth} must be a power of two`);
 assert.ok(Number.isInteger(Math.log2(atlasHeight)), `atlas height ${atlasHeight} must be a power of two`);
-assert.equal(atlasWidth, 512);
-assert.equal(atlasHeight, 512);
+assert.equal(atlasWidth, 1024, "a 64-texel tile with a 32-texel gutter over 8 columns");
+assert.equal(atlasHeight, 1024);
 
 // Every tile owns a padded cell, and horizontally adjacent tiles keep a gutter.
 for (let tile = 0; tile < ATLAS_COLUMNS * ATLAS_ROWS; tile += 1) {
@@ -132,9 +132,11 @@ assert.ok(
 
 // The geometry the mip probe reads back must shrink the cell predictably.
 const level1 = atlasMipLevelGeometry(ATLAS_TILE_GUTTER, ATLAS_TILE_SIZE, 1);
-assert.deepEqual(level1, { interior: 16, padding: 8, size: 32, factor: 2 });
+assert.deepEqual(level1, { interior: 32, padding: 16, size: 64, factor: 2 });
 const level4 = atlasMipLevelGeometry(ATLAS_TILE_GUTTER, ATLAS_TILE_SIZE, 4);
-assert.deepEqual(level4, { interior: 2, padding: 1, size: 4, factor: 16 });
+assert.deepEqual(level4, { interior: 4, padding: 2, size: 8, factor: 16 });
+const level5 = atlasMipLevelGeometry(ATLAS_TILE_GUTTER, ATLAS_TILE_SIZE, 5);
+assert.deepEqual(level5, { interior: 2, padding: 1, size: 4, factor: 32 });
 for (const level of ATLAS_MIPMAP_SAFE_LEVELS) {
   const geometry = atlasMipLevelGeometry(ATLAS_TILE_GUTTER, ATLAS_TILE_SIZE, level);
   // The outermost interior texel at this level reaches 2^(level-1) source

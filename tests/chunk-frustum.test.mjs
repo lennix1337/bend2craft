@@ -199,7 +199,8 @@ assert.equal(selection.metrics.culledChunks, 2);
 assert.equal(selection.metrics.drawCalls, 2, "each non-empty layer costs one draw call");
 assert.equal(selection.metrics.submittedVertices, 660);
 assert.equal(selection.metrics.submittedVertexBytes, 660 * TERRAIN_VERTEX_STRIDE_BYTES);
-assert.equal(TERRAIN_VERTEX_STRIDE_BYTES, 52);
+// 18 floats per vertex: position, colour, light, normal, uv, material, tileRect.
+assert.equal(TERRAIN_VERTEX_STRIDE_BYTES, 72);
 
 // Without a frustum every resident chunk is submitted, which is the contract
 // the culling benchmark compares against.

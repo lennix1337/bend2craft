@@ -229,7 +229,7 @@ const meleeWallRegion = meleeRegion(meleeMobX, meleeMobY, meleeMobZ, (x, _y, z) 
 
 function facingHostile(id, headingX, headingZ, alive = true, kind = 2) {
   return Entities.cons_mob(
-    Entities.make_mob_heading(BigInt(id), kind, meleeMobX, meleeMobY, meleeMobZ, headingX, headingZ, 20.0, alive),
+    Entities.make_mob_heading(BigInt(id), kind, meleeMobX, meleeMobY, meleeMobZ, headingX, headingZ, 20.0, alive, false),
     { $: "Nil" },
   );
 }
@@ -383,7 +383,7 @@ const meleeStepRegion = meleeRegion(2.5, 1.0, 2.5, (x, y) => x === 3 && y === 1)
 assert.equal(
   Number(Entities.threat_damage(
     Entities.cons_mob(
-      Entities.make_mob_heading(5007n, 2, 2.5, 1.0, 2.5, 1.0, 0.0, 20.0, true),
+      Entities.make_mob_heading(5007n, 2, 2.5, 1.0, 2.5, 1.0, 0.0, 20.0, true, false),
       { $: "Nil" },
     ),
     3.5,
@@ -725,3 +725,33 @@ assert.equal(burned[0].alive, false);
 assert.equal(burned[1].alive, true);
 assert.equal(listValues(burnResult.drops).length, 1);
 console.log('sunlight damage ok');
+
+// Which mobs are on fire is domain state, not a browser guess: the browser only
+// presents it. So the sunlight tick has to publish the flag per mob, and every
+// other tick that rebuilds a Mob has to carry it through untouched. A flag that
+// reset on movement would make the flames stutter every simulation step.
+const flagOf = (result, index = 0) => listValues(result.mobs)[index].burning;
+assert.equal(flagOf(sunnyTick, 0), true, "a hostile mob in direct sun must report itself burning");
+assert.equal(flagOf(sunnyTick, 1), false, "a passive mob never burns in sunlight");
+assert.equal(flagOf(moonlitTick, 0), false, "night must clear the fire");
+assert.equal(flagOf(underground, 0), false, "a mob under the terrain must not burn");
+assert.equal(flagOf(shadedTick, 0), false, "an opaque edit overhead must clear the fire");
+assert.equal(flagOf(canopyTick, 0), false, "a generated canopy must clear the fire");
+assert.equal(burned[0].burning, false, "a mob the sun finished off must not be left burning on the corpse");
+
+// Movement, knockback and the despawn filter all rebuild the record, so each of
+// them has to preserve the flag rather than default it back to false.
+const litZombie = listValues(sunnyTick.mobs)[0];
+const burningStep = Entities.step_budgeted(
+  Entities.cons_mob(litZombie, { $: "Nil" }), 10.5, 5.5, 0.2, 64.0,
+);
+assert.equal(burningStep.head.burning, true, "a burning mob that takes a step must stay burning");
+const struck = Entities.attack(
+  Entities.cons_mob(litZombie, { $: "Nil" }), litZombie.id, 1.0, 10.5, 15.0, 5.5, 4.0, { $: "Nil" },
+);
+assert.equal(struck.mobs.head.burning, true, "a burning mob that is hit must stay burning");
+const keptBurning = Entities.despawn(
+  Entities.cons_mob(litZombie, { $: "Nil" }), 10.5, 5.5, 48.0,
+);
+assert.equal(keptBurning.head.burning, true, "despawn must not clear the fire on a mob it keeps");
+console.log('sunlight burning flag ok');

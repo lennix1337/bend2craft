@@ -67,6 +67,23 @@ assert.equal(
   "different top-face ambient occlusion signatures must not be merged",
 );
 
+// The counterpart of the leaf exemption below, and the reason the terrain
+// surface may not be vertex-animated: a flat grass plain collapses into a
+// single quad with four corners, so a world-space field sampled at those
+// corners can only tilt the quad. A large plain would then read as a few big
+// facets rolling like swell instead of as ground rippling in the wind.
+const grassPlain = [];
+for (let x = 0; x < 8; x += 1) {
+  for (let z = 0; z < 8; z += 1) grassPlain.push([x, 0, z, 3]);
+}
+const grassTops = meshFor(grassPlain).quads.filter((quad) => quad.faceIndex === 0 && quad.block === 3);
+assert.equal(grassTops.length, 1, "a flat grass plain must merge into one quad");
+assert.deepEqual(
+  { width: grassTops[0].width, height: grassTops[0].height },
+  { width: 8, height: 8 },
+  "the merged grass quad carries four corners for the whole plain",
+);
+
 const leafPatch = meshFor([
   [0, 0, 0, 4], [1, 0, 0, 4],
   [0, 0, 1, 4], [1, 0, 1, 4],

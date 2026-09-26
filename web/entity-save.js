@@ -34,6 +34,10 @@ function normalizeMobs(list) {
       alive: health > 0 && mob.alive !== false,
       heading_x: mob.heading_x ?? 0,
       heading_z: mob.heading_z ?? -1,
+      // A save written before the fire flag existed has no such field. Reading
+      // it as "not burning" is the only safe default: the alternative loads an
+      // old world with every mob already alight.
+      burning: mob.burning === true,
     };
   }
   return { $: "Con", head: normalized, tail: normalizeMobs(list.tail) };

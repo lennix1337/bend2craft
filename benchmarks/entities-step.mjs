@@ -12,7 +12,7 @@ function elapsed(run) {
   return { ms: performance.now() - start, state };
 }
 
-const initial = Entities.spawn(1337n, 0n, 0n, 256n, 256n);
+const initial = Entities.spawn(1337n, 0.0, 0n, 0n, 256n, 256n);
 let count = 0;
 for (let node = initial; node?.$ === "Con"; node = node.tail) count += 1;
 let airCells = { $: "Nil" };

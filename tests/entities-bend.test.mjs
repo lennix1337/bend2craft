@@ -103,27 +103,43 @@ function regionListFor(list) {
   return regionList(listValues(list).map((mob) => meleeRegion(Number(mob.x), Number(mob.y), Number(mob.z))));
 }
 
-const mobState = Entities.spawn(1337n, 0n, 0n, 80n, 80n);
+const mobState = Entities.spawn(1337n, 0.0, 0n, 0n, 80n, 80n);
 const mobs = listValues(mobState);
 assert.ok(mobs.length > 0);
 assert.ok(mobs.every((mob) => mob.$ === "Mob" && Number(mob.health) === 20 && mob.alive === true));
 assert.ok(new Set(mobs.map((mob) => Number(mob.kind))).size >= 1);
-const peacefulMobs = listValues(Entities.spawn_for_mode(1337n, 0n, 0n, 80n, 80n, true));
+const peacefulMobs = listValues(Entities.spawn_for_mode(1337n, 0.0, 0n, 0n, 80n, 80n, true));
 assert.ok(peacefulMobs.length > 0);
 assert.ok(peacefulMobs.length < mobs.length);
 assert.ok(peacefulMobs.every((mob) => Number(mob.kind) === 1));
-const protectedMobs = listValues(Entities.spawn_for_player(1337n, 0n, 0n, 80n, 80n, 40n, 0n, false));
+const protectedMobs = listValues(Entities.spawn_for_player(1337n, 0.0, 0n, 0n, 80n, 80n, 40n, 0n, false));
 assert.ok(protectedMobs.every((mob) => !(Number(mob.x) === 40.5 && Number(mob.z) === 0.5)));
-const safeAreaMobs = listValues(Entities.spawn_for_player(1337n, 0n, 0n, 80n, 80n, 40n, 24n, false));
+const safeAreaMobs = listValues(Entities.spawn_for_player(1337n, 0.0, 0n, 0n, 80n, 80n, 40n, 24n, false));
 assert.ok(safeAreaMobs.every((mob) => (
   Math.abs(Number(mob.x) - 40.5) > 8.1
     || Math.abs(Number(mob.z) - 24.5) > 8.1
 )));
-const safeWorldMobs = listValues(Entities.spawn_for_player(1337n, 0n, 0n, 48n, 48n, 40n, 24n, false));
+const safeWorldMobs = listValues(Entities.spawn_for_player(1337n, 0.0, 0n, 0n, 48n, 48n, 40n, 24n, false));
 assert.ok(safeWorldMobs.every((mob) => (
   Math.abs(Number(mob.x) - 40.5) > 8.1
     || Math.abs(Number(mob.z) - 24.5) > 8.1
 )));
+// Hostile spawn must respect sunlight. The open surface is fully lit during the
+// day, so a mob may only appear where the sky is blocked, or once night falls.
+const daySpawn = listValues(Entities.spawn(1337n, 1.0, 0n, 0n, 80n, 80n));
+const nightSpawn = listValues(Entities.spawn(1337n, 0.0, 0n, 0n, 80n, 80n));
+assert.ok(nightSpawn.length > 0);
+assert.ok(daySpawn.length < nightSpawn.length);
+assert.ok(daySpawn.every((mob) => !Entities.sun_exposed_generated(
+  1337n,
+  Number(mob.x),
+  Number(mob.y),
+  Number(mob.z),
+)));
+// A mob standing in the open at noon is lit, so a daytime spawn there would burn
+// on the first tick. Daylight spawns must therefore be shaded by construction.
+assert.ok(Entities.sun_exposed_generated(1337n, 40.5, 64.0, 40.5));
+
 const crowded = {
   $: "Con",
   head: Entities.make_mob(90n, 2, 40.5, 8.0, 24.5, 20.0, true),
@@ -137,7 +153,7 @@ const respawnSafe = listValues(Entities.remove_spawn_area(crowded, 40n, 24n));
 assert.deepEqual(respawnSafe.map((mob) => Number(mob.id)), [91]);
 
 const steppedRegions = airRegions(mobs.length);
-const stepped = listValues(Entities.step_world(Entities.spawn(1337n, 0n, 0n, 80n, 80n), 40.5, 40.5, 1.0, 3.0, 0n, steppedRegions));
+const stepped = listValues(Entities.step_world(Entities.spawn(1337n, 0.0, 0n, 0n, 80n, 80n), 40.5, 40.5, 1.0, 3.0, 0n, steppedRegions));
 assert.equal(stepped.length, mobs.length);
 
 const budgetedInput = {
@@ -383,7 +399,7 @@ assert.equal(
 const targetId = Number(mobs[0].id);
 const firstTarget = mobs[0];
 const attacked = Entities.attack(
-  Entities.spawn(1337n, 0n, 0n, 80n, 80n),
+  Entities.spawn(1337n, 0.0, 0n, 0n, 80n, 80n),
   BigInt(targetId),
   4.0,
   firstTarget.x,
@@ -418,7 +434,7 @@ const rangedAttack = Entities.attack(rangedTarget, 4003n, 6.0, 0.0, 0.0, 0.5, 16
 assert.equal(rangedAttack.hit, true, "ranged attacks must use their explicit reach");
 assert.equal(Number(listValues(rangedAttack.mobs)[0].health), 14);
 assert.equal(Number(listValues(attacked.mobs)[0].health), 16);
-let killed = Entities.spawn(1337n, 0n, 0n, 80n, 80n);
+let killed = Entities.spawn(1337n, 0.0, 0n, 0n, 80n, 80n);
 let killedResult = null;
 for (let index = 0; index < 5; index += 1) {
   const currentTarget = listValues(killed).find((mob) => Number(mob.id) === targetId);

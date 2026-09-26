@@ -72,8 +72,24 @@ def drop_for(mob: Mob) -> Drop:
   +item = Bool.pick(U32, wool, 12, 13)
   Drop{id, item, x, y, z, 1, 0.0, False{}}
 
+# The generated-world half of sun_exposed: a cell is lit when it sits at or above
+# its terrain column and nothing generated overhead blocks the sky. Spawn reads
+# this same predicate, so a mob can never be placed on ground the sunlight tick
+# would burn it on the very next step.
+def sun_exposed_generated(+seed: Nat, +x: F32, +y: F32, +z: F32) -> Bool:
+  +cell_x = Player.floor_nat(x)
+  +cell_y = Player.floor_nat(y)
+  +cell_z = Player.floor_nat(z)
+  +terrain_height = World.column_height(seed, cell_x, cell_z)
+  +above_terrain = Nat.is_ge(cell_y, terrain_height)
+  +generated_cover = Bool.and(
+    above_terrain,
+    Player.solid(World.generated_cover_above(seed, cell_x, cell_y, cell_z))
+  )
+  Bool.and(above_terrain, Bool.not(generated_cover))
+
 def spawn_x(
-  +seed: Nat, +remaining: Nat, +x: Nat, +z: Nat, +next_id: Nat,
+  +seed: Nat, +daylight: F32, +remaining: Nat, +x: Nat, +z: Nat, +next_id: Nat,
   +mobs: List<&2, Mob>
 ) -> List<&2, Mob>:
   match remaining:
@@ -85,7 +101,15 @@ def spawn_x(
       +selected = Nat.is_eq(Nat.mod(hash, 23n), 0n)
       +feet_open = U32.is_eq(World.block(seed, x, height, z), 0)
       +head_open = U32.is_eq(World.block(seed, x, Nat.add(height, 1n), z), 0)
-      +clear = Bool.and(feet_open, head_open)
+      +foot_x = F32.add(U32.to_f32(U32.from_nat(x)), fraction(1, 2))
+      +foot_y = U32.to_f32(U32.from_nat(height))
+      +foot_z = F32.add(U32.to_f32(U32.from_nat(z)), fraction(1, 2))
+      # Sunlight reaches the open surface during the day, so a daytime spawn
+      # there would burn on the first tick. Hostiles need night or shade.
+      +dark = Bool.not(F32.is_gt(daylight, 0.5))
+      +shaded = Bool.not(sun_exposed_generated(seed, foot_x, foot_y, foot_z))
+      +unlit = Bool.or(dark, shaded)
+      +clear = Bool.and(Bool.and(feet_open, head_open), unlit)
       +kind = U32.add(U32.from_nat(Nat.mod(World.mix(seed, z, x), 4n)), 1)
       +tough = U32.is_eq(kind, 4)
       +mob = make_mob(
@@ -98,23 +122,26 @@ def spawn_x(
         True{}
       )
       +updated = Bool.pick(List<&2, Mob>, Bool.and(selected, clear), cons_mob(mob, mobs), mobs)
-      spawn_x(seed, p, Nat.add(x, 8n), z, Nat.add(next_id, 1n), updated)
+      spawn_x(seed, daylight, p, Nat.add(x, 8n), z, Nat.add(next_id, 1n), updated)
 
 def spawn_z(
-  +seed: Nat, +remaining: Nat, +x: Nat, +z: Nat, +x_count: Nat,
+  +seed: Nat, +daylight: F32, +remaining: Nat, +x: Nat, +z: Nat, +x_count: Nat,
   +next_id: Nat, +mobs: List<&2, Mob>
 ) -> List<&2, Mob>:
   match remaining:
     case 0n:
       mobs
     case 1n+p:
-      +row = spawn_x(seed, x_count, x, z, next_id, mobs)
-      spawn_z(seed, p, x, Nat.add(z, 8n), x_count, Nat.add(next_id, x_count), row)
+      +row = spawn_x(seed, daylight, x_count, x, z, next_id, mobs)
+      spawn_z(seed, daylight, p, x, Nat.add(z, 8n), x_count, Nat.add(next_id, x_count), row)
 
 def spawn(
-  +seed: Nat, +origin_x: Nat, +origin_z: Nat, +width: Nat, +depth: Nat
+  +seed: Nat, +daylight: F32, +origin_x: Nat, +origin_z: Nat,
+  +width: Nat, +depth: Nat
 ) -> List<&2, Mob>:
-  spawn_z(seed, Nat.div(depth, 8n), origin_x, origin_z, Nat.div(width, 8n), 0n, Nil{})
+  spawn_z(
+    seed, daylight, Nat.div(depth, 8n), origin_x, origin_z, Nat.div(width, 8n), 0n, Nil{}
+  )
 
 def peaceful_mobs(+mobs: List<&2, Mob>) -> List<&2, Mob>:
   match mobs:
@@ -126,10 +153,10 @@ def peaceful_mobs(+mobs: List<&2, Mob>) -> List<&2, Mob>:
       Bool.pick(List<&2, Mob>, U32.is_eq(kind, 1), cons_mob(head, rest), rest)
 
 def spawn_for_mode(
-  +seed: Nat, +origin_x: Nat, +origin_z: Nat, +width: Nat, +depth: Nat,
-  peaceful: Bool
+  +seed: Nat, +daylight: F32, +origin_x: Nat, +origin_z: Nat,
+  +width: Nat, +depth: Nat, peaceful: Bool
 ) -> List<&2, Mob>:
-  +mobs = spawn(seed, origin_x, origin_z, width, depth)
+  +mobs = spawn(seed, daylight, origin_x, origin_z, width, depth)
   Bool.pick(List<&2, Mob>, peaceful, peaceful_mobs(mobs), mobs)
 
 def spawn_area_cell(+value: F32, +cell: Nat) -> Bool:
@@ -150,10 +177,12 @@ def remove_spawn_area(
       Bool.pick(List<&2, Mob>, same_area, rest, cons_mob(head, rest))
 
 def spawn_for_player(
-  +seed: Nat, +origin_x: Nat, +origin_z: Nat, +width: Nat, +depth: Nat,
-  +safe_x: Nat, +safe_z: Nat, peaceful: Bool
+  +seed: Nat, +daylight: F32, +origin_x: Nat, +origin_z: Nat,
+  +width: Nat, +depth: Nat, +safe_x: Nat, +safe_z: Nat, peaceful: Bool
 ) -> List<&2, Mob>:
-  +mobs = remove_spawn_area(spawn(seed, origin_x, origin_z, width, depth), safe_x, safe_z)
+  +mobs = remove_spawn_area(
+    spawn(seed, daylight, origin_x, origin_z, width, depth), safe_x, safe_z
+  )
   Bool.pick(List<&2, Mob>, peaceful, peaceful_mobs(mobs), mobs)
 
 def max_f32(+a: F32, +b: F32) -> F32:
@@ -598,21 +627,27 @@ def edit_opaque_above(
 
 # Use the generated terrain height for the bulk sky query; only persistent
 # edits need a per-column scan, keeping the simulation tick independent of
-# world-generation cost for every mob.
+# world-generation cost for every mob. The generated half is shared with spawn.
+def sun_exposed.edited(
+  +exposed: Bool, +edits: List<&2, WorldState.Edit>,
+  +cell_x: Nat, +cell_z: Nat, +cell_y: Nat
+) -> Bool:
+  match exposed:
+    case False{}:
+      False{}
+    case True{}:
+      Bool.not(edit_opaque_above(edits, cell_x, cell_z, cell_y))
+
 def sun_exposed(
   +edits: List<&2, WorldState.Edit>, +seed: Nat, +x: F32, +y: F32, +z: F32
 ) -> Bool:
-  +cell_x = Player.floor_nat(x)
-  +cell_y = Player.floor_nat(y)
-  +cell_z = Player.floor_nat(z)
-  +terrain_height = World.column_height(seed, cell_x, cell_z)
-  +above_terrain = Nat.is_ge(cell_y, terrain_height)
-  +generated_cover = Bool.and(
-    above_terrain,
-    Player.solid(World.generated_cover_above(seed, cell_x, cell_y, cell_z))
+  sun_exposed.edited(
+    sun_exposed_generated(seed, x, y, z),
+    edits,
+    Player.floor_nat(x),
+    Player.floor_nat(z),
+    Player.floor_nat(y),
   )
-  +edited_cover = edit_opaque_above(edits, cell_x, cell_z, cell_y)
-  Bool.and(above_terrain, Bool.not(Bool.or(generated_cover, edited_cover)))
 
 def sun_burning.hostile(
   +hostile: Bool, +edits: List<&2, WorldState.Edit>, +seed: Nat,

@@ -1960,6 +1960,9 @@ try {
     return true;
   }
 
+  // Spawn reads the time of day, so resolve it before the one-shot mob spawn
+  // instead of trusting the initial daylight constant.
+  daylight = daylightForTime(worldTime);
   refreshMobs();
   villagers = villagerViews(villagerDomainState);
   if (savedGame?.furnaces?.$ === "World") furnaceWorldState = savedGame.furnaces;
@@ -2101,6 +2104,7 @@ try {
       ? { $: "Nil" }
       : Entities.spawn_for_player(
         SEED,
+        daylight,
         0n,
         0n,
         World.width(),

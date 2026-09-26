@@ -37,7 +37,12 @@ async function inspectRuntime(renderer) {
     });
     await page.waitForFunction(
       () => window.__bend2craft?.getFrameDiagnostics?.() !== undefined
-        || document.getElementById("error")?.hidden === false,
+        || document.getElementById("error")?.hidden === false
+        // A backend that cannot start returns the player to the menu with a
+        // banner instead of stranding them on an error page, so the banner is a
+        // third way this navigation can finish. Waiting only on the first two
+        // spent the whole timeout here on every fallback.
+        || document.getElementById("backend-notice")?.hidden === false,
       null,
       { timeout: 30000 },
     ).catch(() => {});
@@ -54,6 +59,20 @@ async function inspectRuntime(renderer) {
       readbackSupport: window.__bend2craft?.getFrameReadbackSupport?.() ?? null,
       errorHidden: document.getElementById("error")?.hidden ?? false,
       errorText: document.getElementById("error")?.textContent ?? "",
+      // The recovery surface. A failed backend leaves no error page behind: it
+      // hands the player back to the menu with a banner and a released pin, so
+      // both halves of that are observable state rather than an assumption.
+      noticeHidden: document.getElementById("backend-notice")?.hidden ?? null,
+      noticeText: document.getElementById("backend-notice")?.textContent ?? "",
+      storedRenderer: (() => {
+        try {
+          const raw = window.localStorage.getItem("bend2craft-options");
+          return raw === null ? null : (JSON.parse(raw).renderer ?? null);
+        } catch {
+          return null;
+        }
+      })(),
+      query: window.location.search,
     }));
     return { state, consoleErrors, consoleWarnings, pageErrors };
   } finally {
@@ -342,11 +361,43 @@ try {
         }));
       }
     } else {
-      const reason = explicit.state.errorText || "WebGPU presentation fell back without a diagnostic";
-      const expectedUnavailable = /webgpu.*(unavailable|presentation)|could not start bend2craft|no webgpu adapter/i.test(reason);
-      assert.ok(expectedUnavailable, `unexpected explicit WebGPU startup result: ${reason}`);
-      assert.equal(explicit.state.errorHidden, false, "an explicit WebGPU skip must expose the startup error");
-      assert.ok(explicit.pageErrors.length > 0, "an explicit WebGPU startup failure must be observable");
+      // The recovery contract, not the old dead-page contract. A backend that
+      // cannot start must leave the player somewhere they can pick another one:
+      // no error screen, a banner on the menu that names the backend and the
+      // reason, and the stored pin released so the next launch does not walk
+      // into the same wall and bounce between the world and the menu.
+      assert.equal(explicit.state.errorHidden, true,
+        "a failed backend must not leave the player on an error page");
+      assert.equal(explicit.state.noticeHidden, false,
+        "a failed backend must return the player to the menu with a banner");
+      const notice = explicit.state.noticeText ?? "";
+      assert.match(notice, /webgpu/i,
+        `the banner must name the backend that failed, got: ${notice}`);
+      assert.match(notice, /reason/i,
+        `the banner must carry a reason, got: ${notice}`);
+      // The reason has to be a real diagnostic. Reading it out of the banner is
+      // what makes this meaningful: the old check read it from the error page,
+      // which no longer exists, and fell through to a fallback string that its
+      // own regex then matched - so it passed with nothing to report.
+      const reason = notice.replace(/^.*?Reason:\s*/is, "").trim();
+      assert.ok(reason.length > 0 && !/^could not start/i.test(reason),
+        `the banner must carry the backend's own reason, got: ${reason}`);
+      assert.match(reason, /unavailable|presentation|adapter|probe|fallback/i,
+        `unexpected explicit WebGPU startup result: ${reason}`);
+      assert.equal(explicit.state.storedRenderer, "auto",
+        "a failed backend must release the stored renderer pin, or the next launch repeats the failure");
+      assert.match(explicit.state.query ?? "", /renderer-fallback=1/,
+        "the recovery has to route through the fallback marker so the menu knows this is not a cold start");
+      assert.equal(explicit.state.frame, null,
+        "a failed backend must not leave a half-started world behind");
+      // Observability used to mean "an unhandled page error fired", because the
+      // failure surfaced as a dead error page. The recovery is now a handled
+      // path, so demanding a thrown exception asserts a crash - the opposite of
+      // what this flow promises. The failure is reported through the banner and
+      // the released pin, both asserted above; what is left to prove is that the
+      // hand-back happened without anything blowing up on the way.
+      assert.deepEqual(explicit.pageErrors, [],
+        `the fallback must hand the player back without an unhandled error, got: ${explicit.pageErrors.join(" | ")}`);
       // A fallback must be marked skipped with a diagnostic that names the
       // capability, the browser's own verdict, and the backend actually used.
       console.log(JSON.stringify({
@@ -354,6 +405,8 @@ try {
         explicitFailure: true,
         skippedCapability: "webgpu-presentation",
         reason,
+        notice,
+        storedRenderer: explicit.state.storedRenderer,
         support,
         shaderValidation,
         fallback: {

@@ -111,7 +111,7 @@ Status markers:
 - [ ] Add potions and brewing.
 - [ ] Add enchantment selection, storage and effect rules.
 - [ ] Add elytra flight.
-- [~] Add multiplayer/LAN transport and authoritative synchronization. Shared block edits and player presence are in: a Bend-owned room (`world/multiplayer.bend`) orders and validates edit batches behind a Node LAN server and a Cloudflare Durable Object. Next: server-owned mobs, drops, containers and fluid/fire state, and server-validated movement once player physics moves to Bend.
+- [~] Add multiplayer/LAN transport and authoritative synchronization. Shared block edits, player presence, chests, furnaces and the day clock are in: a Bend-owned room (`world/multiplayer.bend`) orders and validates edit batches and container transitions and smelts furnaces, behind a Node LAN server and a Cloudflare Durable Object. Next: server-owned mobs, drops and fluid/fire state, and server-validated movement once player physics moves to Bend.
 - [ ] Add achievements and advancement tracking.
 - [ ] Add a boss encounter and boss health presentation.
 - [x] Add a dedicated XP bar; current XP is tracked and shown as a level in the HUD.

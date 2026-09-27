@@ -8,13 +8,15 @@
 // Edits travel as [x, y, z, block] in stored (Bend) coordinates: the same
 // non-negative encoding WorldState keeps (see web/world-coordinates.js).
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 export const MULTIPLAYER_PATH = "/multiplayer";
 export const MAX_MESSAGE_BYTES = 256 * 1024;
 export const MAX_EDITS_PER_MESSAGE = 4096;
 export const MAX_PLAYERS = 16;
 export const MAX_NAME_LENGTH = 24;
 export const POSE_INTERVAL_MS = 100;
+export const CHEST_SLOTS = 9;
+export const MAX_STACK = 64;
 
 function isStoredInteger(value) {
   return Number.isSafeInteger(value) && value >= 0;
@@ -33,6 +35,42 @@ export function isWireEdit(value) {
 
 export function isWireEditList(value, limit = MAX_EDITS_PER_MESSAGE) {
   return Array.isArray(value) && value.length <= limit && value.every(isWireEdit);
+}
+
+function isU32(value) {
+  return Number.isInteger(value) && value >= 0 && value <= 0xffffffff;
+}
+
+/** A chest position [x, y, z] in stored coordinates. */
+export function isWirePosition(value) {
+  return Array.isArray(value) && value.length === 3 && value.every(isStoredInteger);
+}
+
+/** A chest slot [item, count, durability]. */
+export function isWireSlot(value) {
+  return Array.isArray(value) && value.length === 3 && value.every(isU32);
+}
+
+/**
+ * A furnace state [input, inputCount, fuel, fuelCount, output, outputCount,
+ * progress, burn], the fields of world/furnace.bend's Furnace in order.
+ */
+export function isWireFurnaceState(value) {
+  return Array.isArray(value) && value.length === 8 && value.every(isU32);
+}
+
+export function isWireFurnace(value) {
+  return value !== null
+    && typeof value === "object"
+    && isWirePosition(value.pos)
+    && (value.state === null || isWireFurnaceState(value.state));
+}
+
+export function isWireChest(value) {
+  return value !== null
+    && typeof value === "object"
+    && isWirePosition(value.pos)
+    && (value.slots === null || (Array.isArray(value.slots) && value.slots.every(isWireSlot)));
 }
 
 function isNumber(value) {
@@ -81,6 +119,27 @@ export function decodeClientMessage(text) {
       return isWireEditList(message.edits) && message.edits.length > 0
         ? { t: "edits", edits: message.edits }
         : null;
+    case "chest":
+      if (!isU32(message.id) || !isWirePosition(message.pos)) return null;
+      if (message.op === "deposit") {
+        return isU32(message.item) && isU32(message.count) && isU32(message.durability)
+          ? { t: "chest", op: "deposit", id: message.id, pos: message.pos, item: message.item, count: message.count, durability: message.durability }
+          : null;
+      }
+      if (message.op === "withdraw") {
+        return Number.isInteger(message.index) && message.index >= 0 && message.index < CHEST_SLOTS
+          && Number.isInteger(message.amount) && message.amount > 0 && message.amount <= MAX_STACK
+          ? { t: "chest", op: "withdraw", id: message.id, pos: message.pos, index: message.index, amount: message.amount }
+          : null;
+      }
+      return null;
+    case "time":
+      return message.op === "morning" ? { t: "time", op: "morning" } : null;
+    case "furnace":
+      if (!isU32(message.id) || !isWirePosition(message.pos)) return null;
+      if (message.op !== "input" && message.op !== "fuel" && message.op !== "output") return null;
+      if (message.op !== "output" && !isU32(message.item)) return null;
+      return { t: "furnace", op: message.op, id: message.id, pos: message.pos, item: message.op === "output" ? 0 : message.item };
     default:
       return null;
   }
@@ -104,6 +163,9 @@ export function decodeServerMessage(text) {
         && Number.isInteger(message.seq)
         && isWireEditList(message.edits, Infinity)
         && Array.isArray(message.players)
+        && Array.isArray(message.chests) && message.chests.every(isWireChest)
+        && Array.isArray(message.furnaces) && message.furnaces.every(isWireFurnace)
+        && Number.isFinite(message.time)
         ? message
         : null;
     case "edits":
@@ -117,6 +179,17 @@ export function decodeServerMessage(text) {
       return Number.isInteger(message.id) ? message : null;
     case "error":
       return typeof message.message === "string" ? message : null;
+    case "chest":
+      return isWireChest(message) ? message : null;
+    case "chest-result":
+    case "furnace-result":
+      return isU32(message.id) && typeof message.ok === "boolean" ? message : null;
+    case "furnace":
+      return isWireFurnace(message) ? message : null;
+    case "furnaces":
+      return Array.isArray(message.furnaces) && message.furnaces.every(isWireFurnace) ? message : null;
+    case "time":
+      return Number.isFinite(message.time) ? message : null;
     default:
       return null;
   }
@@ -166,4 +239,83 @@ export function multiplayerUrl(address, location) {
   url.search = "";
   url.hash = "";
   return url.toString();
+}
+
+/** Converts a Bend `List<Chest.Slot>` to wire slots. */
+export function bendSlotsToWire(list) {
+  const slots = [];
+  for (let node = list; node?.$ === "Con"; node = node.tail) {
+    slots.push([Number(node.head.item), Number(node.head.count), Number(node.head.durability)]);
+  }
+  return slots;
+}
+
+/** Converts wire slots to a Bend `List<Chest.Slot>`. */
+export function wireSlotsToBend(slots) {
+  let list = { $: "Nil" };
+  for (let index = slots.length - 1; index >= 0; index -= 1) {
+    const [item, count, durability] = slots[index];
+    list = { $: "Con", head: { $: "Slot", item, count, durability }, tail: list };
+  }
+  return list;
+}
+
+/** Converts a Bend `Chests.World` to wire chests [{ pos, slots }]. */
+export function bendChestsToWire(world) {
+  const chests = [];
+  for (let node = world?.entries; node?.$ === "Con"; node = node.tail) {
+    const entry = node.head;
+    chests.push({ pos: [Number(entry.x), Number(entry.y), Number(entry.z)], slots: bendSlotsToWire(entry.slots) });
+  }
+  return chests;
+}
+
+/** Converts wire chests to a Bend `Chests.World`. */
+export function wireChestsToBend(chests) {
+  let entries = { $: "Nil" };
+  for (let index = chests.length - 1; index >= 0; index -= 1) {
+    const { pos: [x, y, z], slots } = chests[index];
+    entries = {
+      $: "Con",
+      head: { $: "Entry", x: BigInt(x), y: BigInt(y), z: BigInt(z), slots: wireSlotsToBend(slots) },
+      tail: entries,
+    };
+  }
+  return { $: "World", entries };
+}
+
+const FURNACE_FIELDS = ["input", "input_count", "fuel", "fuel_count", "output", "output_count", "progress", "burn"];
+
+/** Converts a Bend `Furnace` to a wire furnace state. */
+export function bendFurnaceToWire(furnace) {
+  return FURNACE_FIELDS.map((field) => Number(furnace[field]));
+}
+
+/** Converts a wire furnace state to a Bend `Furnace`. */
+export function wireFurnaceToBend(state) {
+  return Object.fromEntries([["$", "Furnace"], ...FURNACE_FIELDS.map((field, index) => [field, state[index]])]);
+}
+
+/** Converts a Bend `Furnaces.World` to wire furnaces [{ pos, state }]. */
+export function bendFurnacesToWire(world) {
+  const furnaces = [];
+  for (let node = world?.entries; node?.$ === "Con"; node = node.tail) {
+    const entry = node.head;
+    furnaces.push({ pos: [Number(entry.x), Number(entry.y), Number(entry.z)], state: bendFurnaceToWire(entry.furnace) });
+  }
+  return furnaces;
+}
+
+/** Converts wire furnaces to a Bend `Furnaces.World`. */
+export function wireFurnacesToBend(furnaces) {
+  let entries = { $: "Nil" };
+  for (let index = furnaces.length - 1; index >= 0; index -= 1) {
+    const { pos: [x, y, z], state } = furnaces[index];
+    entries = {
+      $: "Con",
+      head: { $: "Entry", x: BigInt(x), y: BigInt(y), z: BigInt(z), furnace: wireFurnaceToBend(state) },
+      tail: entries,
+    };
+  }
+  return { $: "World", entries };
 }

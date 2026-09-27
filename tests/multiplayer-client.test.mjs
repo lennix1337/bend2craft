@@ -52,6 +52,9 @@ const url = `ws://127.0.0.1:${server.address().port}/multiplayer`;
 const first = await connectMultiplayer({ url, name: "Lucas" });
 assert.equal(first.seed, "42");
 assert.deepEqual(first.edits, []);
+assert.deepEqual(first.chests, []);
+assert.deepEqual(first.furnaces, []);
+assert.equal(typeof first.worldTime(), "number");
 const second = await connectMultiplayer({ url, name: "Amigo" });
 assert.deepEqual(second.players.map((p) => p.name), ["Lucas"]);
 const got = (session, type) => new Promise((resolve) => session.on(type, resolve));
@@ -80,6 +83,33 @@ assert.equal((await pose).x, 1);
 const reverted = got(first, "revert");
 first.queueEdit([5, 9, 5, 250]);
 assert.deepEqual((await reverted).edits, [[5, 9, 5, 12]]);
+
+// Chest requests resolve with the server's answer; broadcasts reach everyone.
+const chestSeen = got(second, "chest");
+first.queueEdit([20, 9, 20, 26]);
+assert.equal((await chestSeen).slots.length, 9);
+const deposited = await first.chestRequest("deposit", { pos: [20, 9, 20], item: 5, count: 2, durability: 0 });
+assert.equal(deposited.ok, true);
+assert.equal(deposited.amount, 2);
+const missing = await first.chestRequest("withdraw", { pos: [21, 9, 20], index: 0, amount: 1 });
+assert.equal(missing.ok, false);
+const taken = await second.chestRequest("withdraw", { pos: [20, 9, 20], index: 0, amount: 64 });
+assert.deepEqual([taken.ok, taken.item, taken.amount], [true, 5, 2]);
+
+// Furnace requests too.
+const furnaceSeen = got(second, "furnace");
+first.queueEdit([22, 9, 20, 11]);
+assert.deepEqual((await furnaceSeen).state, [0, 0, 0, 0, 0, 0, 0, 0]);
+assert.equal((await first.furnaceRequest("input", { pos: [22, 9, 20], item: 15 })).ok, true);
+assert.equal((await second.furnaceRequest("output", { pos: [22, 9, 20] })).ok, false);
+
+// The shared clock: every client reads the server's time; morning resets it.
+assert.ok(first.worldTime() >= 0);
+assert.ok(Math.abs(first.worldTime() - second.worldTime()) < 1);
+const morning = got(second, "time");
+assert.equal(first.sendMorning(), true);
+assert.equal((await morning).time, 0);
+assert.ok(second.worldTime() < 1);
 
 const left = got(second, "left");
 first.close();

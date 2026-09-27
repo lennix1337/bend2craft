@@ -2,7 +2,7 @@ import { mkdir, rm } from "node:fs/promises";
 import * as path from "node:path";
 import bendPlugin from "../vendor/bend/bend2/main.ts";
 import Multiplayer from "../world/multiplayer.bend";
-import { createMultiplayerRoom } from "../server/multiplayer-room.js";
+import { TICK_MS, createMultiplayerRoom } from "../server/multiplayer-room.js";
 import { MAX_MESSAGE_BYTES, MULTIPLAYER_PATH } from "../web/multiplayer-protocol.js";
 
 const outdir = path.resolve(".dev");
@@ -62,6 +62,7 @@ await Bun.write(path.join(outdir, "lod-worker.js"), await lodWorker.outputs[0].a
 // The dev server hosts an in-memory multiplayer room (nothing is saved), so
 // `?play=1&mp=1` works against it the same way it does against play-server.
 const room = createMultiplayerRoom({ authority: Multiplayer, seed: BigInt(process.env.SEED ?? "1337") });
+setInterval(() => room.tick(), TICK_MS);
 
 const server = Bun.serve({
   port: Number(process.env.PORT ?? 3000),

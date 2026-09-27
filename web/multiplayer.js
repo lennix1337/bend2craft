@@ -10,6 +10,7 @@ import {
 } from "./multiplayer-protocol.js";
 
 const CONNECT_TIMEOUT_MS = 10_000;
+const REQUEST_TIMEOUT_MS = 8_000;
 // Remote poses arrive about every POSE_INTERVAL_MS; rendering them this far in
 // the past keeps two snapshots to blend between, so movement stays smooth.
 export const INTERPOLATION_DELAY_MS = POSE_INTERVAL_MS * 1.5;
@@ -134,7 +135,20 @@ export function connectMultiplayer({
     let flushQueued = false;
     let lastPoseAt = -Infinity;
     let lastPoseKey = "";
+    let nextRequestId = 1;
+    const pendingRequests = new Map();
+    // The server's world clock: its time at `timeAt` on our clock.
+    let timeBase = 0;
+    let timeAt = 0;
     const stats = { sentEdits: 0, sentPoses: 0, received: 0, ignored: 0 };
+
+    function settleRequests(error) {
+      for (const [id, request] of pendingRequests) {
+        clearTimeout(request.timer);
+        request.reject(error);
+        pendingRequests.delete(id);
+      }
+    }
 
     const timer = setTimeout(() => fail(new Error(`The server at ${url} did not answer.`)), timeoutMs);
 
@@ -169,6 +183,23 @@ export function connectMultiplayer({
       return true;
     }
 
+    // One request/answer exchange (chest and furnace operations), matched by id.
+    function request(type, op, fields) {
+      const id = nextRequestId;
+      nextRequestId += 1;
+      return new Promise((resolve, reject) => {
+        if (!send({ t: type, op, id, ...fields })) {
+          resolve({ ok: false, item: 0, amount: 0, durability: 0, offline: true });
+          return;
+        }
+        const timer = setTimeout(() => {
+          pendingRequests.delete(id);
+          reject(new Error(`The server did not answer the ${type} request.`));
+        }, REQUEST_TIMEOUT_MS);
+        pendingRequests.set(id, { resolve, reject, timer });
+      });
+    }
+
     function flush() {
       flushQueued = false;
       while (pendingEdits.length > 0) {
@@ -196,11 +227,15 @@ export function connectMultiplayer({
         if (message.t !== "welcome") return;
         settled = true;
         clearTimeout(timer);
+        timeBase = message.time;
+        timeAt = clock();
         session = {
           id: message.id,
           seed: message.seed,
           seq: message.seq,
           edits: message.edits,
+          chests: message.chests,
+          furnaces: message.furnaces,
           players: message.players,
           url,
           stats,
@@ -239,6 +274,28 @@ export function connectMultiplayer({
             stats.sentPoses += 1;
             return true;
           },
+          /**
+           * Asks the server to change a chest; resolves with its answer
+           * `{ ok, item, amount, durability }` (ok false when refused or offline).
+           */
+          chestRequest(op, fields) {
+            return request("chest", op, fields);
+          },
+          /**
+           * Asks the server to load ("input", "fuel") or empty ("output") a
+           * furnace; resolves with `{ ok, item, amount }`.
+           */
+          furnaceRequest(op, fields) {
+            return request("furnace", op, fields);
+          },
+          /** Starts a new day for everyone (after a successful sleep). */
+          sendMorning() {
+            return send({ t: "time", op: "morning" });
+          },
+          /** The shared world time in seconds. */
+          worldTime(now = clock()) {
+            return timeBase + Math.max(0, now - timeAt) / 1000;
+          },
           close() {
             socket.close(1000, "Leaving");
           },
@@ -247,6 +304,19 @@ export function connectMultiplayer({
         return;
       }
       if (message.t === "edits") session.seq = message.seq;
+      if (message.t === "time") {
+        timeBase = message.time;
+        timeAt = clock();
+      }
+      if (message.t === "chest-result" || message.t === "furnace-result") {
+        const request = pendingRequests.get(message.id);
+        if (request !== undefined) {
+          pendingRequests.delete(message.id);
+          clearTimeout(request.timer);
+          request.resolve(message);
+        }
+        return;
+      }
       emit(message.t, message);
     });
     socket.addEventListener("close", (event) => {
@@ -254,6 +324,7 @@ export function connectMultiplayer({
         fail(new Error(`The server at ${url} closed the connection${event?.reason ? `: ${event.reason}` : "."}`));
         return;
       }
+      settleRequests(new Error("Disconnected from the server."));
       emit("disconnect", { code: event?.code ?? 1006, reason: event?.reason ?? "" });
     });
     socket.addEventListener("error", () => {

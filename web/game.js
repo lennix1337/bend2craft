@@ -87,7 +87,7 @@ import { bindInterleavedPositions, bindInterleavedTerrain, createWebglChunkBuffe
 import { extractClipPlanes } from "./chunk-frustum.js";
 import { MOB_BODY, dropBoxes, faceYaw, mobBoxes, playerBoxes, villagerBoxes } from "./mob-models.js";
 import { connectMultiplayer, createRemotePlayers } from "./multiplayer.js";
-import { multiplayerUrl, wireEditsToBend } from "./multiplayer-protocol.js";
+import { multiplayerUrl, wireEditsToBend, wireFurnaceToBend, wireSlotsToBend } from "./multiplayer-protocol.js";
 import { isHostileKind, mobKind } from "./mob-kinds.js";
 import { createAsyncChunkMeshCache } from "./mesh-cache.js";
 import { createMeshRebuildScheduler } from "./mesh-rebuild-scheduler.js";
@@ -1657,7 +1657,11 @@ try {
   let furnaceWorldState = Furnaces.empty();
   let activeFurnace = null;
   let furnaceOpen = false;
-  let chestWorldState = savedGame?.chests?.$ === "World" ? savedGame.chests : Chests.empty();
+  // On a multiplayer server the chests are the server's: this is a mirror of
+  // them, updated from its broadcasts (see mirrorServerChest).
+  let chestWorldState = multiplayer !== null
+    ? multiplayer.chests.reduce((state, chest) => mirrorServerChest(state, chest), Chests.empty())
+    : savedGame?.chests?.$ === "World" ? savedGame.chests : Chests.empty();
   let activeChest = null;
   let chestOpen = false;
   const held = new Set();
@@ -2146,6 +2150,9 @@ try {
   refreshMobs();
   villagers = villagerViews(villagerDomainState);
   if (savedGame?.furnaces?.$ === "World") furnaceWorldState = savedGame.furnaces;
+  if (multiplayer !== null) {
+    furnaceWorldState = multiplayer.furnaces.reduce((state, furnace) => mirrorServerFurnace(state, furnace), Furnaces.empty());
+  }
   pinStoredFurnaces();
   pinStoredFarmland();
   pinStoredCrops();
@@ -2483,6 +2490,7 @@ try {
     }
     villagerTick = Number(result.next_tick);
     worldTime = 0;
+    multiplayer?.sendMorning();
     setInventoryMessage("Good morning.");
     updateHud();
     return true;
@@ -3172,10 +3180,104 @@ try {
     return setFurnaceOpen(!furnaceOpen, location);
   }
 
+  // Server furnaces are keyed by stored coordinates; the local furnace state
+  // by signed cells.
+  function mirrorServerFurnace(state, furnace) {
+    const x = BigInt(worldCoordinate(furnace.pos[0]));
+    const y = BigInt(furnace.pos[1]);
+    const z = BigInt(worldCoordinate(furnace.pos[2]));
+    if (furnace.state === null) return Furnaces.remove(state, x, y, z).world;
+    // Furnaces.set only replaces an existing entry, so a new furnace is added first.
+    return Furnaces.set(Furnaces.add(state, x, y, z).world, x, y, z, wireFurnaceToBend(furnace.state));
+  }
+
+  // Puts items on the ground at the player's feet, for items the server
+  // handed over after the inventory filled up.
+  function dropAtPlayer(numericItem, amount) {
+    if (!(amount > 0)) return;
+    const dropId = BigInt(Date.now()) * 1000n + BigInt(drops.length);
+    dropDomainState = Entities.cons_drop(
+      Entities.make_drop(dropId, numericItem, player.x, player.y + 0.6, player.z, amount),
+      dropDomainState,
+    );
+    drops = dropViews(dropDomainState);
+    rebuildDynamicMesh(worldTime);
+  }
+
+  // Multiplayer furnace actions go through the server's Bend room, like chests:
+  // a loaded item leaves the inventory at once and comes back if refused.
+  function sharedFurnaceAction(action, current) {
+    const pos = [storageCoordinate(activeFurnace[0]), activeFurnace[1], storageCoordinate(activeFurnace[2])];
+    const refresh = () => {
+      refreshInventoryUi();
+      updateHud();
+      updateFurnaceStatus();
+      saveGame();
+    };
+    if (action === "input" || action === "fuel") {
+      const name = action === "fuel" ? "coal" : (furnaceSlot("raw_iron") !== -1 ? "raw_iron" : "wheat");
+      const slot = furnaceSlot(name);
+      if (slot === -1) {
+        setInventoryMessage(action === "fuel" ? "You need coal to fuel the furnace." : "You need raw iron or wheat to smelt.");
+        return false;
+      }
+      const numericId = action === "fuel" ? 14 : ITEM_IDS[name];
+      const loaded = action === "fuel"
+        ? Furnace.load_fuel(current, numericId, 1n)
+        : Furnace.load_input(current, numericId, 1n);
+      if (!loaded.ok || !consume(inventory, slot)) {
+        setInventoryMessage(action === "fuel" ? "The furnace fuel slot is full." : "The furnace input is full.");
+        return false;
+      }
+      refresh();
+      const giveBack = (message) => {
+        collectItem(inventory, name, 1);
+        setInventoryMessage(message);
+        refresh();
+      };
+      multiplayer.furnaceRequest(action, { pos, item: numericId }).then(
+        (result) => {
+          if (!result.ok) giveBack(action === "fuel" ? "The furnace fuel slot is full." : "The furnace input is full.");
+        },
+        () => giveBack("The server did not answer; the item is back in your inventory."),
+      );
+      return true;
+    }
+    if (action === "output") {
+      const ready = Number(current.output_count);
+      const outputName = itemNameFromId(Number(current.output));
+      if (ready === 0 || outputName === null) {
+        setInventoryMessage("The furnace has no iron ingot ready.");
+        return false;
+      }
+      const trial = inventory.map((entry) => ({ ...entry }));
+      if (!collectItem(trial, outputName, ready)) {
+        setInventoryMessage("Make room in the inventory first.");
+        return false;
+      }
+      multiplayer.furnaceRequest("output", { pos }).then(
+        (result) => {
+          const taken = result.ok ? itemNameFromId(result.item) : null;
+          if (taken === null) {
+            setInventoryMessage("Someone got there first: the furnace is empty.");
+          } else if (!collectItem(inventory, taken, Number(result.amount))) {
+            dropAtPlayer(Number(result.item), Number(result.amount));
+            setInventoryMessage(`No room for ${taken}: dropped at your feet.`);
+          }
+          refresh();
+        },
+        () => setInventoryMessage("The server did not answer."),
+      );
+      return true;
+    }
+    return false;
+  }
+
   function furnaceAction(action) {
     if (!furnaceOpen) return false;
     const current = activeFurnaceState();
     if (current === null) return false;
+    if (multiplayer !== null) return sharedFurnaceAction(action, current);
     if (action === "input") {
       const inputName = furnaceSlot("raw_iron") !== -1 ? "raw_iron" : "wheat";
       const slot = furnaceSlot(inputName);
@@ -3223,7 +3325,8 @@ try {
   }
 
   function tickFurnace() {
-    furnaceWorldState = Furnaces.tick_world(furnaceWorldState);
+    // A multiplayer server ticks its furnaces and sends the result.
+    if (multiplayer === null) furnaceWorldState = Furnaces.tick_world(furnaceWorldState);
     if (syncCropBlocks()) simulationTerrainDirty = true;
     if (furnaceOpen) updateFurnaceStatus();
     return true;
@@ -3235,6 +3338,86 @@ try {
       BigInt(Math.trunc(y)),
       BigInt(Math.trunc(z)) + BigInt(DOMAIN_COORDINATE_OFFSET),
     ];
+  }
+
+  // Server chests are keyed by stored (Bend) coordinates; the local chest state
+  // uses the chest domain's positions.
+  function mirrorServerChest(state, chest) {
+    const [x, y, z] = chestPosition(worldCoordinate(chest.pos[0]), chest.pos[1], worldCoordinate(chest.pos[2]));
+    return chest.slots === null
+      ? Chests.remove(state, x, y, z).world
+      : Chests.set(state, x, y, z, wireSlotsToBend(chest.slots));
+  }
+
+  function activeChestServerPosition() {
+    return [storageCoordinate(activeChest[0]), activeChest[1], storageCoordinate(activeChest[2])];
+  }
+
+  // Multiplayer chest actions: the server's Bend room decides. A deposit takes
+  // the item from the inventory at once and gives it back if the server
+  // refuses; a withdrawal adds the items once the server has removed them.
+  function sharedChestAction(action, slotIndex, current) {
+    const pos = activeChestServerPosition();
+    const refresh = () => {
+      refreshInventoryUi();
+      updateHud();
+      saveGame();
+    };
+    if (action === "deposit") {
+      const item = selectedItem(inventory, selectedSlot);
+      const id = itemId(item);
+      if (id === null || id === "empty") {
+        setInventoryMessage("Select an item to deposit.");
+        return false;
+      }
+      const numericId = ITEM_IDS[id];
+      const name = itemName(item);
+      const durability = Number(item?.durability ?? 0);
+      if (!ChestDomain.deposit(current, numericId, 1, durability).ok || !consume(inventory, selectedSlot)) {
+        setInventoryMessage("The chest is full.");
+        return false;
+      }
+      refresh();
+      const giveBack = (message) => {
+        collectItem(inventory, itemNameFromId(numericId), 1);
+        setInventoryMessage(message);
+        refresh();
+      };
+      multiplayer.chestRequest("deposit", { pos, item: numericId, count: 1, durability }).then(
+        (result) => (result.ok ? setInventoryMessage(`${name} deposited.`) : giveBack("The chest is full.")),
+        () => giveBack("The server did not answer; the item is back in your inventory."),
+      );
+      return true;
+    }
+    if (action === "withdraw" && slotIndex !== null) {
+      const slot = chestSlotsView(current)[slotIndex];
+      if (slot === undefined || slot.item === 0 || slot.count === 0) return false;
+      const name = itemNameFromId(slot.item);
+      if (name === null) return false;
+      const trial = inventory.map((entry) => ({ ...entry }));
+      if (!collectItem(trial, name, slot.count)) {
+        setInventoryMessage("Make room in the inventory first.");
+        return false;
+      }
+      multiplayer.chestRequest("withdraw", { pos, index: slotIndex, amount: 64 }).then(
+        (result) => {
+          const taken = result.ok ? itemNameFromId(result.item) : null;
+          if (taken === null) {
+            setInventoryMessage("Someone got there first: that slot is empty.");
+          } else if (collectItem(inventory, taken, Number(result.amount))) {
+            setInventoryMessage(`${taken} withdrawn.`);
+          } else {
+            // The inventory filled up while the request was in flight.
+            dropAtPlayer(Number(result.item), Number(result.amount));
+            setInventoryMessage(`No room for ${taken}: dropped at your feet.`);
+          }
+          refresh();
+        },
+        () => setInventoryMessage("The server did not answer."),
+      );
+      return true;
+    }
+    return false;
   }
 
   function activeChestState() {
@@ -3332,6 +3515,7 @@ try {
     if (!chestOpen) return false;
     const current = activeChestState();
     if (current === null) return false;
+    if (multiplayer !== null) return sharedChestAction(action, slotIndex, current);
     if (action === "deposit") {
       const item = selectedItem(inventory, selectedSlot);
       const id = itemId(item);
@@ -4879,6 +5063,7 @@ try {
       connected: multiplayer.connected,
       seq: multiplayer.seq,
       seed: multiplayer.seed,
+      time: multiplayer.worldTime(),
       stats: { ...multiplayer.stats },
       players: remotePlayers.views(performance.now()).map(({ id, name, x, y, z }) => ({ id, name, x, y, z })),
     }),
@@ -5151,6 +5336,9 @@ try {
     craft: craftRecipe,
     eat: eatSelected,
     chestAction,
+    // Test-only: open a container without aiming at it (multiplayer smoke).
+    openChestForTest: (x, y, z) => setChestOpen(true, [x, y, z]),
+    openFurnaceForTest: (x, y, z) => setFurnaceOpen(true, [x, y, z]),
     collect: (item, amount = 1) => {
       const ok = collectItem(inventory, item, amount);
       if (ok) {
@@ -5387,7 +5575,8 @@ try {
       const sampleSeconds = Math.max((now - visualSample.time) / 1000, 0.001);
       visualSpeed = Math.min(6, Math.hypot(player.x - visualSample.x, player.z - visualSample.z) / sampleSeconds);
       visualSample = { x: player.x, z: player.z, time: now };
-      worldTime += dt;
+      // A multiplayer world runs on the server's clock, so everyone shares one day.
+      worldTime = multiplayer === null ? worldTime + dt : multiplayer.worldTime();
       daylight = daylightForTime(worldTime);
       if (playerStreamingDirty) playerStreamingDirty = false;
       if (world.loadAround(player.x, player.z).changed) {
@@ -5509,6 +5698,33 @@ try {
     for (const other of multiplayer.players) remotePlayers.join(other, joinedAt);
     multiplayer.on("edits", (message) => applyServerEdits(message.edits, message.from === multiplayer.id));
     multiplayer.on("revert", (message) => applyServerEdits(message.edits));
+    const applyServerFurnace = (furnace) => {
+      furnaceWorldState = mirrorServerFurnace(furnaceWorldState, furnace);
+      const x = worldCoordinate(furnace.pos[0]);
+      const z = worldCoordinate(furnace.pos[2]);
+      if (!sameFurnacePosition(activeFurnace, x, furnace.pos[1], z)) return;
+      if (furnace.state === null) {
+        activeFurnace = null;
+        setFurnaceOpen(false);
+      } else if (furnaceOpen) {
+        updateFurnaceStatus();
+      }
+    };
+    multiplayer.on("furnace", applyServerFurnace);
+    multiplayer.on("furnaces", (message) => message.furnaces.forEach(applyServerFurnace));
+    multiplayer.on("chest", (chest) => {
+      chestWorldState = mirrorServerChest(chestWorldState, chest);
+      const x = worldCoordinate(chest.pos[0]);
+      const z = worldCoordinate(chest.pos[2]);
+      if (activeChest === null || !sameFurnacePosition(activeChest, x, chest.pos[1], z)) return;
+      if (chest.slots === null) {
+        setChestOpen(false);
+        activeChest = null;
+        if (chestToggleEl !== null) chestToggleEl.hidden = true;
+      } else if (chestOpen) {
+        refreshChestUi();
+      }
+    });
     multiplayer.on("pose", (message) => remotePlayers.pose(message.id, message, performance.now()));
     multiplayer.on("joined", (message) => {
       remotePlayers.join(message.player, performance.now());

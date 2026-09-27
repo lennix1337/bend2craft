@@ -226,6 +226,18 @@ each client replays the batches in sequence order with `Multiplayer.merge`, so
 all players converge on the room's world. A rejected edit comes back to its
 sender with the authoritative value of that cell.
 
+Chests and furnaces belong to the room too, keyed by the same stored
+coordinates. An accepted edit that places a chest (26) or furnace (11) opens an
+empty one, and one that replaces it removes it; a chest that still holds items
+cannot be broken (the edit is refused and the chest comes back). Deposits,
+withdrawals, loading fuel and input and taking the output are Bend room
+transitions (`Multiplayer.deposit`, `withdraw`, `furnace_op`), and the server
+smelts with `Multiplayer.tick` every 200 ms. Every change goes to every player
+as the container's full state; a refused deposit gives the item back, and
+items handed over after the inventory filled up drop at the player's feet. The
+world clock is the server's as well: every player sees the same time of day,
+and sleeping starts the morning for everyone.
+
 - `server/multiplayer-room.js`: the transport-agnostic room (players, fan-out,
   snapshots) around the compiled Bend authority.
 - `server/websocket.mjs`, `server/node-host.mjs`: a dependency-free WebSocket
@@ -269,12 +281,13 @@ npx wrangler deploy
 Then open `https://<worker>.workers.dev/?play=1&mp=1`. The deployment hosts one
 shared world; `vars.SEED` in `wrangler.jsonc` sets the seed of a new one.
 
-Scope of this slice: block edits and player presence are shared. Mobs,
-villagers, dropped items, chest and furnace contents, crops' growth timers and
+Scope so far: block edits, player presence, chests, furnaces and the time of
+day are shared. Mobs, villagers, dropped items, crops' growth timers and
 fluid/fire simulation state stay local to each client (a simulation's block
 changes are shared by the client that runs it), and player movement is still
 client-trusted, as `web/game-state.js` owns physics. Inventory, equipment and
-position are saved per profile and per server.
+position are saved per profile and per server. On Cloudflare, furnace smelting
+progress is written to storage at most every 30 seconds.
 
 ## Commands
 

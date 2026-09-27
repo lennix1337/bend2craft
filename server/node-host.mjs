@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { MAX_MESSAGE_BYTES, MULTIPLAYER_PATH } from "../web/multiplayer-protocol.js";
-import { createMultiplayerRoom } from "./multiplayer-room.js";
+import { TICK_MS, createMultiplayerRoom } from "./multiplayer-room.js";
 import { acceptWebSocket } from "./websocket.mjs";
 
 const SAVE_DELAY_MS = 2000;
@@ -68,6 +68,11 @@ export function attachMultiplayer(server, { authority, seed, file = null, log = 
     },
   });
 
+  // Furnaces smelt on the server's clock.
+  const ticker = setInterval(() => room.tick(), TICK_MS);
+  ticker.unref?.();
+  server.on("close", () => clearInterval(ticker));
+
   server.on("upgrade", (request, socket, head) => {
     let pathname = "";
     try {
@@ -92,11 +97,10 @@ export function attachMultiplayer(server, { authority, seed, file = null, log = 
   return {
     room,
     seed: worldSeed,
+    // Saves now (on shutdown), so the world clock resumes where it stopped.
     flush() {
-      if (saveTimer !== null) {
-        clearTimeout(saveTimer);
-        save();
-      }
+      if (saveTimer !== null) clearTimeout(saveTimer);
+      save();
     },
   };
 }

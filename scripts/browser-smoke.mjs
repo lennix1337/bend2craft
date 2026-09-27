@@ -237,6 +237,37 @@ try {
   assert.ok(state.frame?.meshRebuilds > 0);
   assert.ok(state.frame?.workerHydrates > 0);
   assert.ok(state.frame?.meshWorkerResponses > 0);
+
+  // Every mob kind has to put its own body on the GPU. The symptom this guards is
+  // the one a player reported: a hostile brute that chased them and burned in
+  // daylight while being drawn as a pig, because the kind fell through to the pig
+  // model. Measuring the uploaded dynamic mesh catches the miss at the boundary
+  // where it happens, which a unit test on the model table alone cannot.
+  const modelProbe = await page.evaluate(() => {
+    const api = window.__bend2craft;
+    api.despawnMobsForTest(0);
+    const drawn = {};
+    for (const kind of [1, 2, 3, 4, 5, 6]) {
+      api.despawnMobsForTest(0);
+      const mob = api.spawnMobForTest(kind);
+      drawn[kind] = {
+        spawned: mob !== null,
+        kind: mob?.kind ?? null,
+        vertices: api.glBufferSizes().dynamicVertexCount,
+      };
+    }
+    api.despawnMobsForTest(0);
+    return drawn;
+  });
+  for (const [kind, entry] of Object.entries(modelProbe)) {
+    assert.ok(entry.spawned, `a mob of kind ${kind} must spawn for the model smoke`);
+    assert.equal(entry.kind, Number(kind), `kind ${kind} must spawn as itself`);
+    assert.ok(entry.vertices > 0, `kind ${kind} must draw something`);
+  }
+  assert.notEqual(modelProbe[4].vertices, modelProbe[1].vertices,
+    "the hostile brute must not be drawn as a pig");
+  assert.notEqual(modelProbe[4].vertices, modelProbe[2].vertices,
+    "the brute needs its own body rather than the zombie's");
   const firstPersonOverlayProbe = await page.evaluate(async () => {
     const canvas = document.getElementById("first-person-hand-canvas");
     const player = window.__bend2craft.getPlayer();
@@ -431,9 +462,13 @@ try {
     `an edit rebuilt ${editScope.rebuilds} chunks, more than a 3x3 seam neighbourhood`,
   );
 
+  // The world now carries farm animals as well as monsters, so a combat scenario
+  // that grabs "whatever is alive" would sometimes be measuring a cow. Each of
+  // these spawns the hostile it means to fight.
   const primaryInputSetup = await page.evaluate(() => {
-    const mob = window.__bend2craft.getMobs().find((entry) => entry.alive);
-    if (mob === undefined) return null;
+    window.__bend2craft.despawnMobsForTest(0);
+    const mob = window.__bend2craft.spawnMobForTest(2);
+    if (mob === null) return null;
     window.__bend2craft.teleportForTest(mob.x, mob.z - 3, mob.y, Math.PI, -0.3);
     document.getElementById("pause").hidden = true;
     document.getElementById("game-shell").inert = false;
@@ -456,8 +491,9 @@ try {
   assert.ok(primaryInputProbe?.health < primaryInputSetup.health, "left-click input must damage the mob under the crosshair");
 
   const mobProbe = await page.evaluate(() => {
-    const mob = window.__bend2craft.getMobs().find((entry) => entry.alive);
-    if (mob === undefined) return null;
+    window.__bend2craft.despawnMobsForTest(0);
+    const mob = window.__bend2craft.spawnMobForTest(2);
+    if (mob === null) return null;
     window.__bend2craft.teleportForTest(mob.x, mob.z - 1, mob.y, Math.PI, -0.3);
     window.__bend2craft.setViewForTest(mob.x, mob.y, mob.z - 1, Math.PI, -0.3);
     const primaryHit = window.__bend2craft.primaryActionForTest(0);
@@ -529,7 +565,7 @@ try {
 
   const farDamageSetup = await page.evaluate(() => {
     window.__bend2craft.teleportForTest(40.5, 24.5, 8);
-    const hostile = window.__bend2craft.spawnHostileForTest(2, 10.5);
+    const hostile = window.__bend2craft.spawnMobForTest(2, 10.5);
     window.__bend2craft.resumeForTest();
     return { hostile, health: window.__bend2craft.getPlayer().health };
   });
@@ -540,7 +576,7 @@ try {
 
   const damageSetup = await page.evaluate(() => {
     window.__bend2craft.teleportForTest(40.5, 24.5, 8);
-    const hostile = window.__bend2craft.spawnHostileForTest(2);
+    const hostile = window.__bend2craft.spawnMobForTest(2);
     window.__bend2craft.resumeForTest();
     return { hostile, health: window.__bend2craft.getPlayer().health };
   });
@@ -565,7 +601,7 @@ try {
     for (let y = ground; y < ground + 3; y += 1) {
       wall.push(window.__bend2craft.setBlockForTest(42, y, 25, 1));
     }
-    const hostile = window.__bend2craft.spawnHostileForTest(2, 2.0);
+    const hostile = window.__bend2craft.spawnMobForTest(2, 2.0);
     window.__bend2craft.resumeForTest();
     return { hostile, wall, remaining, health: window.__bend2craft.getPlayer().health };
   });
@@ -610,7 +646,7 @@ try {
     const remaining = window.__bend2craft.despawnMobsForTest(0);
     window.__bend2craft.setWorldTimeForTest(32);
     window.__bend2craft.teleportForTest(40.5, 24.5, 8);
-    const hostile = window.__bend2craft.spawnHostileForTest(2, 0.5);
+    const hostile = window.__bend2craft.spawnMobForTest(2, 0.5);
     window.__bend2craft.resumeForTest();
     return { remaining, hostile };
   });

@@ -307,6 +307,7 @@ const VARIANT_TEXTURE_SPECS = VARIANT_BASES.map((base) => BLOCK_TEXTURE_SPECS[ba
 const ENTITY_TEXTURE_NAMES = [
   "zombie_skin", "zombie_shirt", "zombie_pants", "pig_skin", "pig_snout",
   "villager_skin", "villager_robe_green", "villager_robe_brown", "entity_eye", "player_sleeve",
+  "cow_hide", "cow_snout", "cow_face", "sheep_wool", "sheep_face", "chicken_feather", "chicken_beak",
 ];
 
 const ENTITY_TEXTURE_SPECS = [
@@ -320,6 +321,16 @@ const ENTITY_TEXTURE_SPECS = [
   { painter: "fabric", palette: { base: "#8b623d", light: "#b27d4e", dark: "#5c3e2c", trim: "#d19a5f" } },
   { painter: "eye", palette: { base: "#2a3132", light: "#6b7572", dark: "#080b0c", glint: "#dcefe2" } },
   { painter: "fabric", palette: { base: "#3a6a9f", light: "#5e91c4", dark: "#25476e", trim: "#9ac7e8" } },
+  // Farm animals. Each one owns its own hide, because a cow painted in the pig's
+  // pink is a pig wearing a cow's silhouette - the same mistake as the missing
+  // brute model, one layer down.
+  { painter: "skin", palette: { base: "#7a5236", light: "#a3744f", dark: "#4a3122" } },
+  { painter: "skin", palette: { base: "#e0a79c", light: "#f3c9bf", dark: "#a9736d" }, options: { nostrils: true } },
+  { painter: "skin", palette: { base: "#e6e1d2", light: "#fbf8ef", dark: "#b0a997" } },
+  { painter: "fabric", palette: { base: "#ece8dc", light: "#fdfbf4", dark: "#bcb7a7", trim: "#d8d3c3" } },
+  { painter: "skin", palette: { base: "#cfc2ad", light: "#eee3d2", dark: "#9c8f7b" } },
+  { painter: "fabric", palette: { base: "#f4f2ec", light: "#ffffff", dark: "#cbc7bc", trim: "#e2ded2" } },
+  { painter: "skin", palette: { base: "#e8a53a", light: "#f7cd77", dark: "#a86f1c" } },
 ];
 
 function freezeBlockTexture(spec, id, name = BLOCK_TEXTURE_NAMES[id]) {
@@ -357,6 +368,13 @@ export const ENTITY_TEXTURE_TILES = Object.freeze({
   villagerRobeBrown: 47,
   eye: 48,
   playerSleeve: 49,
+  cowHide: 50,
+  cowSnout: 51,
+  cowFace: 52,
+  sheepWool: 53,
+  sheepFace: 54,
+  chickenFeather: 55,
+  chickenBeak: 56,
 });
 export const ATLAS_TEXTURES = Object.freeze([...BLOCK_TEXTURES, ...VARIANT_TEXTURES, ...ENTITY_TEXTURES]);
 const ATLAS_SOURCE_CANVASES = new WeakMap();

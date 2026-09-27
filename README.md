@@ -36,6 +36,9 @@ The Bend 2 compiler is pinned as the `vendor/bend` submodule. Bend 2's JavaScrip
 - Fall damage, full-hunger regeneration, drowning air, and Bend-owned rotten-flesh poison.
 - Rotten flesh, wheat, bread and apples can be eaten through the Bend2 hunger transition (`G`).
 - Deterministic Bend-owned mobs with distinct passive, hostile, skittish and brute movement, player damage, aimed left-click combat and `F` melee attacks.
+- One mob roster shared by both layers: a pig, a zombie, a sheep, a brute, a cow and a chicken, with `kind_is_hostile` in Bend as the only place that decides which kinds hunt and which burn, and `web/mob-kinds.js` carrying the model, hitbox, hurt voice and death-puff tint of each. Every kind owns a model, so a hostile is never drawn with a farm animal's body, and `tests/mob-models.test.mjs` cross-checks the two lists against each other.
+- Farm animals wander, never damage the player and never burn. They run from the player only after the player hits one: `Entities.attack` sets a `panic` timer on the struck body and the step functions are the only things that spend it, so being struck is what makes a sheep bolt rather than a rule that keeps a cow permanently skittish.
+- Animals stand in the open during the day and only a hostile has to wait for nightfall or a blocked sky, because an animal is the one body that never catches fire. The spawn grid is four blocks on a side so a 48x48 world carries a real population of five to fourteen animals rather than a lottery of one.
 - Exposed hostile mobs burn during daylight and drop through the same authoritative death path. The fire itself is world state, not a browser effect: `Entities.sunlight_damage` publishes a `burning` flag per mob, and the browser draws flames and smoke from that flag rather than deciding for itself that a mob should be alight.
 - Wooden, stone, iron and diamond swords, bows, arrows, shields and kill XP with Bend-owned damage/durability rules.
 - Night mob respawn, distance despawn and death inventory drops.
@@ -43,7 +46,7 @@ The Bend 2 compiler is pinned as the `vendor/bend` submodule. Bend 2's JavaScrip
 - Mob, drop and villager Bend states are included in the seed-scoped save and restored before the first simulation tick.
 - Entity simulation uses a fixed Bend2 budget: mobs within the active radius use the full step, while distant mobs advance at one-fifth cadence; `bench:entities` compares both paths.
 - Mobs and drops are indexed into chunk buckets before each Bend2 step; active buckets use the full tick and dormant buckets use the reduced tick without traversing a distance rule for every entity.
-- Mob drops (wool/rotten flesh) rendered in-world and auto-collected through the Bend inventory contract.
+- Mob drops (wool, raw porkchop, raw beef, raw chicken and rotten flesh) rendered in-world and auto-collected through the Bend inventory contract. Loot follows the animal: the sheep shears and the three others leave raw meat.
 - Coal, iron and diamond ore generated underground by Bend 2.
 - Wooden, stone, iron and diamond pickaxes with Bend-owned tiered mining rules and durability state.
 - Ore drops and resource progression through stone/iron/diamond pickaxe recipes.

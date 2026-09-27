@@ -85,6 +85,7 @@ import {
 import { bindInterleavedPositions, bindInterleavedTerrain, createWebglChunkBuffers } from "./webgl-chunk-buffers.js";
 import { extractClipPlanes } from "./chunk-frustum.js";
 import { MOB_BODY, dropBoxes, faceYaw, mobBoxes, villagerBoxes } from "./mob-models.js";
+import { isHostileKind, mobKind } from "./mob-kinds.js";
 import { createAsyncChunkMeshCache } from "./mesh-cache.js";
 import { createMeshRebuildScheduler } from "./mesh-rebuild-scheduler.js";
 import { villagerEditsChanged } from "./villager-simulation.js";
@@ -2422,29 +2423,21 @@ try {
   }
 
   // A mob comes apart in its own colours, so a zombie comes apart green and a
-  // pig pink. These are the tints the entity models already use, so the puff and
-  // the body it replaces cannot drift apart.
-  const MOB_PUFF_TINT = Object.freeze({
-    1: [0.94, 0.72, 0.74],
-    2: [0.42, 0.62, 0.36],
-    3: [0.96, 0.94, 0.9],
-    4: [0.3, 0.44, 0.3],
-  });
+  // pig pink. The tints live in the roster next to the model they belong to, so
+  // the puff and the body it replaces cannot drift apart.
   const HIT_SPARK_TINT = [1.0, 0.86, 0.52];
 
   function mobPuffTint(kind) {
-    return MOB_PUFF_TINT[Number(kind)] ?? [0.8, 0.8, 0.8];
+    return mobKind(kind)?.puff ?? [0.8, 0.8, 0.8];
   }
 
   /**
-   * What a mob sounds like when it is hurt. A passive mob squeals and a hostile
-   * one groans, which is the only cue that tells the player which of the two
-   * things walking towards them is the one that fights back. The two tones
-   * existed in the schedule and nothing played them, so a struck mob was silent
-   * apart from the generic impact click.
+   * What a mob sounds like when it is hurt. The voice is the only cue that tells
+   * the player which of the things walking towards them fights back, and which
+   * one is livestock that will bolt the moment it is struck.
    */
   function playMobHurtSound(kind) {
-    audio.play(Number(kind) === 2 || Number(kind) === 4 ? "groan" : "oink");
+    audio.play(mobKind(kind)?.hurt ?? "oink");
   }
 
   // The single owner of everything a confirmed hit does to shared state. The
@@ -4753,18 +4746,23 @@ try {
   if (brandSpan !== null) brandSpan.textContent = `${WORLD_NAME} · ${PROFILE_NAME} · ${worldModeLabel(WORLD_MODE)}`;
   updateHud();
   const testApi = testMode ? {
-    spawnHostileForTest: (kind = 2, distance = 0.5) => {
+    // Test-only spawner for a single mob of a chosen kind. The roster owns the
+    // kind list, so the smoke can ask for a cow as easily as for a brute and then
+    // compare what each body actually puts on the GPU.
+    spawnMobForTest: (kind = 2, distance = 0.5) => {
       if (PEACEFUL || mobDomainState === null) return null;
+      const entry = mobKind(kind);
+      if (entry === null) return null;
       const id = Math.max(0, ...mobs.map((mob) => Number(mob.id))) + 1;
       const offset = Number.isFinite(Number(distance)) ? Number(distance) : 0.5;
       mobDomainState = Entities.cons_mob(
         Entities.make_mob(
           BigInt(id),
-          Number(kind) === 4 ? 4 : 2,
+          entry.kind,
           player.x + offset,
           player.y,
           player.z + 0.5,
-          20.0,
+          entry.kind === 4 ? 40.0 : 20.0,
           true,
         ),
         mobDomainState,
@@ -5190,7 +5188,7 @@ try {
     if (PEACEFUL || mobDomainState === null) return;
     const alive = mobs.filter((mob) => mob.alive);
     if (alive.length >= 24) return;
-    if (alive.filter((mob) => mob.kind === 2 || mob.kind === 4).length >= 8) return;
+    if (alive.filter((mob) => isHostileKind(mob.kind)).length >= 8) return;
     let nextId = 1;
     for (const mob of mobs) nextId = Math.max(nextId, Number(mob.id) + 1);
     let spawned = 0;

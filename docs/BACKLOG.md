@@ -18,6 +18,9 @@ Status markers:
 
 - [x] Bend owns melee line-of-sight: a hostile cannot damage a player across a solid cell, and the eye ray runs at eye height so a one-block step is not mistaken for cover.
 - [x] Bend owns the melee attack cone: a hostile must be facing the player, with a wider cone for the brute. A dead mob never contributes damage on a later tick.
+- [x] One mob roster across both layers: pig, zombie, sheep, brute, cow and chicken, each with its own model, hitbox, hurt voice and loot. A missing model used to draw a hostile brute as a pig that charged the player and burned in daylight.
+- [x] Farm animals wander by default and run from the player only after being struck, through a `panic` timer that `attack` sets and the step functions spend.
+- [x] Farm animals spawn in the open during the day; only a hostile waits for nightfall or a blocked sky, and the spawn grid is fine enough that a 48x48 world carries a real population.
 - [x] Per-chunk frustum culling on the WebGPU terrain path, reporting visible chunks, culled chunks, draw calls and submitted vertex bytes.
 - [x] A block edit re-uploads only the edited chunk instead of composing a whole-world vertex array on the per-chunk backend.
 - [x] Padded atlas with a per-tile gutter, and mipmaps enabled only after a Foreign Tile Contamination probe passes against the real GPU mip chain.
@@ -95,6 +98,7 @@ Status markers:
 - [ ] Add carrots, potatoes and sugar cane.
 - [ ] Add bonemeal and crop acceleration rules.
 - [ ] Add breeding and animal population rules.
+- [~] Raw porkchop, raw beef and raw chicken are collectible and edible as they drop; add cooking recipes and a placeable cooked-meal tier.
 - [~] Expand villagers into profession work schedules and workstation behavior.
 - [ ] Add iron golems and raids.
 - [ ] Add infinite-water source rules.

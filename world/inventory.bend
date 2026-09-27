@@ -9,10 +9,13 @@ import ./world_state.bend as WorldState
 # 27 wooden hoe, 28 empty bucket, 29 water bucket, 30 lava bucket,
 # 31 cobblestone, 32 obsidian, 33 wooden sword, 34 stone sword,
 # 35 iron sword, 36 diamond sword, 37 bow, 38 shield, 39 arrow,
-# 40 glass, 41 bread, 42 apple, 43 chest.
+# 40 glass, 41 bread, 42 apple, 43 chest,
+# 44 leather helmet, 45 iron chestplate, 46 iron leggings, 47 iron boots,
+# 48 raw porkchop, 49 raw beef, 50 raw chicken.
 # Block 20 is farmland and drops dirt; it has no standalone inventory item.
 # Blocks 25 (glass), 26 (chest) and 27 (crafting table) drop items
-# 40, 43 and 10.
+# 40, 43 and 10. Items 48-50 are what a farm animal leaves behind, so the
+# animals are worth striking instead of being scenery.
 
 type Slot is Data:
   Slot{item: U32, count: U32, durability: U32}
@@ -85,7 +88,9 @@ def food_value(+item: U32) -> U32:
   Bool.pick(U32, U32.is_eq(item, 13), 4,
     Bool.pick(U32, U32.is_eq(item, 26), 2,
       Bool.pick(U32, U32.is_eq(item, 41), 5,
-        Bool.pick(U32, U32.is_eq(item, 42), 4, 0))))
+        Bool.pick(U32, U32.is_eq(item, 42), 4,
+          Bool.pick(U32, U32.is_eq(item, 50), 2,
+            Bool.pick(U32, Bool.or(U32.is_eq(item, 48), U32.is_eq(item, 49)), 3, 0))))))
 
 def slot_item(slot: Slot) -> U32:
   Slot{item, count, durability} = slot
@@ -226,7 +231,7 @@ def collect(slots: List<&2, Slot>, +item: U32, +amount: Nat) -> InventoryResult:
   collect.if(slots, item, U32.from_nat(amount), Bool.and(valid_item, valid_amount))
 
 def pickup_item(+item: U32) -> Bool:
-  +mob = Bool.or(Bool.or(U32.is_eq(item, 11), U32.is_eq(item, 12)), U32.is_eq(item, 13))
+  +mob = Bool.or(Bool.or(U32.is_eq(item, 11), U32.is_eq(item, 12)), Bool.or(U32.is_eq(item, 13), Bool.or(Bool.or(U32.is_eq(item, 48), U32.is_eq(item, 49)), U32.is_eq(item, 50))))
   +ore = Bool.or(Bool.or(U32.is_eq(item, 14), U32.is_eq(item, 15)), U32.is_eq(item, 16))
   +tools = Bool.or(Bool.or(Bool.or(U32.is_eq(item, 17), U32.is_eq(item, 18)), U32.is_eq(item, 19)), U32.is_eq(item, 27))
   +combat = Bool.or(Bool.or(Bool.or(U32.is_eq(item, 33), U32.is_eq(item, 34)), Bool.or(U32.is_eq(item, 35), U32.is_eq(item, 36))), Bool.or(Bool.or(U32.is_eq(item, 37), U32.is_eq(item, 38)), U32.is_eq(item, 39)))

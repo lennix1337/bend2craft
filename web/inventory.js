@@ -83,6 +83,9 @@ export const ITEM_IDS = Object.freeze({
   iron_chestplate: 45,
   iron_leggings: 46,
   iron_boots: 47,
+  raw_porkchop: 48,
+  raw_beef: 49,
+  raw_chicken: 50,
 });
 const ITEM_NAMES = Object.freeze(Object.fromEntries(
   Object.entries(ITEM_IDS).map(([name, id]) => [id, name]),
@@ -183,6 +186,11 @@ export const ITEM_INFO = Object.freeze({
   iron_chestplate: Object.freeze({ name: "iron chestplate", color: "#c5cbcd", block: null, placeable: false, collectible: true }),
   iron_leggings: Object.freeze({ name: "iron leggings", color: "#aeb7ba", block: null, placeable: false, collectible: true }),
   iron_boots: Object.freeze({ name: "iron boots", color: "#92999f", block: null, placeable: false, collectible: true }),
+  // What a farm animal leaves behind. Raw, like the wheat and the apple: the
+  // cooking recipes for a cooked meal are not part of this slice.
+  raw_porkchop: Object.freeze({ name: "raw porkchop", color: "#e08a80", block: null, placeable: false, collectible: true }),
+  raw_beef: Object.freeze({ name: "raw beef", color: "#b4443c", block: null, placeable: false, collectible: true }),
+  raw_chicken: Object.freeze({ name: "raw chicken", color: "#e0cba6", block: null, placeable: false, collectible: true }),
 });
 
 function valuesFromList(list) {

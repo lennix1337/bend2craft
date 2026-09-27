@@ -30,9 +30,15 @@ assert.ok(Math.max(...burnOffsets) < 1, "the fire schedule must still be short")
 assert.ok(Math.min(...TONES.burn.map(([frequency]) => frequency)) < 200,
   "fire needs a low component or it is just a hiss");
 
-// A mob that is hurt has to say so. These two tones existed but nothing played
-// them, so a hit mob was silent.
+// A mob that is hurt has to say so. Every kind needs a voice of its own: a cow
+// struck with the pig's squeak is the same mistake as a brute drawn as a pig.
 assert.ok(TONES.oink.length > 0 && TONES.groan.length > 0,
   "the mob hurt tones must exist for the two mob families");
+for (const name of ["baa", "moo", "cluck"]) {
+  assert.ok(TONES[name].length > 0, `the ${name} hurt tone must exist`);
+}
+assert.notDeepEqual(TONES.moo, TONES.baa, "a cow and a sheep must not share a voice");
+assert.notDeepEqual(TONES.cluck, TONES.oink, "a chicken and a pig must not share a voice");
+assert.ok(TONES.moo[0][0] < TONES.baa[0][0], "a cow is lower than a sheep");
 
 console.log("sfx ok");

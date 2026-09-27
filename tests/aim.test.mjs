@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { bodyBox, firstAimedMob, mobBox, rayHitBox } from "../web/aim.js";
+import { MOB_KINDS } from "../web/mob-kinds.js";
 
+// Every kind carries its own hitbox height, so a brute can be shot in the head
+// and a chicken can be hit at all instead of sharing the pig's box.
+for (const entry of MOB_KINDS) {
+  assert.equal(mobBox({ kind: entry.kind, x: 0, y: 0, z: -3 }).maxY, entry.height,
+    `the ${entry.id} hitbox`);
+}
 // Zombies stand taller than pigs, so their hitbox is taller.
 assert.equal(mobBox({ kind: 1, x: 0, y: 0, z: -3 }).maxY, 1.2);
 assert.equal(mobBox({ kind: 2, x: 0, y: 0, z: -3 }).maxY, 1.9);

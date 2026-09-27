@@ -67,12 +67,14 @@ function regionListFor(list) {
 const mobState = Entities.spawn(1337n, 0.0, 0n, 0n, 80n, 80n);
 const mobs = listValues(mobState);
 assert.ok(mobs.length > 0);
-assert.ok(mobs.every((mob) => mob.$ === "Mob" && Number(mob.health) === 20 && mob.alive === true));
+assert.ok(mobs.every((mob) => mob.$ === "Mob" && mob.alive === true && Number(mob.panic) === 0));
+assert.ok(mobs.every((mob) => Number(mob.health) === (Number(mob.kind) === 4 ? 40 : 20)));
 assert.ok(new Set(mobs.map((mob) => Number(mob.kind))).size >= 1);
 const peacefulMobs = listValues(Entities.spawn_for_mode(1337n, 0.0, 0n, 0n, 80n, 80n, true));
 assert.ok(peacefulMobs.length > 0);
 assert.ok(peacefulMobs.length < mobs.length);
-assert.ok(peacefulMobs.every((mob) => Number(mob.kind) === 1));
+assert.ok(peacefulMobs.every((mob) => Entities.kind_is_animal(Number(mob.kind))));
+assert.ok(peacefulMobs.every((mob) => !Entities.hostile_kind(Number(mob.kind), true)));
 const protectedMobs = listValues(Entities.spawn_for_player(1337n, 0.0, 0n, 0n, 80n, 80n, 40n, 0n, false));
 assert.ok(protectedMobs.every((mob) => !(Number(mob.x) === 40.5 && Number(mob.z) === 0.5)));
 const safeAreaMobs = listValues(Entities.spawn_for_player(1337n, 0.0, 0n, 0n, 80n, 80n, 40n, 24n, false));
@@ -86,20 +88,34 @@ assert.ok(safeWorldMobs.every((mob) => (
     || Math.abs(Number(mob.z) - 24.5) > 8.1
 )));
 // Hostile spawn must respect sunlight. The open surface is fully lit during the
-// day, so a mob may only appear where the sky is blocked, or once night falls.
+// day, so a hostile may only appear where the sky is blocked, or once night
+// falls. A farm animal is the opposite case: it never burns, so it has to be
+// allowed to stand in the open, which is the only place a player meets one.
 const daySpawn = listValues(Entities.spawn(1337n, 1.0, 0n, 0n, 80n, 80n));
 const nightSpawn = listValues(Entities.spawn(1337n, 0.0, 0n, 0n, 80n, 80n));
 assert.ok(nightSpawn.length > 0);
 assert.ok(daySpawn.length < nightSpawn.length);
-assert.ok(daySpawn.every((mob) => !Entities.sun_exposed_generated(
+assert.ok(daySpawn.every((mob) => !Entities.hostile_kind(Number(mob.kind), true)
+  || !Entities.sun_exposed_generated(1337n, Number(mob.x), Number(mob.y), Number(mob.z))));
+assert.ok(daySpawn.some((mob) => Entities.sun_exposed_generated(
   1337n,
   Number(mob.x),
   Number(mob.y),
   Number(mob.z),
-)));
-// A mob standing in the open at noon is lit, so a daytime spawn there would burn
-// on the first tick. Daylight spawns must therefore be shaded by construction.
+)), "daylight must still be populated by animals standing in the open");
+// A mob standing in the open at noon is lit, so a hostile daytime spawn there
+// would burn on the first tick. Hostile spawns must therefore be shaded.
 assert.ok(Entities.sun_exposed_generated(1337n, 40.5, 64.0, 40.5));
+// The whole world is 48x48. On a coarse spawn grid a player could meet a single
+// mob, or none at all, and none of the farm animals; the population has to be
+// big enough to run into a pig, a cow, a sheep and a chicken.
+const worldSpawn = listValues(Entities.spawn_for_player(1337n, 1.0, 0n, 0n, 48n, 48n, 40n, 24n, false));
+const nightWorldSpawn = listValues(Entities.spawn_for_player(1337n, 0.0, 0n, 0n, 48n, 48n, 40n, 24n, false));
+assert.ok(worldSpawn.length >= 6, `a 48x48 world needs a real population, got ${worldSpawn.length}`);
+assert.ok(worldSpawn.every((mob) => Entities.kind_is_animal(Number(mob.kind))),
+  'daylight fills the open surface with animals, never with a monster that would burn on the first tick');
+assert.ok(nightWorldSpawn.some((mob) => Entities.hostile_kind(Number(mob.kind), true)),
+  'nightfall is what puts a monster on the map');
 
 const crowded = {
   $: "Con",
@@ -190,7 +206,7 @@ const meleeWallRegion = meleeRegion(meleeMobX, meleeMobY, meleeMobZ, (x, _y, z) 
 
 function facingHostile(id, headingX, headingZ, alive = true, kind = 2) {
   return Entities.cons_mob(
-    Entities.make_mob_heading(BigInt(id), kind, meleeMobX, meleeMobY, meleeMobZ, headingX, headingZ, 20.0, alive, false),
+    Entities.make_mob_heading(BigInt(id), kind, meleeMobX, meleeMobY, meleeMobZ, headingX, headingZ, 20.0, alive, false, 0.0),
     { $: "Nil" },
   );
 }
@@ -344,7 +360,7 @@ const meleeStepRegion = meleeRegion(2.5, 1.0, 2.5, (x, y) => x === 3 && y === 1)
 assert.equal(
   Number(Entities.threat_damage(
     Entities.cons_mob(
-      Entities.make_mob_heading(5007n, 2, 2.5, 1.0, 2.5, 1.0, 0.0, 20.0, true, false),
+      Entities.make_mob_heading(5007n, 2, 2.5, 1.0, 2.5, 1.0, 0.0, 20.0, true, false, 0.0),
       { $: "Nil" },
     ),
     3.5,
@@ -571,7 +587,6 @@ for (let index = 0; index < 12; index += 1) {
 const climbed = listValues(climbing)[0];
 assert.ok(Number(climbed.x) < 7.5);
 assert.equal(Number(climbed.y), 2);
-console.log(JSON.stringify({ mobs: mobs.length, kinds: [...new Set(mobs.map((mob) => Number(mob.kind)))] }));
 const deathDrop = Entities.make_drop(999n, 5, 3.5, 2.5, 3.5, 8);
 assert.equal(deathDrop.$, 'Drop');
 assert.equal(Number(deathDrop.item), 5);
@@ -620,8 +635,83 @@ const deadFar = Entities.cons_mob(
 );
 assert.equal(Entities.despawn(deadFar, 0.0, 0.0, 48.0).$, "Nil", "dead records must not accumulate forever");
 const fled = Entities.step_budgeted(Entities.cons_mob(skittish, { $: "Nil" }), 20.5, 25.5, 1.0, 64.0);
-assert.ok(Number(fled.head.z) < 20.5, `skittish must flee the player, z=${Number(fled.head.z)}`);
+assert.ok(Math.abs(20.5 - Number(fled.head.z)) <= 0.4 + 1e-6,
+  `an unstruck animal must wander, not flee, z=${Number(fled.head.z)}`);
 console.log('mob AI ok');
+
+// The roster: 1 pig, 2 zombie, 3 sheep, 4 brute, 5 cow, 6 chicken. A farm animal
+// walks around, never touches the player and never burns; a hostile hunts the
+// player and burns in the open. Both halves are read from `hostile_kind`, so a
+// new kind cannot quietly become a pig that attacks you.
+const ANIMALS = [1, 3, 5, 6];
+const HOSTILES = [2, 4];
+const solo = (id, kind) => Entities.cons_mob(Entities.make_mob(id, kind, 20.5, 1.0, 20.5, 20.0, true), { $: "Nil" });
+// The open sky, so the sunlight tick has something to burn.
+const soloInSun = (kind) => Entities.cons_mob(Entities.make_mob(1100n, kind, 10.5, 15.0, 5.5, 20.0, true), { $: "Nil" });
+for (const kind of ANIMALS) {
+  assert.ok(Entities.kind_is_animal(kind), `kind ${kind} is a farm animal`);
+  assert.ok(!Entities.hostile_kind(kind, true), `kind ${kind} never hunts the player`);
+  assert.equal(Number(Entities.threat_damage(solo(1100n, kind), 20.5, 1.0, 20.5, 0n, regionList([meleeRegion(20.5, 1.0, 20.5)]))), 0,
+    `kind ${kind} must never damage the player`);
+  const sunlit = Entities.sunlight_damage(soloInSun(kind), { $: "Nil" }, 1337n, 1.0, 0.2, { $: "Nil" });
+  assert.equal(Number(listValues(sunlit.mobs)[0].health), 20, `kind ${kind} does not burn in daylight`);
+  assert.equal(listValues(sunlit.mobs)[0].burning, false, `kind ${kind} is never published as burning`);
+  assert.equal(Entities.peaceful_mobs(solo(1100n, kind)).$, "Con", `kind ${kind} survives peaceful mode`);
+}
+for (const kind of HOSTILES) {
+  assert.ok(!Entities.kind_is_animal(kind), `kind ${kind} is not a farm animal`);
+  assert.ok(Entities.hostile_kind(kind, true), `kind ${kind} hunts the player`);
+  assert.equal(Entities.peaceful_mobs(solo(1100n, kind)).$, "Nil", `kind ${kind} is removed in peaceful mode`);
+  const sunlit = Entities.sunlight_damage(soloInSun(kind), { $: "Nil" }, 1337n, 1.0, 0.2, { $: "Nil" });
+  assert.ok(Number(listValues(sunlit.mobs)[0].health) < 20, `kind ${kind} burns in daylight`);
+  assert.equal(listValues(sunlit.mobs)[0].burning, true, `kind ${kind} is published as burning`);
+}
+// Loot follows the animal, not the passivity: the sheep still shears.
+assert.equal(Number(Entities.drop_for(Entities.make_mob(1n, 1, 0.5, 1.0, 0.5, 20.0, true)).item), 48);
+assert.equal(Number(Entities.drop_for(Entities.make_mob(1n, 3, 0.5, 1.0, 0.5, 20.0, true)).item), 12);
+assert.equal(Number(Entities.drop_for(Entities.make_mob(1n, 5, 0.5, 1.0, 0.5, 20.0, true)).item), 49);
+assert.equal(Number(Entities.drop_for(Entities.make_mob(1n, 6, 0.5, 1.0, 0.5, 20.0, true)).item), 50);
+assert.equal(Number(Entities.drop_for(Entities.make_mob(1n, 2, 0.5, 1.0, 0.5, 20.0, true)).item), 13);
+assert.equal(Number(Entities.drop_for(Entities.make_mob(1n, 4, 0.5, 1.0, 0.5, 20.0, true)).item), 13);
+
+// Panic is the whole flee rule: an animal runs from the player for a while after
+// the player hits it, and walks around normally until then.
+const calmPig = solo(1101n, 1);
+const struckPig = Entities.attack(calmPig, 1101n, 4.0, 20.5, 1.0, 25.5, 8.0, { $: "Nil" });
+assert.equal(Number(listValues(Entities.combat_mobs(struckPig))[0].panic), Number(Entities.panic_seconds()),
+  'a struck animal starts running from the player');
+const struckZombie = Entities.attack(solo(1102n, 2), 1102n, 4.0, 20.5, 1.0, 25.5, 8.0, { $: "Nil" });
+assert.equal(Number(listValues(Entities.combat_mobs(struckZombie))[0].panic), 0,
+  'a hostile answers a hit by charging, not by running');
+const outOfReach = Entities.attack(calmPig, 1101n, 4.0, 20.5, 1.0, 25.5, 0.5, { $: "Nil" });
+assert.equal(Number(listValues(Entities.combat_mobs(outOfReach))[0].panic), 0,
+  'an animal out of reach is never struck');
+
+const panicking = Entities.cons_mob(
+  Entities.make_mob_heading(1103n, 1, 20.5, 1.0, 20.5, 0.0, -1.0, 20.0, true, false, Entities.panic_seconds()),
+  { $: "Nil" },
+);
+const ran = listValues(Entities.step_budgeted(panicking, 20.5, 25.5, 1.0, 64.0))[0];
+assert.ok(20.5 - Number(ran.z) > 0.7, `a panicking animal must run from the player, z=${Number(ran.z)}`);
+assert.ok(Number(ran.panic) < Number(Entities.panic_seconds()) && Number(ran.panic) > 0, 'panic decays while running');
+const wandered = listValues(Entities.step_budgeted(calmPig, 20.5, 25.5, 1.0, 64.0))[0];
+assert.equal(Number(wandered.z), 20.5, 'an unstruck animal stands still on the budgeted path');
+let settled = panicking;
+for (let index = 0; index < 10; index += 1) settled = Entities.step_budgeted(settled, 20.5, 25.5, 1.0, 64.0);
+assert.equal(Number(listValues(settled)[0].panic), 0, 'panic runs out and the animal calms down');
+
+// The browser drives active mobs through `step_world`, so the flee rule has to
+// hold on the collision-aware path too, not only on the budgeted one. A panicking
+// animal sprints at 1.2 blocks a second while a wandering one drifts at 0.4.
+const atRest = (id, panic) => Entities.cons_mob(
+  Entities.make_mob_heading(id, 1, 2.5, 1.0, 2.5, 0.0, -1.0, 20.0, true, false, panic),
+  { $: "Nil" },
+);
+const activeFlee = Entities.step_world(atRest(1104n, Entities.panic_seconds()), 2.5, 7.5, 0.2, 1.0, 0n, regionList([meleeRegion(2.5, 1.0, 2.5)]));
+assert.ok(2.5 - Number(listValues(activeFlee)[0].z) > 0.2, 'an active panicking animal must run from the player');
+const activeWander = Entities.step_world(atRest(1105n, 0.0), 2.5, 7.5, 0.2, 1.0, 0n, regionList([meleeRegion(2.5, 1.0, 2.5)]));
+assert.ok(Math.abs(2.5 - Number(listValues(activeWander)[0].z)) <= 0.09, 'an active unstruck animal only wanders');
+console.log('mob roster ok');
 
 // Daylight burns hostile mobs in exposed sky, while night, shade and passive
 // mobs remain undamaged. A solar death uses the same authoritative drop path.

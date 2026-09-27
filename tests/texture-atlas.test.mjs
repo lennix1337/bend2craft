@@ -17,6 +17,7 @@ import {
   BLOCK_TEXTURES,
   ATLAS_TEXTURES,
   ENTITY_TEXTURES,
+  ENTITY_TEXTURE_TILES,
   VARIANT_TEXTURES,
   TEXTURE_PASS,
   ATLAS_TEXTURE_PASS,
@@ -74,7 +75,7 @@ assert.equal(ATLAS_TEXTURE_PASS.id, "procedural-hd-pass-v1");
 assert.equal(ATLAS_TEXTURE_PASS.tileSize, ATLAS_TILE_SIZE);
 assert.ok(Object.isFrozen(ATLAS_TEXTURE_PASS));
 assert.equal(VARIANT_TEXTURES.length, 10);
-assert.equal(ENTITY_TEXTURES.length, 10);
+assert.equal(ENTITY_TEXTURES.length, 17);
 assert.equal(blockTexture(1), BLOCK_TEXTURES[1]);
 assert.equal(blockTexture({ id: 1 }), BLOCK_TEXTURES[1]);
 assert.equal(blockTexture("stone"), BLOCK_TEXTURES[1]);
@@ -85,11 +86,41 @@ assert.ok(Object.isFrozen(BLOCK_TEXTURES[1].palette));
 assert.ok(Object.isFrozen(BLOCK_TEXTURES[1].options));
 assert.deepEqual(atlasTile(1), { column: 1, row: 0 });
 assert.deepEqual(atlasTile(10), { column: 2, row: 1 });
-assert.deepEqual(atlasTile(99), { column: 1, row: 6 });
+// An id past the last texture clamps onto it rather than pointing off the sheet.
+assert.deepEqual(atlasTile(99), atlasTile(ATLAS_TEXTURES.length - 1));
 
 for (const [index, texture] of ENTITY_TEXTURES.entries()) {
   assert.equal(texture.id, 40 + index);
 }
+
+// Every farm animal owns a hide, a face and whatever it shows, and each one is a
+// distinct material: a cow drawn in the pig's pink reads as a pig.
+assert.deepEqual(
+  Object.fromEntries(Object.entries(ENTITY_TEXTURE_TILES).map(([name, id]) => [name, ENTITY_TEXTURES[id - 40].name])),
+  {
+    zombieSkin: "zombie_skin",
+    zombieShirt: "zombie_shirt",
+    zombiePants: "zombie_pants",
+    pigSkin: "pig_skin",
+    pigSnout: "pig_snout",
+    villagerSkin: "villager_skin",
+    villagerRobeGreen: "villager_robe_green",
+    villagerRobeBrown: "villager_robe_brown",
+    eye: "entity_eye",
+    playerSleeve: "player_sleeve",
+    cowHide: "cow_hide",
+    cowSnout: "cow_snout",
+    cowFace: "cow_face",
+    sheepWool: "sheep_wool",
+    sheepFace: "sheep_face",
+    chickenFeather: "chicken_feather",
+    chickenBeak: "chicken_beak",
+  },
+);
+const entityMaterialNames = ENTITY_TEXTURES.map((texture) => texture.name);
+assert.equal(new Set(entityMaterialNames).size, entityMaterialNames.length, "entity tiles need unique names");
+assert.ok(ENTITY_TEXTURES.length + VARIANT_TEXTURES.length + BLOCK_TEXTURES.length <= ATLAS_CAPACITY,
+  "the atlas has to hold every tile");
 
 // Every tile is painted by a named material painter, and the descriptor has to
 // carry every colour that painter reads.
@@ -130,7 +161,8 @@ assert.equal(blockFaceTile(7, 0), 7);
 assert.equal(blockFaceTile(21, 0), 23);
 assert.equal(blockFaceTile(22, 0), 25);
 assert.equal(blockFaceTile(23, 0), 26);
-assert.equal(blockFaceTile(99, 0), 49);
+// A block id past the last texture clamps onto it, the same way a tile does.
+assert.equal(blockFaceTile(99, 0), ATLAS_TEXTURES.length - 1);
 assert.equal(blockFaceTileAt(1, 0, 4, 8), 1);
 assert.equal(blockFaceTileAt(1, 0, 5, 8), 1);
 assert.equal(blockFaceTileAt(2, 0, 4, 8), 2);

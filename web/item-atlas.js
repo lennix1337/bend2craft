@@ -2,7 +2,10 @@ import { TEXTURE_PASS } from "../assets/generated/textures/fallback-style.js";
 
 export { TEXTURE_PASS };
 export const ITEM_ATLAS_COLUMNS = 5;
-export const ITEM_ATLAS_ROWS = 9;
+// Every item id owns a cell, including the armour and the three raw meats, so the
+// sheet has to reach id 50. At nine rows the last three landed outside it and
+// were drawn as nothing.
+export const ITEM_ATLAS_ROWS = 11;
 export const ITEM_ATLAS_TILE_SIZE = 16;
 export const ITEM_ATLAS_WIDTH = ITEM_ATLAS_COLUMNS * ITEM_ATLAS_TILE_SIZE;
 export const ITEM_ATLAS_HEIGHT = ITEM_ATLAS_ROWS * ITEM_ATLAS_TILE_SIZE;
@@ -762,6 +765,56 @@ const TEXTURE_SPECS = [
       "sbbbbbbs",
       "sbbbbbbs",
       ".ssssss.",
+    ],
+  },
+  // Raw meat: the same cut in three colours, with a bone on the pork so the
+  // three read apart in a 16px cell.
+  {
+    name: "raw_porkchop",
+    label: "Raw Porkchop",
+    kind: "meat",
+    colors: { base: "#e08a80", accent: "#f4b6ad", shadow: "#9c534e", highlight: "#ffe0da" },
+    pattern: [
+      "........",
+      ".s.s....",
+      "sbb.s...",
+      "sbbbb.s.",
+      "sbbbbbbs",
+      ".sbbbbb.",
+      "..sbb...",
+      "...s....",
+    ],
+  },
+  {
+    name: "raw_beef",
+    label: "Raw Beef",
+    kind: "meat",
+    colors: { base: "#b4443c", accent: "#d9736a", shadow: "#74251f", highlight: "#f0a49c" },
+    pattern: [
+      "........",
+      "........",
+      ".sbbb...",
+      "sbbbbb..",
+      "sbbbbbb.",
+      "sbbbbbb.",
+      ".sbbbb..",
+      "..ss....",
+    ],
+  },
+  {
+    name: "raw_chicken",
+    label: "Raw Chicken",
+    kind: "meat",
+    colors: { base: "#e0cba6", accent: "#f3e6cb", shadow: "#9c8763", highlight: "#fff8ea" },
+    pattern: [
+      "........",
+      "..s.s...",
+      "..sss...",
+      "sbbbbb..",
+      "sbbbbbb.",
+      "sbbbbbb.",
+      ".sbbbb..",
+      "..ss....",
     ],
   },
 ];

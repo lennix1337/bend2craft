@@ -5,5 +5,7 @@ node_modules/
 .dev/
 # Local design-review scratch: screenshots and agent surface dumps, not source.
 .impeccable/
+# Browser-agent page dumps: accessibility trees from a local run, not source.
+.playwright-cli/
 # Single scratch folder for throwaway artifacts: captures, probe output, logs.
 scratchpad/

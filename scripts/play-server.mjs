@@ -3,15 +3,28 @@ import { existsSync } from "node:fs";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { attachMultiplayer, lanAddresses } from "../server/node-host.mjs";
 
 // Static file server for the built Bend2Craft bundle in dist/.
 // English-only copy per repository rules. Dependency-free (Node stdlib).
 
 const root = path.resolve(fileURLToPath(new URL("../dist/", import.meta.url)));
 const port = Number(process.env.PORT ?? 8080);
-const host = process.env.HOST ?? "127.0.0.1";
+// --lan listens on every interface so friends on the same network can join.
+const lan = process.argv.includes("--lan");
+const host = process.env.HOST ?? (lan ? "0.0.0.0" : "127.0.0.1");
 const shouldOpenBrowser = process.argv.includes("--open");
+const repositoryRoot = path.resolve(root, "..");
+// The shared multiplayer world lives outside dist/ so rebuilding keeps it.
+const multiplayerFile = path.resolve(
+  repositoryRoot,
+  process.env.MULTIPLAYER_WORLD ?? path.join("worlds", "multiplayer.json"),
+);
+const multiplayerSeedText = process.env.SEED ?? "1337";
+if (!/^\d+$/.test(multiplayerSeedText)) {
+  throw new Error(`SEED must be a non-negative integer; received ${multiplayerSeedText}`);
+}
 
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error(`PORT must be an integer from 1 to 65535; received ${process.env.PORT}`);
@@ -19,6 +32,11 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
 if (!existsSync(path.join(root, "index.html"))) {
   throw new Error(`Built bundle not found at ${root}. Run "npm run build" first.`);
 }
+const authorityModule = path.join(root, "multiplayer-authority.js");
+if (!existsSync(authorityModule)) {
+  throw new Error(`Multiplayer authority not found at ${authorityModule}. Run "npm run build" first.`);
+}
+const { default: authority } = await import(pathToFileURL(authorityModule).href);
 
 const types = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -109,6 +127,12 @@ const server = http.createServer((request, response) => {
   });
 });
 
+const multiplayer = attachMultiplayer(server, {
+  authority,
+  seed: BigInt(multiplayerSeedText),
+  file: multiplayerFile,
+});
+
 server.on("error", (error) => {
   if (error.code === "EADDRINUSE") {
     console.error(`Port ${port} is already in use. Close the old Bend2Craft server or set PORT to another port.`);
@@ -123,12 +147,23 @@ server.listen(port, host, () => {
   const url = `http://${displayHost}:${port}/?play=1&seed=1337&renderer=webgl`;
   console.log(`Bend2Craft at ${url}`);
   console.log(`Serving ${root} with browser caching disabled.`);
+  const multiplayerSeed = multiplayer.seed.toString();
+  console.log(`Multiplayer world (seed ${multiplayerSeed}) saved to ${multiplayerFile}.`);
+  console.log(`Join it at http://${displayHost}:${port}/?play=1&mp=1`);
+  if (host === "0.0.0.0" || host === "::") {
+    for (const address of lanAddresses()) console.log(`Friends on your network: http://${address}:${port}/?play=1&mp=1`);
+  } else {
+    console.log("Only this computer can join; start with --lan to let your network in.");
+  }
   console.log("Press Ctrl+C to stop.");
   if (shouldOpenBrowser) openBrowser(url);
 });
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.once(signal, () => {
+    multiplayer.flush();
     server.close(() => process.exit(0));
+    server.closeAllConnections?.();
+    setTimeout(() => process.exit(0), 1000).unref();
   });
 }

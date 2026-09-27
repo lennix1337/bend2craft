@@ -214,6 +214,68 @@ serves with browser caching disabled, and opens the browser only after the port
 is listening. `npm run build` followed by `node scripts/play-server.mjs --open`
 does the same thing by hand.
 
+## Multiplayer
+
+Several players can share one world. The server holds the world's seed and its
+ordered edit log; the authority is `world/multiplayer.bend`, which validates each
+submitted batch (in-world cell, known block, bounded batch size), folds the
+accepted edits into the log with `WorldState.set`, and advances a sequence
+number. Poses are validated there too (finite, inside the world band, pitch
+clamped). Every accepted batch is sent to every player, the sender included, and
+each client replays the batches in sequence order with `Multiplayer.merge`, so
+all players converge on the room's world. A rejected edit comes back to its
+sender with the authoritative value of that cell.
+
+- `server/multiplayer-room.js`: the transport-agnostic room (players, fan-out,
+  snapshots) around the compiled Bend authority.
+- `server/websocket.mjs`, `server/node-host.mjs`: a dependency-free WebSocket
+  endpoint on `/multiplayer` for `scripts/play-server.mjs`, saving the world to
+  `worlds/multiplayer.json` (git-ignored).
+- `web/multiplayer.js`, `web/multiplayer-protocol.js`: the browser session,
+  remote-player interpolation and the wire format (edits travel as
+  `[x, y, z, block]` in stored Bend coordinates).
+- `cloudflare/worker.js`, `wrangler.jsonc`: the same room in a Durable Object
+  with SQLite storage, with the game served as Worker static assets.
+
+Play on your network:
+
+```bash
+./Play-Bend2Craft.command --lan   # macOS; Jogar-Bend2Craft.bat --lan on Windows
+# or: npm run build && node scripts/play-server.mjs --lan
+```
+
+The server prints the address friends open, `http://<your-ip>:8080/?play=1&mp=1`.
+From the menu, "Join Multiplayer..." on the world list joins the server the page
+came from, or any `host:port`, `http(s)://` or `ws(s)://` address. `SEED` picks
+the seed of a new multiplayer world and `MULTIPLAYER_WORLD` the file it is saved
+to; an existing file keeps its own seed. `npm run dev` hosts an in-memory room.
+
+Play over the internet without a deployment: keep the server running and
+expose it with a Cloudflare quick tunnel, then share the printed
+`https://….trycloudflare.com/?play=1&mp=1` link (WebSockets pass through):
+
+```bash
+cloudflared tunnel --url http://localhost:8080
+```
+
+Deploy to Cloudflare (Workers Free plan; Durable Objects with SQLite storage):
+
+```bash
+npm run build
+npx wrangler login
+npx wrangler deploy
+```
+
+Then open `https://<worker>.workers.dev/?play=1&mp=1`. The deployment hosts one
+shared world; `vars.SEED` in `wrangler.jsonc` sets the seed of a new one.
+
+Scope of this slice: block edits and player presence are shared. Mobs,
+villagers, dropped items, chest and furnace contents, crops' growth timers and
+fluid/fire simulation state stay local to each client (a simulation's block
+changes are shared by the client that runs it), and player movement is still
+client-trusted, as `web/game-state.js` owns physics. Inventory, equipment and
+position are saved per profile and per server.
+
 ## Commands
 
 Run these commands at the repository root, from WSL on Windows and from a normal

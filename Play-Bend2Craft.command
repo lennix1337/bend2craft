@@ -7,17 +7,21 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-if [[ "${1:-}" != "" && "${1:-}" != "--no-open" ]]; then
-  printf 'Usage: %s [--no-open]\n' "$(basename "$0")"
-  printf '  Default: build the current bundle and open the browser after listening.\n'
-  printf '  --no-open: build and serve without opening a browser window.\n'
-  exit 2
-fi
-
 OPEN_BROWSER=1
-if [[ "${1:-}" == "--no-open" ]]; then
-  OPEN_BROWSER=0
-fi
+SERVER_FLAGS=()
+for argument in "$@"; do
+  case "$argument" in
+    --no-open) OPEN_BROWSER=0 ;;
+    --lan) SERVER_FLAGS+=(--lan) ;;
+    *)
+      printf 'Usage: %s [--no-open] [--lan]\n' "$(basename "$0")"
+      printf '  Default: build the current bundle and open the browser after listening.\n'
+      printf '  --no-open: build and serve without opening a browser window.\n'
+      printf '  --lan: let players on your network join the multiplayer world.\n'
+      exit 2
+      ;;
+  esac
+done
 
 PORT="${PORT:-8080}"
 
@@ -47,9 +51,9 @@ done
 printf 'Starting Bend2Craft at http://localhost:%s/?play=1&seed=1337 ...\n' "$PORT"
 printf 'Keep this window open while you play. Press Ctrl+C to stop.\n'
 if [[ "$OPEN_BROWSER" == "1" ]]; then
-  node scripts/play-server.mjs --open || exit $?
+  node scripts/play-server.mjs --open ${SERVER_FLAGS[@]+"${SERVER_FLAGS[@]}"} || exit $?
 else
-  node scripts/play-server.mjs || exit $?
+  node scripts/play-server.mjs ${SERVER_FLAGS[@]+"${SERVER_FLAGS[@]}"} || exit $?
 fi
 
 printf 'Bend2Craft server stopped.\n'

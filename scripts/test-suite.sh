@@ -6,9 +6,14 @@ TESTS=(
   tests/bend-list.test.mjs
   tests/world-bridge.test.mjs
   tests/world-state-bend.test.mjs
+  tests/multiplayer-bend.test.mjs
+  tests/multiplayer-room.test.mjs
+  tests/multiplayer-transport.test.mjs
+  tests/multiplayer-client.test.mjs
   tests/world-chunk-golden.test.mjs
   tests/world-coordinates.test.mjs
   tests/chunk-world.test.mjs
+  tests/chunk-world-remote-edits.test.mjs
   tests/worker-scheduler.test.mjs
   tests/chunk-worker-core.test.mjs
   tests/structures-bend.test.mjs

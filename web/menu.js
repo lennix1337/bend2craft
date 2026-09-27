@@ -45,6 +45,9 @@ import { describeBackendNotice, takeBackendNotice } from "./backend-notice.js";
 import { clearTransactional } from "./persistent-save.js";
 import { continueTarget } from "./menu-navigation.js";
 import { nextFocusTarget, setShellInert } from "./modal-focus.js";
+import { multiplayerUrl } from "./multiplayer-protocol.js";
+
+const LAST_SERVER_KEY = "bend2craft-last-server";
 
 function element(id) {
   const node = document.getElementById(id);
@@ -60,6 +63,12 @@ function formatDate(timestamp) {
 function playUrl(profileId, worldId) {
   const test = new URLSearchParams(window.location.search).get("test") === "1" ? "&test=1" : "";
   return `${window.location.pathname}?play=1&profile=${encodeURIComponent(profileId)}&world=${encodeURIComponent(worldId)}${test}`;
+}
+
+function multiplayerPlayUrl(profileId, server) {
+  const test = new URLSearchParams(window.location.search).get("test") === "1" ? "&test=1" : "";
+  const address = server === "" ? "" : `&server=${encodeURIComponent(server)}`;
+  return `${window.location.pathname}?play=1&mp=1&profile=${encodeURIComponent(profileId)}${address}${test}`;
 }
 
 export function runMenu() {
@@ -151,7 +160,7 @@ export function runMenu() {
     element("title-world-meta").textContent = `${profile.name} · ${worldModeLabel(world.mode)} · seed ${world.seed}`;
   }
 
-  function beginWorldNavigation(profileId, worldId, worldName) {
+  function beginNavigation(url, worldName) {
     if (navigatingToWorld) return;
     navigatingToWorld = true;
     element("menu-loading-world-name").textContent = worldName;
@@ -165,8 +174,12 @@ export function runMenu() {
     window.setTimeout(() => setProgress("Generating terrain"), 90);
     window.setTimeout(() => setProgress("Preparing play space"), 210);
     window.setTimeout(() => {
-      window.location.href = playUrl(profileId, worldId);
+      window.location.href = url;
     }, 320);
+  }
+
+  function beginWorldNavigation(profileId, worldId, worldName) {
+    beginNavigation(playUrl(profileId, worldId), worldName);
   }
 
   function renderProfiles() {
@@ -493,6 +506,35 @@ export function runMenu() {
       element("input-world-mode").value = "survival";
       showError("create-error", null);
       showScreen("screen-create-world");
+    } else if (action === "goto-join-server") {
+      if (selectedProfileId === null) return;
+      let last = "";
+      try {
+        last = window.localStorage.getItem(LAST_SERVER_KEY) ?? "";
+      } catch {
+        last = "";
+      }
+      element("input-server-address").value = last;
+      showError("join-error", null);
+      showScreen("screen-join-server");
+    } else if (action === "confirm-join-server") {
+      if (selectedProfileId === null) return;
+      const server = element("input-server-address").value.trim();
+      let url;
+      try {
+        url = multiplayerUrl(server, window.location);
+      } catch (error) {
+        showError("join-error", error instanceof Error ? error.message : String(error));
+        return;
+      }
+      try {
+        window.localStorage.setItem(LAST_SERVER_KEY, server);
+      } catch {
+        // Remembering the address is a convenience.
+      }
+      doc = touchProfile(doc, selectedProfileId);
+      persistProfiles();
+      beginNavigation(multiplayerPlayUrl(selectedProfileId, server), `Multiplayer · ${new URL(url).host}`);
     } else if (action === "random-seed") {
       element("input-seed").value = randomSeedText();
     } else if (action === "confirm-world") {

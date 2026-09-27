@@ -27,6 +27,7 @@
     <div id="crosshair" aria-hidden="true"></div>
     <div id="block-highlight" aria-live="off" hidden></div>
     <div id="toast" role="status" aria-live="polite" hidden></div>
+    <div id="nametags" aria-hidden="true"></div>
     <div id="particles" aria-hidden="true"></div>
     <div id="mining-progress" aria-hidden="true" hidden>
       <span id="mining-progress-fill"></span>
@@ -46,6 +47,7 @@
     <section id="hud" aria-label="World status">
       <div class="brand">BEND2CRAFT <span>Wilderness</span></div>
       <div id="coords" class="hud-coords">loading world…</div>
+      <div id="players-online" class="hud-players" role="status" aria-live="polite" hidden></div>
       <div id="seed" class="hud-debug">seed: —</div>
       <div id="stats" class="hud-debug">— blocks visible</div>
     </section>
@@ -226,10 +228,23 @@
         <div class="menu-buttons">
           <button class="mc-button primary" type="button" data-action="play-world">Play Selected World</button>
           <button class="mc-button" type="button" data-action="goto-create-world">Create New World</button>
+          <button class="mc-button" type="button" data-action="goto-join-server">Join Multiplayer...</button>
           <div class="menu-row">
             <button class="mc-button small" type="button" data-action="delete-world">Delete</button>
             <button class="mc-button small" type="button" data-action="back-profiles">Back</button>
           </div>
+        </div>
+      </div>
+      <div class="menu-panel" id="screen-join-server" data-screen hidden>
+        <h2>Join Multiplayer</h2>
+        <label class="field">
+          <span>Server address (empty joins the server this page came from)</span>
+          <input id="input-server-address" type="text" maxlength="200" placeholder="192.168.0.10:8080" autocomplete="off" spellcheck="false">
+        </label>
+        <p id="join-error" class="form-error" hidden></p>
+        <div class="menu-buttons">
+          <button class="mc-button primary" type="button" data-action="confirm-join-server">Join Server</button>
+          <button class="mc-button" type="button" data-action="back-worlds">Cancel</button>
         </div>
       </div>
       <div class="menu-panel" id="screen-create-world" data-screen hidden>

@@ -16,6 +16,7 @@ import Crops from "../world/crops.bend";
 import Farmland from "../world/farmland.bend";
 import Fluids from "../world/fluids.bend";
 import Fire from "../world/fire.bend";
+import Multiplayer from "../world/multiplayer.bend";
 import {
   HOTBAR_SIZE,
   MAX_STACK,
@@ -84,7 +85,9 @@ import {
 } from "./world-coordinates.js";
 import { bindInterleavedPositions, bindInterleavedTerrain, createWebglChunkBuffers } from "./webgl-chunk-buffers.js";
 import { extractClipPlanes } from "./chunk-frustum.js";
-import { MOB_BODY, dropBoxes, faceYaw, mobBoxes, villagerBoxes } from "./mob-models.js";
+import { MOB_BODY, dropBoxes, faceYaw, mobBoxes, playerBoxes, villagerBoxes } from "./mob-models.js";
+import { connectMultiplayer, createRemotePlayers } from "./multiplayer.js";
+import { multiplayerUrl, wireEditsToBend } from "./multiplayer-protocol.js";
 import { isHostileKind, mobKind } from "./mob-kinds.js";
 import { createAsyncChunkMeshCache } from "./mesh-cache.js";
 import { createMeshRebuildScheduler } from "./mesh-rebuild-scheduler.js";
@@ -266,6 +269,8 @@ const chestStatusEl = document.getElementById("chest-status");
 const lockHintEl = document.getElementById("lock-hint");
 const helpEl = document.getElementById("help");
 const errorEl = document.getElementById("error");
+const playersOnlineEl = document.getElementById("players-online");
+const nametagsEl = document.getElementById("nametags");
 const sessionParams = new URLSearchParams(window.location.search);
 const testMode = sessionParams.get("test") === "1";
 const options = loadOptions(window.localStorage);
@@ -308,9 +313,32 @@ function resolveSession() {
 }
 
 const session = resolveSession();
-const SEED = session.seed;
-const SAVE_KEY = saveKeyFor(session.profileId, seedLabel(SEED));
-const WORLD_NAME = session.worldName;
+// Multiplayer: `?mp=1` joins the server that served this page, and
+// `&server=host:port` (or a ws:// / wss:// URL) joins another one. The server
+// owns the seed and the shared edit log, so both come from its welcome; this
+// profile's player, inventory and equipment are kept per server.
+const MULTIPLAYER_REQUESTED = sessionParams.get("mp") === "1";
+let multiplayer = null;
+if (MULTIPLAYER_REQUESTED) {
+  if (loadingWorldNameEl !== null) loadingWorldNameEl.textContent = "Joining the multiplayer server…";
+  try {
+    multiplayer = await connectMultiplayer({
+      url: multiplayerUrl(sessionParams.get("server") ?? "", window.location),
+      name: session.profileName,
+    });
+  } catch (error) {
+    if (worldLoadingEl !== null) worldLoadingEl.hidden = true;
+    const reason = error instanceof Error ? error.message : String(error);
+    showError(new Error(`${reason}\nCheck the server address and that the server is running.`));
+  }
+}
+const MULTIPLAYER_HOST = multiplayer === null ? null : new URL(multiplayer.url).host;
+const SEED = multiplayer === null ? session.seed : BigInt(multiplayer.seed);
+const SAVE_KEY = saveKeyFor(
+  session.profileId,
+  multiplayer === null ? seedLabel(SEED) : `mp-${MULTIPLAYER_HOST}-${seedLabel(SEED)}`,
+);
+const WORLD_NAME = multiplayer === null ? session.worldName : `Multiplayer · ${MULTIPLAYER_HOST}`;
 const PROFILE_NAME = session.profileName;
 const WORLD_MODE = session.mode;
 const PEACEFUL = WORLD_MODE === "peaceful";
@@ -602,13 +630,29 @@ try {
 
   let savedGame = null;
   try {
-    const migrated = migrateLegacySave(window.localStorage, session.profileId, seedLabel(SEED));
+    const migrated = multiplayer === null
+      ? migrateLegacySave(window.localStorage, session.profileId, seedLabel(SEED))
+      : null;
     savedGame = migrated !== null
       ? decodeSave(migrated)
       : loadTransactional(window.localStorage, SAVE_KEY)?.value ?? null;
   } catch {
     savedGame = null;
   }
+  // On a multiplayer server the world belongs to the server: only what this
+  // player carries is restored, never a local edit log or local simulations
+  // that would replay into the shared world.
+  if (multiplayer !== null && savedGame !== null) {
+    savedGame = {
+      player: savedGame.player,
+      inventory: savedGame.inventory,
+      equipment: savedGame.equipment,
+      craftingGrid: savedGame.craftingGrid,
+      xp: savedGame.xp,
+    };
+  }
+  const remotePlayers = createRemotePlayers();
+  const nametagElements = new Map();
 
   // A torch flood depends only on the seed and the source (its walls are the
   // generated terrain), so a cached field stays valid across every other edit.
@@ -837,9 +881,11 @@ try {
     loadBudget: CHUNK_WORKER_COUNT,
     // Saves from before the continuous negative mapping stored x < 0 edits in
     // a remapped chunk range; they are moved to the current encoding on load.
-    initialEdits: savedGame?.edits?.$ === "Nil" || savedGame?.edits?.$ === "Con"
-      ? migrateLegacyEdits(savedGame.edits, CHUNK_SIZE)
-      : WorldState.empty(),
+    initialEdits: multiplayer !== null
+      ? wireEditsToBend(multiplayer.edits)
+      : savedGame?.edits?.$ === "Nil" || savedGame?.edits?.$ === "Con"
+        ? migrateLegacyEdits(savedGame.edits, CHUNK_SIZE)
+        : WorldState.empty(),
     generateChunk: (chunkX, chunkZ, edits) => WorldState.chunk(
       SEED,
       BigInt(generationChunkCoordinate(chunkX, CHUNK_SIZE)),
@@ -893,11 +939,22 @@ try {
   let dropGroundCache = null;
   let terrainImmediateDirty = false;
   const hiddenTerrainBlocks = new Set();
+  // Every local block change is predicted here and sent to the multiplayer
+  // server, which orders it and sends it back to everyone (see
+  // applyServerEdits). Batches from the server never pass through these
+  // wrappers, so nothing is echoed twice.
+  const shareEdits = (changes) => {
+    if (multiplayer === null) return;
+    for (const change of changes) {
+      multiplayer.queueEdit([storageCoordinate(change.x), change.y, storageCoordinate(change.z), change.value]);
+    }
+  };
   const setBlock = (x, y, z, value) => {
     dropGroundCache?.invalidate(Math.floor(x), Math.floor(z));
     const previous = blockAt(x, y, z);
     const changed = rawSetBlock(x, y, z, value);
     if (changed && previous !== value && previous !== 0) hiddenTerrainBlocks.add(`${x},${y},${z}`);
+    if (changed) shareEdits([{ x, y, z, value }]);
     terrainImmediateDirty = terrainImmediateDirty || changed;
     return changed;
   };
@@ -911,6 +968,7 @@ try {
           hiddenTerrainBlocks.add(`${change.x},${change.y},${change.z}`);
         }
       });
+      shareEdits(changes);
     }
     terrainImmediateDirty = terrainImmediateDirty || changed;
     return changed;
@@ -1426,6 +1484,10 @@ try {
     for (const drop of drops) {
       appendShadow(shadowPositions, shadowColors, shadowLights, shadowNormals, shadowUvs, drop);
       for (const part of dropBoxes(drop, time)) appendBox(positions, colors, lights, normals, uvs, tiles, part);
+    }
+    for (const remote of remotePlayers.views(performance.now())) {
+      appendShadow(shadowPositions, shadowColors, shadowLights, shadowNormals, shadowUvs, remote);
+      for (const part of playerBoxes(remote, time)) appendBox(positions, colors, lights, normals, uvs, tiles, part);
     }
     appendMiningCrack(positions, colors, lights, normals, uvs, tiles);
     shadowVertexCount = shadowPositions.length / 3;
@@ -3915,7 +3977,8 @@ try {
     try {
       saveTransactional(window.localStorage, SAVE_KEY, {
         version: 1,
-        edits: world.getEdits(),
+        // A multiplayer world's edit log lives on the server.
+        edits: multiplayer === null ? world.getEdits() : WorldState.empty(),
         player: { ...player },
         inventory: inventory.map((item) => ({ ...item })),
         equipment: equipmentState,
@@ -3997,6 +4060,7 @@ try {
       underwater: isHeadUnderwater(world, player),
     });
     const projection = perspective(fov * Math.PI / 180, canvas.width / canvas.height, 0.05, RENDER_FAR);
+    if (multiplayer !== null) updateNametags(multiply4(projection, view));
     if (gpuRenderer !== null) {
       // The particle batch rides the same vertex layout as the entities, so the
       // WebGPU path only has to upload it alongside them.
@@ -4810,6 +4874,14 @@ try {
   } : {};
 
   window.__bend2craft = {
+    multiplayer: () => (multiplayer === null ? null : {
+      id: multiplayer.id,
+      connected: multiplayer.connected,
+      seq: multiplayer.seq,
+      seed: multiplayer.seed,
+      stats: { ...multiplayer.stats },
+      players: remotePlayers.views(performance.now()).map(({ id, name, x, y, z }) => ({ id, name, x, y, z })),
+    }),
     presentation: {
       get renderer() { return rendererKind; },
       get shaderQuality() { return shaderQuality; },
@@ -5329,6 +5401,7 @@ try {
         rebuildMesh(false);
       }
       rebuildDynamicMesh(worldTime);
+      multiplayer?.sendPose({ x: player.x, y: player.y, z: player.z, yaw: player.yaw, pitch: player.pitch }, now);
       // Fire is emitted from the frame, not the simulation tick: the domain
       // decides which mobs are burning, but the plume has to run at the rate the
       // player sees, and the simulation only steps at 5Hz.
@@ -5342,6 +5415,118 @@ try {
     updateDebugOverlay();
     render();
     requestAnimationFrame(frame);
+  }
+
+  // ---- multiplayer --------------------------------------------------------
+  // The server's Bend room orders every edit; each accepted batch comes back
+  // to every player, this one included, and is replayed here in sequence
+  // order, so all players converge on the room's world. Cells in loaded chunks
+  // are written and relit; the rest only join the edit log, and any chunk
+  // request in flight for them is re-requested with the new log.
+  function applyServerEdits(wireEdits, fromSelf = false) {
+    const changes = [];
+    const touched = [];
+    let allLoaded = true;
+    for (const [storedX, y, storedZ, value] of wireEdits) {
+      const x = worldCoordinate(storedX);
+      const z = worldCoordinate(storedZ);
+      touched.push([x, z]);
+      if (!world.isLoaded(x, z)) {
+        allLoaded = false;
+        continue;
+      }
+      if (inside(x, y, z) && blockAt(x, y, z) !== value) changes.push({ x, y, z, value });
+    }
+    // Our own batch, already predicted everywhere it is loaded: nothing moves.
+    if (fromSelf && allLoaded && changes.length === 0) return false;
+    const previous = changes.map((change) => blockAt(change.x, change.y, change.z));
+    const nextEdits = Multiplayer.merge(wireEditsToBend(wireEdits), world.getEdits());
+    if (!world.mergeEdits(nextEdits, changes, touched)) return false;
+    changes.forEach((change, index) => {
+      dropGroundCache?.invalidate(change.x, change.z);
+      if (previous[index] !== 0) hiddenTerrainBlocks.add(`${change.x},${change.y},${change.z}`);
+      terrainMeshCache.invalidateBlock(change.x, change.z);
+      invalidateVillagerPath(change.x, change.y, change.z);
+    });
+    if (changes.length > 0) {
+      terrainImmediateDirty = true;
+      simulationTerrainDirty = true;
+      // The frame loop rebuilds on its own; a paused game still shows the
+      // other players' work.
+      if (paused) rebuildMesh(false);
+    }
+    return changes.length > 0;
+  }
+
+  function updatePlayersOnline() {
+    if (playersOnlineEl === null) return;
+    if (multiplayer === null) {
+      playersOnlineEl.hidden = true;
+      return;
+    }
+    playersOnlineEl.hidden = false;
+    const connected = multiplayer.connected;
+    playersOnlineEl.classList.toggle("is-offline", !connected);
+    playersOnlineEl.textContent = connected
+      ? `${remotePlayers.count() + 1} online · ${MULTIPLAYER_HOST}`
+      : `offline · ${MULTIPLAYER_HOST}`;
+  }
+
+  // Names float above remote players, projected with the frame's camera.
+  function updateNametags(viewProjection) {
+    if (nametagsEl === null) return;
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    const seen = new Set();
+    for (const remote of remotePlayers.views(performance.now())) {
+      seen.add(remote.id);
+      let tag = nametagElements.get(remote.id);
+      if (tag === undefined) {
+        tag = document.createElement("div");
+        tag.className = "nametag";
+        nametagsEl.append(tag);
+        nametagElements.set(remote.id, tag);
+      }
+      if (tag.textContent !== remote.name) tag.textContent = remote.name;
+      const clip = transformPoint(viewProjection, [remote.x, remote.y + 2.15, remote.z]);
+      const distance = Math.hypot(remote.x - player.x, remote.y - player.y, remote.z - player.z);
+      const ndcX = clip[0] / clip[3];
+      const ndcY = clip[1] / clip[3];
+      const visible = clip[3] > 0.1 && distance < 64 && Math.abs(ndcX) < 1.2 && Math.abs(ndcY) < 1.2;
+      tag.hidden = !visible;
+      if (!visible) continue;
+      tag.style.transform = `translate(${((ndcX * 0.5 + 0.5) * width).toFixed(1)}px, ${((0.5 - ndcY * 0.5) * height).toFixed(1)}px) translate(-50%, -100%)`;
+    }
+    for (const [id, tag] of nametagElements) {
+      if (seen.has(id)) continue;
+      tag.remove();
+      nametagElements.delete(id);
+    }
+  }
+
+  if (multiplayer !== null) {
+    const joinedAt = performance.now();
+    for (const other of multiplayer.players) remotePlayers.join(other, joinedAt);
+    multiplayer.on("edits", (message) => applyServerEdits(message.edits, message.from === multiplayer.id));
+    multiplayer.on("revert", (message) => applyServerEdits(message.edits));
+    multiplayer.on("pose", (message) => remotePlayers.pose(message.id, message, performance.now()));
+    multiplayer.on("joined", (message) => {
+      remotePlayers.join(message.player, performance.now());
+      showToast(`${message.player.name} joined the game`);
+      updatePlayersOnline();
+    });
+    multiplayer.on("left", (message) => {
+      const name = remotePlayers.name(message.id);
+      remotePlayers.leave(message.id);
+      if (name !== null) showToast(`${name} left the game`);
+      updatePlayersOnline();
+    });
+    multiplayer.on("disconnect", () => {
+      showToast("Lost the connection to the server. Your changes are no longer shared.");
+      updatePlayersOnline();
+    });
+    multiplayer.start();
+    updatePlayersOnline();
   }
   requestAnimationFrame(frame);
 } catch (error) {

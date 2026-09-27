@@ -9,3 +9,7 @@ node_modules/
 .playwright-cli/
 # Single scratch folder for throwaway artifacts: captures, probe output, logs.
 scratchpad/
+# The local multiplayer server's saved world.
+worlds/
+# Local Cloudflare Wrangler state.
+.wrangler/

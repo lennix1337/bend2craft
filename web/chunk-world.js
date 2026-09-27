@@ -118,6 +118,9 @@ export function createChunkedWorld({
 
   const chunks = new Map();
   const pendingRequests = new Set();
+  // In-flight requests generated from an edit log that a merged batch has
+  // since changed for their chunk: their reply is refused and re-requested.
+  const staleRequests = new Set();
   const pinnedKeys = new Set();
   let loadVersion = 0;
   let edits = initialEdits;
@@ -267,6 +270,10 @@ export function createChunkedWorld({
     if (version !== loadVersion) return false;
     const cellCount = chunkSize * chunkSize * maxY;
     const key = chunkKey(chunkX, chunkZ);
+    if (staleRequests.delete(key)) {
+      pendingRequests.delete(key);
+      return false;
+    }
     chunks.set(key, {
       chunkX,
       chunkZ,
@@ -283,6 +290,12 @@ export function createChunkedWorld({
     const chunk = chunks.get(chunkKey(chunkX, chunkZ));
     if (chunk === undefined) return 0;
     return chunk.data[indexOf(localX, localY, localZ)];
+  }
+
+  function isLoaded(x, z) {
+    if (!validInteger(x) || !validInteger(z)) return false;
+    const [chunkX, chunkZ] = chunkCoordinates(x, z);
+    return chunks.has(chunkKey(chunkX, chunkZ));
   }
 
   function isActive(x, z) {
@@ -467,8 +480,29 @@ export function createChunkedWorld({
     edits = nextEdits;
     loadVersion += 1;
     pendingRequests.clear();
+    staleRequests.clear();
     chunks.clear();
     activeKeys = new Set();
+    return true;
+  }
+
+  // Adopts an edit log that already contains a batch from elsewhere (the
+  // multiplayer server). `changes` are the batch's cells inside loaded chunks,
+  // written and relit here; `touchedColumns` are the [x, z] of every cell in
+  // the batch, so in-flight requests for those chunks are re-requested with the
+  // new log while every other request keeps streaming.
+  function mergeEdits(nextEdits, changes = [], touchedColumns = []) {
+    if (!Array.isArray(changes) || !Array.isArray(touchedColumns)) {
+      throw new TypeError("mergeEdits changes and touchedColumns must be arrays");
+    }
+    if (changes.length > 0 && !setBlocks(changes)) return false;
+    edits = nextEdits;
+    for (const [x, z] of touchedColumns) {
+      if (!validInteger(x) || !validInteger(z)) continue;
+      const [chunkX, chunkZ] = chunkCoordinates(x, z);
+      const key = chunkKey(chunkX, chunkZ);
+      if (pendingRequests.has(key)) staleRequests.add(key);
+    }
     return true;
   }
 
@@ -478,6 +512,7 @@ export function createChunkedWorld({
     edits = nextEdits;
     loadVersion += 1;
     pendingRequests.clear();
+    staleRequests.clear();
     return true;
   }
 
@@ -487,6 +522,7 @@ export function createChunkedWorld({
     inside,
     chunkCoordinates,
     isActive,
+    isLoaded,
     blockAt,
     lightAt,
     setBlock,
@@ -496,6 +532,7 @@ export function createChunkedWorld({
     getLightDirtyCells: () => lastLightDirtyCells,
     replaceEdits,
     patchEdits,
+    mergeEdits,
     hydrateChunk,
     pinChunk,
     unpinChunk,

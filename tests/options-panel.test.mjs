@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { GRAPHICS_QUALITY_CHOICES } from "../web/settings.js";
+import { GRAPHICS_QUALITY_CHOICES, FPS_LIMIT_CHOICES } from "../web/settings.js";
 
 const html = await readFile(new URL("../web/index.html", import.meta.url), "utf8");
 const css = await readFile(new URL("../web/styles.css", import.meta.url), "utf8");
@@ -72,6 +72,7 @@ for (const id of [
   "input-renderer",
   "input-fov",
   "input-render-distance",
+  "input-fps-limit",
   "input-volume-master",
   "input-volume-music",
   "input-volume-effects",
@@ -80,6 +81,26 @@ for (const id of [
 ]) {
   assert.ok(panel.includes(`id="${id}"`), `the options panel is missing ${id}`);
 }
+// 3b. The frame rate cap belongs with the other video controls.
+assert.ok(
+  panel.indexOf('id="input-fps-limit"') > panel.indexOf('id="input-render-distance"')
+    && panel.indexOf('id="input-fps-limit"') < panel.indexOf("</section>"),
+  "the frame rate cap has to sit inside the video section",
+);
+// Like the quality list, the cap list is generated from the shared table rather
+// than hand-written, so a limit the runtime does not implement cannot be offered
+// and one it does implement cannot go missing. Uncapped has to be in that list:
+// a cap the player cannot lift from the panel is not a setting.
+const fpsSelect = panel.match(/<select id="input-fps-limit"[^>]*>([\s\S]*?)<\/select>/);
+assert.ok(fpsSelect !== null, "the frame rate cap must be a select");
+assert.ok(!fpsSelect[1].includes("<option"),
+  "the frame rate options must be built in code, not duplicated in the markup");
+assert.ok(menu.includes("buildFpsLimitOptions"), "menu.js must build the frame rate options");
+assert.ok(menu.includes("FPS_LIMIT_CHOICES"), "the cap list must come from the shared choices");
+assert.ok(FPS_LIMIT_CHOICES.includes(0), "the cap list must offer an uncapped choice");
+// And the runtime has to read it, or the control is decorative.
+assert.ok(game.includes("options.fpsLimit") || game.includes("fpsLimit"),
+  "the game must read the stored frame rate cap");
 // 3a. The three volume buses, and the bounds the mixer clamps to.
 for (const bus of ["master", "music", "effects"]) {
   const input = panel.match(new RegExp(`id="input-volume-${bus}"[^>]*min="(\\d+)"[^>]*max="(\\d+)"`));

@@ -27,6 +27,9 @@ import {
   DEFAULT_LOD_DISTANCE,
   LOD_DISTANCE_CHOICES,
   normalizeLodDistance,
+  DEFAULT_FPS_LIMIT,
+  FPS_LIMIT_CHOICES,
+  normalizeFpsLimit,
 } from "../web/settings.js";
 import { VISUAL_QUALITY_TIERS } from "../web/visual-quality.js";
 
@@ -47,6 +50,37 @@ assert.equal(sanitizeOptions({ lodDistance: 0 }).lodDistance, 0, "distant terrai
 assert.equal(sanitizeOptions({ lodDistance: 2048 }).lodDistance, 2048);
 assert.equal(sanitizeOptions({ lodDistance: 700 }).lodDistance, DEFAULT_LOD_DISTANCE);
 assert.equal(normalizeLodDistance("1024"), 1024);
+
+// --- the frame rate cap -------------------------------------------------------
+// The cap has to default to uncapped: a build that silently started rendering at
+// 60 would look like a performance regression on a 120 Hz display, and the
+// player never asked for it.
+assert.equal(DEFAULT_FPS_LIMIT, 0, "the frame rate cap must default to uncapped");
+assert.deepEqual([...FPS_LIMIT_CHOICES], [0, 30, 60, 120, 144, 240]);
+assert.equal(createDefaultOptions().fpsLimit, 0);
+assert.equal(sanitizeOptions({}).fpsLimit, 0);
+// Every offered limit has to survive a round trip, or the menu would show a value
+// that quietly reverts to uncapped the next time the panel is opened.
+for (const limit of FPS_LIMIT_CHOICES) {
+  assert.equal(normalizeFpsLimit(limit), limit);
+  assert.equal(sanitizeOptions({ fpsLimit: limit }).fpsLimit, limit);
+  assert.equal(saveOptions(memoryStore(), { ...createDefaultOptions(), fpsLimit: limit }), true);
+}
+const fpsStore = memoryStore();
+assert.equal(saveOptions(fpsStore, { ...createDefaultOptions(), fpsLimit: 60 }), true);
+assert.equal(loadOptions(fpsStore).fpsLimit, 60, "a chosen cap must survive a save/load round trip");
+// A cap that is not on the menu is not a cap. Falling back to uncapped is the
+// safe direction: it restores the pre-feature behaviour instead of pinning the
+// game to a frame rate the player never chose.
+for (const bad of [61, -30, 1e9, "fast", null, undefined, {}, []]) {
+  assert.equal(
+    normalizeFpsLimit(bad), 0,
+    `a bad frame rate preference (${String(bad)}) must fall back to uncapped`,
+  );
+  assert.equal(sanitizeOptions({ fpsLimit: bad }).fpsLimit, 0);
+}
+// A document written before this option existed must load, and must not gain one.
+assert.equal(loadOptions(memoryStore({ "bend2craft-options": '{"fov":90}' })).fpsLimit, 0);
 assert.equal(DEFAULT_RENDERER, RENDERER_MODES.WEBGL);
 assert.equal(runtimeRendererMode(RENDERER_MODES.AUTO), RENDERER_MODES.WEBGL);
 assert.equal(runtimeRendererMode(RENDERER_MODES.WEBGPU), RENDERER_MODES.WEBGPU);
@@ -59,6 +93,7 @@ assert.deepEqual(createDefaultOptions(), {
   lodDistance: 512,
   renderer: "webgl",
   graphicsQuality: "auto",
+  fpsLimit: 0,
   volumeMaster: 0.7,
   volumeMusic: 0.7,
   volumeEffects: 0.9,
@@ -72,6 +107,7 @@ assert.deepEqual(sanitizeOptions({ fov: 200, sensitivity: -1, renderDistance: 99
   lodDistance: 512,
   renderer: "webgl",
   graphicsQuality: "auto",
+  fpsLimit: 0,
   volumeMaster: 0.7,
   volumeMusic: 0.7,
   volumeEffects: 0.9,
@@ -109,6 +145,7 @@ assert.deepEqual(loadOptions(memoryStore({ "bend2craft-options": "{\"fov\":90}" 
   lodDistance: 512,
   renderer: "webgl",
   graphicsQuality: "auto",
+  fpsLimit: 0,
   volumeMaster: 0.7,
   volumeMusic: 0.7,
   volumeEffects: 0.9,
@@ -133,6 +170,7 @@ assert.deepEqual(loadOptions(store), {
   lodDistance: 512,
   renderer: "webgpu",
   graphicsQuality: "auto",
+  fpsLimit: 0,
   volumeMaster: 0.7,
   volumeMusic: 0.7,
   volumeEffects: 0.9,

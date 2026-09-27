@@ -66,8 +66,19 @@ export function formatDebugText(snapshot) {
   const percentileText = p95FrameMs > 0
     ? ` · p95 ${p95FrameMs.toFixed(1)} ms · p99 ${p99FrameMs.toFixed(1)} ms`
     : "";
+  // The active cap sits next to the measured rate because the two have to be read
+  // together: a rate sitting below the cap is the renderer, and a rate at it is
+  // the cap. Reporting one without the other cannot tell those apart. A cap that
+  // is set is never reported as uncapped, even before a budget has been measured.
+  const cap = finite(snapshot.fpsLimit);
+  const budget = finite(snapshot.frameBudgetMs);
+  const capText = cap <= 0
+    ? " · uncapped"
+    : budget > 0
+      ? ` · cap ${Math.trunc(cap)} (${budget.toFixed(1)} ms)`
+      : ` · cap ${Math.trunc(cap)}`;
   return [
-    `FPS ${finite(snapshot.fps).toFixed(0)} · ${finite(snapshot.frameMs).toFixed(1)} ms${percentileText} · min ${minFps.toFixed(0)} · max ${maxFps.toFixed(0)} · frames ${Math.trunc(finite(snapshot.frameCount))}`,
+    `FPS ${finite(snapshot.fps).toFixed(0)} · ${finite(snapshot.frameMs).toFixed(1)} ms${percentileText}${capText} · min ${minFps.toFixed(0)} · max ${maxFps.toFixed(0)} · frames ${Math.trunc(finite(snapshot.frameCount))}`,
     `XYZ ${finite(player.x).toFixed(2)} ${finite(player.y).toFixed(2)} ${finite(player.z).toFixed(2)}`,
     `chunks ${Math.trunc(finite(snapshot.activeChunks))} active · ${Math.trunc(finite(snapshot.pendingChunks))} pending · ${Math.trunc(finite(snapshot.pinnedChunks))} pinned`,
     `mesh ${Math.trunc(finite(snapshot.blockCount)).toLocaleString("en-US")} blocks · ${Math.trunc(finite(snapshot.terrainQuads)).toLocaleString("en-US")} terrain quads · ${Math.trunc(finite(snapshot.waterQuads)).toLocaleString("en-US")} water quads · ${Math.trunc(finite(snapshot.dynamicQuads)).toLocaleString("en-US")} dynamic quads · ${Math.trunc(finite(snapshot.shadowQuads))} shadow quads · ${Math.trunc(finite(snapshot.meshRebuilds))} rebuilds`,

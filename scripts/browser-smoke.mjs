@@ -169,9 +169,16 @@ try {
     window.localStorage.getItem("bend2craft-options"),
   ).renderer);
   assert.equal(savedRenderer, "webgl");
+  // The frame rate cap is edited the same way as every other video option, and it
+  // has to reach the stored document or the control is decorative.
+  await page.locator("#input-fps-limit").selectOption("30");
+  const savedFpsLimit = await page.evaluate(() => JSON.parse(
+    window.localStorage.getItem("bend2craft-options"),
+  ).fpsLimit);
+  assert.equal(savedFpsLimit, 30, "the frame rate cap must be stored when the menu writes it");
   await page.evaluate(() => window.localStorage.setItem(
     "bend2craft-options",
-    JSON.stringify({ fov: 75, sensitivity: 1, showCoords: true, renderDistance: 2, renderer: "auto" }),
+    JSON.stringify({ fov: 75, sensitivity: 1, showCoords: true, renderDistance: 2, renderer: "auto", fpsLimit: 30 }),
   ));
 
   // Functional smoke uses WebGL so headless SwiftShader cannot report a
@@ -193,6 +200,33 @@ try {
     () => document.getElementById("world-loading")?.hidden === true,
     null,
     { timeout: 5000 },
+  );
+
+  // The stored cap has to reach the frame loop, and the loop has to keep drawing
+  // while it is applied. The achieved frame rate is deliberately not asserted
+  // here: this smoke runs on headless SwiftShader, where the renderer is orders of
+  // magnitude slower than any cap, so a rate assertion would only measure the
+  // software rasteriser. The pacing arithmetic and the cap-to-rate relationship
+  // are covered by tests/frame-pacer.test.mjs and benchmarks/fps-cap.mjs.
+  const pacing = await page.evaluate(() => {
+    const presentation = window.__bend2craft.presentation;
+    return {
+      appliedLimit: presentation.fpsLimit,
+      budgetMs: presentation.frameBudgetMs,
+      frameCount: window.__bend2craft.getFrameDiagnostics().frameCount,
+    };
+  });
+  assert.equal(pacing.appliedLimit, 30, "the stored frame rate cap must reach the running loop");
+  assert.ok(
+    Math.abs(pacing.budgetMs - 1000 / 30) < 0.01,
+    `a 30 FPS cap must become the frame budget, got ${pacing.budgetMs}ms`,
+  );
+  // A cap that stopped the loop would freeze the world silently, so the drawn
+  // frame count has to be moving by the time the world is up.
+  await page.waitForFunction(
+    (previous) => window.__bend2craft.getFrameDiagnostics().frameCount > previous,
+    pacing.frameCount,
+    { timeout: 15000 },
   );
   // The HUD fades in over a CSS transition. Reading the computed opacity while
   // that transition is still running reads a value between 0 and 1, so wait for

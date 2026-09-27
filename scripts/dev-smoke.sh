@@ -22,6 +22,8 @@ run_followup() {
     bash "$ROOT/scripts/run-bun.sh" "$ROOT/scripts/visual-quality-smoke.mjs" "$BASE_URL"
   elif [[ "${1:-}" == "--renderer-benchmark" ]]; then
     bash "$ROOT/scripts/run-bun.sh" "$ROOT/scripts/renderer-benchmark.mjs" "$BASE_URL"
+  elif [[ "${1:-}" == "--fps-cap" ]]; then
+    bash "$ROOT/scripts/run-bun.sh" "$ROOT/benchmarks/fps-cap.mjs" "$BASE_URL"
   fi
 }
 

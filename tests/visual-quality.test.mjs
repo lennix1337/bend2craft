@@ -102,4 +102,91 @@ const middle = (DOWNGRADE_BUDGET_MS + UPGRADE_BUDGET_MS) / 2;
 for (let frame = 0; frame < 600; frame += 1) steady.sample(middle);
 assert.equal(steady.level, 2, "a frame time inside the hysteresis band must hold the tier");
 
+// --- cadence-aware budgets ----------------------------------------------------
+// The absolute budgets above are measured against a ~60 Hz assumption. On a 120 Hz
+// ProMotion panel the compositor quantises the observed interval to 8.33 ms when
+// the renderer keeps up and 16.7 ms when it misses every other vsync, so a
+// renderer stuck at 16.7 ms looks like it is comfortably inside a 26 ms budget.
+// Measured on an M1 Pro at 3024x1890: auto settled on `medium` at a 15.84 ms
+// smoothed interval and never stepped down, while `low` reached 105 FPS.
+//
+// A frame time only means "over budget" relative to a target period, so the
+// controller has to be told the target rather than assume one.
+const FAST = 1000 / 120; // a 120 Hz panel
+const cadenceAware = createVisualQualityController({
+  initial: VISUAL_QUALITY_TIERS.length - 1,
+  targetFrameMs: FAST,
+});
+// A renderer missing every other vsync on a 120 Hz panel: 16.7 ms against an
+// 8.33 ms target. Under the absolute budget this is "fine"; against the cadence
+// it is a 100% overrun.
+for (let frame = 0; frame < 2000; frame += 1) cadenceAware.sample(1000 / 60);
+assert.ok(
+  cadenceAware.level < VISUAL_QUALITY_TIERS.length - 1,
+  "missing every other vsync on a 120 Hz panel must step the tier down",
+);
+assert.ok(
+  cadenceAware.level <= 1,
+  `auto must walk down until the renderer fits the display, stopped at ${cadenceAware.tier.name}`,
+);
+
+// Once the renderer fits, it has to hold the tier rather than keep degrading: the
+// ladder is a one-way ratchet unless the frame time comes back under the target.
+const fitting = createVisualQualityController({ initial: 1, targetFrameMs: FAST });
+for (let frame = 0; frame < 4000; frame += 1) fitting.sample(FAST * 0.8);
+assert.equal(fitting.level, 1, "a renderer comfortably inside the cadence must hold its tier");
+
+// Real headroom has to be able to climb back, so a scene that got cheap again
+// recovers its detail instead of staying degraded forever.
+const climbing = createVisualQualityController({ initial: 1, targetFrameMs: FAST });
+for (let frame = 0; frame < 200; frame += 1) climbing.sample(1000 / 60);
+assert.ok(climbing.level < 1, "the precondition must degrade before this recovery check means anything");
+for (let frame = 0; frame < 6000; frame += 1) climbing.sample(FAST * 0.5);
+assert.ok(climbing.level > 1, "sustained headroom on a fast panel must climb the ladder again");
+
+// The cadence target must not create a second, tighter dead band. A renderer
+// oscillating around the target has to settle on one side of it rather than
+// hunting between two tiers forever.
+const straddling = createVisualQualityController({ initial: 2, targetFrameMs: FAST });
+for (let frame = 0; frame < 6000; frame += 1) straddling.sample(FAST * (1 + (frame % 2 === 0 ? 0.1 : -0.1)));
+assert.equal(
+  straddling.level, 2,
+  "jitter around the target must not walk the tier, the band still has to absorb it",
+);
+
+// A cap changes what "on budget" means, and the controller has to accept it: with
+// a 30 FPS cap a 33.3 ms frame is exactly on target, not an overrun. Without this
+// the cap would make the controller panic down to `minimal` and the player would
+// get the worst picture at the frame rate they asked for.
+const capped = createVisualQualityController({ initial: 2, targetFrameMs: 1000 / 30 });
+for (let frame = 0; frame < 4000; frame += 1) capped.sample(1000 / 30);
+assert.equal(capped.level, 2, "a frame at exactly the cap period is on budget, not an overrun");
+for (let frame = 0; frame < 4000; frame += 1) capped.sample(1000 / 15);
+assert.ok(capped.level < 2, "missing the cap it was given must still degrade");
+
+// The target is live: the game re-reads it as the display cadence is learned, and
+// a controller pinned to a stale target would keep aiming at a refresh rate the
+// panel no longer runs at.
+const liveTarget = createVisualQualityController({ initial: 2, targetFrameMs: FAST });
+assert.equal(liveTarget.targetFrameMs, FAST);
+liveTarget.setTargetFrameMs(1000 / 60);
+assert.equal(liveTarget.targetFrameMs, 1000 / 60);
+
+// A nonsensical target must not stop the ladder or produce NaN comparisons.
+const badTarget = createVisualQualityController({ initial: 2, targetFrameMs: Number.NaN });
+for (const bad of [0, -1, Number.POSITIVE_INFINITY, Number.NaN, null, undefined, "60"]) {
+  badTarget.setTargetFrameMs(bad);
+  for (let frame = 0; frame < 50; frame += 1) badTarget.sample(1000 / 30);
+  assert.ok(Number.isInteger(badTarget.level), `target ${String(bad)} produced a non-integer level`);
+  assert.ok(badTarget.level >= 0 && badTarget.level < VISUAL_QUALITY_TIERS.length,
+    `target ${String(bad)} pushed the level off the ladder`);
+}
+
+// Without an explicit target the controller keeps the absolute budgets, so the
+// behaviour that predates the cadence target is unchanged.
+const noTarget = createVisualQualityController({ initial: 2 });
+assert.ok(noTarget.targetFrameMs > 0, "a controller with no target still reports a usable one");
+for (let frame = 0; frame < 600; frame += 1) noTarget.sample((DOWNGRADE_BUDGET_MS + UPGRADE_BUDGET_MS) / 2);
+assert.equal(noTarget.level, 2, "the absolute hysteresis band must still hold without a cadence target");
+
 console.log("visual quality ok");

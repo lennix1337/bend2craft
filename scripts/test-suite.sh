@@ -40,6 +40,7 @@ TESTS=(
   tests/terrain-vertex-builder.test.mjs
   tests/material-textures.test.mjs
   tests/visual-quality.test.mjs
+  tests/frame-pacer.test.mjs
   tests/gl-render-target.test.mjs
   tests/sun-shadow.test.mjs
   tests/sun-shadow-wiring.test.mjs

@@ -176,6 +176,7 @@ import {
   parseVisualQuality,
   VISUAL_QUALITY_TIERS,
 } from "./visual-quality.js";
+import { createFramePacer, measureDisplayCadenceMs } from "./frame-pacer.js";
 import { concatFloat32Arrays } from "./vertex-buffer-compose.js";
 import { skyPalette } from "./sky-palette.js";
 import { decodeSave } from "./save-state.js";
@@ -499,6 +500,7 @@ let shadowPass = null;
 let shadowDiskTexture = null;
 let shadowFallbackTexture = null;
 let visualQuality = null;
+let framePacer = null;
 let terrainVertexCount = 0;
 let waterVertexCount = 0;
 let dynamicVertexCount = 0;
@@ -1190,6 +1192,11 @@ try {
   const graphicsParam = parseVisualQuality(sessionParams.get("graphics"));
   const savedGraphics = options.graphicsQuality;
   const graphicsOverride = graphicsParam ?? (savedGraphics === "auto" ? null : parseVisualQuality(savedGraphics));
+  // The pacer owns the cap and the learned display cadence, and the quality
+  // controller is pointed at whatever period it currently considers the target.
+  // The two have to agree: a controller judging the frame rate against its own
+  // assumption is what makes auto sit still at a tier the machine cannot hold.
+  framePacer = createFramePacer({ limit: options.fpsLimit });
   visualQuality = createVisualQualityController({
     // A software rasteriser cannot afford the top tier; the visual smoke test
     // opts in explicitly so it still exercises the advanced path.
@@ -1198,6 +1205,7 @@ try {
       ? 1
       : VISUAL_QUALITY_TIERS.length - 1),
     auto: graphicsOverride === null,
+    targetFrameMs: framePacer.targetFrameMs,
   });
   if (graphicsOverride !== null) visualQuality.setLevel(graphicsOverride);
   postPipeline = createPostPipeline(gl, { quality: shaderQuality >= 0.5 ? 1 : 0 });
@@ -3835,6 +3843,8 @@ try {
       ...framePercentiles(frameMetrics),
       renderer: rendererKind,
       rendererName,
+      fpsLimit: framePacer?.limit ?? 0,
+      frameBudgetMs: framePacer?.targetFrameMs ?? 0,
       shaderQuality,
       webgpu: { ...webgpuProbe },
       atlasMipmaps: {
@@ -4827,6 +4837,12 @@ try {
       // outside for a browser check to mean anything.
       get vfxParticles() { return vfx.count; },
       get vfxVertexCount() { return vfxVertexCount; },
+      // The pacing state, so a browser check can tell "the cap is applied" from
+      // "the cap is stored but the loop ignores it" - a difference no screenshot
+      // and no frame-rate number alone can establish.
+      get fpsLimit() { return framePacer?.limit ?? 0; },
+      get frameBudgetMs() { return framePacer?.targetFrameMs ?? 0; },
+      get displayCeilingMs() { return framePacer?.ceilingMs ?? null; },
       get burningMobs() { return mobs.filter((mob) => mob.alive && mob.burning).length; },
     },
     world: {
@@ -5259,13 +5275,41 @@ try {
   // beforeunload alone loses progress when a tab or browser process crashes.
   window.setInterval(saveGame, 5000);
 
+  // Measure the display's refresh cadence from an empty animation-frame loop,
+  // before the world is drawn. The pacer cannot infer it from the game's own
+  // frames: if the renderer is already slower than the panel, every interval on
+  // record is slow, and a quality controller aiming at that "ceiling" believes it
+  // is on budget while dropping half its frames. Measured on an M1 Pro at
+  // 3024x1890, that is the difference between auto settling on `medium` at 67 FPS
+  // and `low` at 105 FPS on the same machine.
+  const probedCadenceMs = await measureDisplayCadenceMs();
+  framePacer.seedCeiling(probedCadenceMs);
+  visualQuality.setTargetFrameMs(framePacer.targetFrameMs);
+
   let previousTime = performance.now();
   let highlightFrame = 0;
   function frame(now) {
+    // The cap is applied here, at the one place that decides whether the frame
+    // body runs. Everything downstream - simulation, mesh rebuilds, the debug
+    // overlay - is downstream of this branch, so a capped frame costs a callback
+    // and nothing else.
+    //
+    // `dt` is measured from the last *drawn* frame, not the last callback, so a
+    // skipped frame does not silently advance the world clock in 8 ms steps
+    // while every movement stays correct.
+    if (!framePacer.shouldRender(now)) {
+      requestAnimationFrame(frame);
+      return;
+    }
     const frameElapsedMs = Math.max(now - previousTime, 0.1);
     const dt = Math.min(frameElapsedMs / 1000, 0.05);
     previousTime = now;
     frameMetrics = sampleFrame(frameMetrics, frameElapsedMs);
+    // The pacer may have learned a faster (or slower) display cadence since the
+    // last frame, and the cap can be the target outright. Re-pointing the
+    // controller every frame keeps its budgets on the period actually being asked
+    // for, which is what stops a 30 FPS cap from reading as a renderer in trouble.
+    visualQuality.setTargetFrameMs(framePacer.targetFrameMs);
     if (!paused) {
       updateMining(now);
       const sampleSeconds = Math.max((now - visualSample.time) / 1000, 0.001);

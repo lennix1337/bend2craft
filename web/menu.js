@@ -34,6 +34,9 @@ import {
   worldModeLabel,
   DEFAULT_LOD_DISTANCE,
   normalizeLodDistance,
+  DEFAULT_FPS_LIMIT,
+  FPS_LIMIT_CHOICES,
+  normalizeFpsLimit,
 } from "./settings.js";
 import { VISUAL_QUALITY_TIERS } from "./visual-quality.js";
 import { getAudioMixer } from "./audio.js";
@@ -292,6 +295,30 @@ export function runMenu() {
     select.dataset.built = "true";
   }
 
+  // The frame rate limits are built from the same table the pacer enforces, so the
+  // menu cannot offer a cap the runtime would silently ignore. The labels spell
+  // out what uncapped means, because "0" in a frame rate field reads as a bug
+  // rather than as the absence of a limit.
+  const FPS_LIMIT_LABELS = Object.freeze({
+    0: "Uncapped (display refresh)",
+    30: "30 FPS",
+    60: "60 FPS",
+    120: "120 FPS",
+    144: "144 FPS",
+    240: "240 FPS",
+  });
+
+  function buildFpsLimitOptions(select) {
+    if (select === null || select.dataset.built === "true") return;
+    for (const choice of FPS_LIMIT_CHOICES) {
+      const option = document.createElement("option");
+      option.value = String(choice);
+      option.textContent = FPS_LIMIT_LABELS[choice] ?? `${choice} FPS`;
+      select.append(option);
+    }
+    select.dataset.built = "true";
+  }
+
   // A WebGPU option the player can select but cannot run is worse than no option:
   // it looks like the browser is supported and the failure only shows up as a hang
   // at boot. So the menu probes the same way the runtime does and disables the
@@ -357,6 +384,9 @@ export function runMenu() {
     renderDistance.value = String(fresh.renderDistance ?? DEFAULT_RENDER_DISTANCE);
     element("render-distance-value").textContent = String(fresh.renderDistance ?? DEFAULT_RENDER_DISTANCE);
     element("input-lod-distance").value = String(normalizeLodDistance(fresh.lodDistance ?? DEFAULT_LOD_DISTANCE));
+    const fpsLimit = element("input-fps-limit");
+    buildFpsLimitOptions(fpsLimit);
+    fpsLimit.value = String(normalizeFpsLimit(fresh.fpsLimit ?? DEFAULT_FPS_LIMIT));
     element("input-renderer").value = fresh.renderer;
     const quality = element("input-graphics-quality");
     buildGraphicsQualityOptions(quality);
@@ -530,6 +560,12 @@ export function runMenu() {
     } else if (event.target.id === "input-lod-distance") {
       const value = normalizeLodDistance(event.target.value);
       saveOptions(window.localStorage, { ...loadOptions(window.localStorage), lodDistance: value });
+    } else if (event.target.id === "input-fps-limit") {
+      // Normalised on the way in as well as on the way out, so a value the panel
+      // cannot offer is never written to the stored document in the first place.
+      const value = normalizeFpsLimit(event.target.value);
+      event.target.value = String(value);
+      saveOptions(window.localStorage, { ...loadOptions(window.localStorage), fpsLimit: value });
     } else if (event.target.id === "input-renderer") {
       saveOptions(window.localStorage, { ...loadOptions(window.localStorage), renderer: event.target.value });
     } else if (event.target.id === "input-graphics-quality") {

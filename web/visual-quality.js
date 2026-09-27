@@ -32,12 +32,30 @@ export const DEFAULT_VISUAL_QUALITY = 3;
 export const DOWNGRADE_BUDGET_MS = 26;
 /** Frame-time head-room needed before stepping back up. */
 export const UPGRADE_BUDGET_MS = 12;
+/**
+ * Multiples of the target frame period that count as over budget and as headroom.
+ *
+ * These only apply once the caller supplies a target (a frame rate cap, or a
+ * measured display cadence). The absolute budgets above are kept for the case
+ * where no target is known, so behaviour that predates the target is unchanged.
+ *
+ * The gap between them is the hysteresis band. It has to stay wide: a controller
+ * that reacts to every frame oscillates visibly, because changing quality is
+ * itself what changes the frame time. It also has to be tight enough that
+ * "missing every other vsync" is not mistaken for "comfortably inside budget",
+ * which is the whole reason the target is needed.
+ */
+export const DOWNGRADE_TOLERANCE = 1.25;
+export const UPGRADE_TOLERANCE = 0.75;
 /** Frames to wait after a change before the next one is allowed. */
 export const SETTLE_FRAMES = 20;
 /**
  * A single frame this far over budget means the current tier is not merely a
  * little too expensive, it is unusable. Climbing down one step per settle window
  * would take seconds of unplayable frames, so a panic drops several tiers at once.
+ *
+ * This stays absolute. A panic is an escape hatch for a frame nobody can play,
+ * and it must fire on a stalled or compiling frame whatever the target says.
  */
 export const PANIC_BUDGET_MS = 90;
 export const PANIC_STEP = 3;
@@ -73,11 +91,43 @@ export function parseVisualQuality(value) {
   return VISUAL_QUALITY_TIERS[clampVisualQuality(index)].name;
 }
 
-export function createVisualQualityController({ initial = DEFAULT_VISUAL_QUALITY, auto = true } = {}) {
+export function createVisualQualityController({
+  initial = DEFAULT_VISUAL_QUALITY,
+  auto = true,
+  targetFrameMs = null,
+} = {}) {
   let level = clampVisualQuality(initial);
   let settleFrames = SETTLE_FRAMES;
   let smoothedMs = 0;
   let samples = 0;
+  let target = null;
+  setTargetFrameMs(targetFrameMs);
+
+  /**
+   * The budgets this frame is judged against.
+   *
+   * A frame time is only "over budget" relative to a period it was supposed to
+   * hit. Judged against the fixed 26 ms, a renderer that is missing every other
+   * vsync on a 120 Hz panel reports 16.7 ms and looks fine - which is how auto
+   * came to sit at `medium` on a 120 Hz display at 67 FPS while `low` reached
+   * 105 FPS on the same machine.
+   */
+  function budgets() {
+    if (target === null) {
+      return { downgrade: DOWNGRADE_BUDGET_MS, upgrade: UPGRADE_BUDGET_MS };
+    }
+    return { downgrade: target * DOWNGRADE_TOLERANCE, upgrade: target * UPGRADE_TOLERANCE };
+  }
+
+  function setTargetFrameMs(value) {
+    const parsed = Number(value);
+    // Anything that is not a positive finite period is not a target, and the
+    // controller falls back to the absolute budgets rather than comparing against
+    // NaN - which would silently disable adaptation altogether.
+    target = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    return target;
+  }
+
   return {
     get level() {
       return level;
@@ -94,6 +144,15 @@ export function createVisualQualityController({ initial = DEFAULT_VISUAL_QUALITY
     get samples() {
       return samples;
     },
+    get targetFrameMs() {
+      return target ?? (DOWNGRADE_BUDGET_MS + UPGRADE_BUDGET_MS) / 2;
+    },
+    /**
+     * Point the controller at a new frame period. The game calls this whenever the
+     * player changes the cap or the display cadence is relearned, so the budgets
+     * track the rate actually being asked for.
+     */
+    setTargetFrameMs,
     /** Pin the level and stop adapting. */
     setLevel(value) {
       level = clampVisualQuality(value);
@@ -122,11 +181,12 @@ export function createVisualQualityController({ initial = DEFAULT_VISUAL_QUALITY
         settleFrames -= 1;
         return this.tier;
       }
-      if (smoothedMs > DOWNGRADE_BUDGET_MS && level > 0) {
+      const { downgrade, upgrade } = budgets();
+      if (smoothedMs > downgrade && level > 0) {
         level -= 1;
         settleFrames = SETTLE_FRAMES;
         smoothedMs = 0;
-      } else if (smoothedMs < UPGRADE_BUDGET_MS && level < VISUAL_QUALITY_TIERS.length - 1) {
+      } else if (smoothedMs < upgrade && level < VISUAL_QUALITY_TIERS.length - 1) {
         level += 1;
         settleFrames = SETTLE_FRAMES;
         smoothedMs = 0;

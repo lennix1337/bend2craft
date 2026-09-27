@@ -24,6 +24,7 @@
     "bench:mesh": "bash scripts/run-bun.sh benchmarks/mesh-worker.mjs",
     "bench:bend-native": "bash scripts/bench-bend-native.sh",
     "bench:renderer-browser": "bash scripts/dev-smoke.sh --renderer-benchmark",
+    "bench:fps-cap": "bash scripts/dev-smoke.sh --fps-cap",
     "bench:villagers": "bash scripts/run-bun.sh benchmarks/village-path.mjs",
     "dev": "bash scripts/run-bun.sh scripts/dev-server.ts",
     "smoke:dev": "bash scripts/dev-smoke.sh",

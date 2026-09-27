@@ -6,6 +6,7 @@
 // quality tier.
 import { normalizeRendererMode, RENDERER_MODES } from "./webgpu-capabilities.js";
 import { VISUAL_QUALITY_TIERS } from "./visual-quality.js";
+import { DEFAULT_FPS_LIMIT, normalizeFpsLimit } from "./frame-pacer.js";
 
 export { RENDERER_MODES };
 
@@ -61,6 +62,16 @@ export function normalizeLodDistance(value) {
   const parsed = Number(value);
   return LOD_DISTANCE_CHOICES.includes(parsed) ? parsed : DEFAULT_LOD_DISTANCE;
 }
+// The frame rate cap, its choices and its default come from the pacer, which is
+// the module that has to honour them. Re-exporting keeps one source of truth: a
+// second copy of this list in the settings layer is how the menu ends up offering
+// a limit the runtime does not implement.
+export {
+  DEFAULT_FPS_LIMIT,
+  FPS_LIMIT_CHOICES,
+  framePeriodMs,
+  normalizeFpsLimit,
+} from "./frame-pacer.js";
 export const DEFAULT_RENDERER = RENDERER_MODES.WEBGL;
 export const DEFAULT_CONTROLS = Object.freeze({
   sneak: "ShiftLeft",
@@ -98,6 +109,7 @@ export function createDefaultOptions() {
     lodDistance: DEFAULT_LOD_DISTANCE,
     renderer: DEFAULT_RENDERER,
     graphicsQuality: DEFAULT_GRAPHICS_QUALITY,
+    fpsLimit: DEFAULT_FPS_LIMIT,
     volumeMaster: DEFAULT_VOLUME_MASTER,
     volumeMusic: DEFAULT_VOLUME_MUSIC,
     volumeEffects: DEFAULT_VOLUME_EFFECTS,
@@ -135,6 +147,7 @@ export function sanitizeOptions(raw = {}) {
     lodDistance: raw.lodDistance === undefined ? fallback.lodDistance : normalizeLodDistance(raw.lodDistance),
     renderer: runtimeRendererMode(raw.renderer),
     graphicsQuality: normalizeGraphicsQuality(raw.graphicsQuality),
+    fpsLimit: normalizeFpsLimit(raw.fpsLimit),
     volumeMaster: clampVolume(raw.volumeMaster, fallback.volumeMaster),
     volumeMusic: clampVolume(raw.volumeMusic, fallback.volumeMusic),
     volumeEffects: clampVolume(raw.volumeEffects, fallback.volumeEffects),

@@ -287,6 +287,11 @@
               <span class="field-hint">Higher values load more terrain and use more memory.</span>
             </label>
             <label class="field">
+              <span>Frame Rate Limit</span>
+              <select id="input-fps-limit" aria-describedby="fps-limit-hint"></select>
+              <span class="field-hint" id="fps-limit-hint">Caps how often the game draws. On a high-refresh display, lowering this cuts power draw and heat, which is what makes macOS stop dropping the display to a lower refresh rate. It can never raise your frame rate.</span>
+            </label>
+            <label class="field">
               <span>Distant Terrain</span>
               <select id="input-lod-distance">
                 <option value="0">Off</option>

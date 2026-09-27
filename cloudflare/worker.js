@@ -5,7 +5,7 @@
 //
 // Deploy with `npm run build` and then `npx wrangler deploy` (see README).
 import { DurableObject } from "cloudflare:workers";
-import authority from "../dist/multiplayer-authority.js";
+import authority, { createMobWorld } from "../dist/multiplayer-authority.js";
 import { TICK_MS, createMultiplayerRoom, SNAPSHOT_VERSION } from "../server/multiplayer-room.js";
 
 // Furnace smelting changes state five times a second; its rows are written at
@@ -73,6 +73,8 @@ export class MultiplayerWorld extends DurableObject {
     this.room = createMultiplayerRoom({
       authority,
       seed: BigInt(seed),
+      createMobWorld,
+      peaceful: env.PEACEFUL === "1",
       snapshot: {
         version: SNAPSHOT_VERSION, seed, seq: Number(meta.get("seq") ?? 0), edits, chests, furnaces, time: resumedTime,
       },

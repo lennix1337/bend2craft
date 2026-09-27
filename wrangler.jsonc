@@ -14,5 +14,5 @@
     "bindings": [{ "name": "MULTIPLAYER_WORLD", "class_name": "MultiplayerWorld" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MultiplayerWorld"] }],
-  "vars": { "SEED": "1337" }
+  "vars": { "SEED": "1337", "PEACEFUL": "0" }
 }

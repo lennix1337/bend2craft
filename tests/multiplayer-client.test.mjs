@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import * as http from "node:http";
 import Multiplayer from "../world/multiplayer.bend";
 import { attachMultiplayer } from "../server/node-host.mjs";
-import { INTERPOLATION_DELAY_MS, connectMultiplayer, createRemotePlayers, lerpAngle } from "../web/multiplayer.js";
+import { INTERPOLATION_DELAY_MS, connectMultiplayer, createEntityMirror, createRemotePlayers, lerpAngle } from "../web/multiplayer.js";
 import { MOB_BODY, TILE_PLAYER_SLEEVE, playerBoxes } from "../web/mob-models.js";
 
 // Angles blend along the short arc.
@@ -27,6 +27,18 @@ assert.equal(remote.views(5000).length, 1, "a player with no pose yet is not dra
 assert.equal(remote.count(), 2);
 assert.equal(remote.leave(4), true);
 assert.equal(remote.name(5), "Caio");
+
+// Server entities: mobs glide from the previous snapshot to the latest.
+const mirror = createEntityMirror({ tickMs: 200 });
+mirror.push({ mobs: [[7, 2, 0, 9, 0, 0, -1, 20, 1, 0, 0]], drops: [[40, 48, 1, 9, 1, 2]] }, 0);
+mirror.push({ mobs: [[7, 2, 2, 9, 0, 0, -1, 18, 1, 1, 0]], drops: [] }, 1000);
+assert.equal(mirror.mobs(1100)[0].x, 1);
+assert.equal(mirror.mobs(1300)[0].x, 2);
+assert.equal(mirror.mobs(1300)[0].burning, true);
+assert.deepEqual(mirror.drops(), []);
+mirror.push({ mobs: [], drops: [[41, 12, 3, 9, 3, 1]] }, 1400);
+assert.deepEqual(mirror.mobs(1500), []);
+assert.equal(mirror.drops()[0].item, 12);
 
 // The player model stands on its feet, fits the entity envelope and faces yaw.
 const standing = playerBoxes({ id: 1, x: 10, y: 5, z: 10, yaw: 0, pitch: 0, speed: 0 }, 2);

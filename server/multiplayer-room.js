@@ -59,9 +59,13 @@ function validSnapshot(snapshot, seed) {
  *   `tick: true` when only furnace smelting moved
  * @param {(event: "joined" | "left", player: object) => void} [options.onPresence]
  * @param {() => number} [options.now]  millisecond wall clock
+ * @param {Function} [options.createMobWorld]  server/mob-world.js's factory
+ *   (bundled with the authority); without it the room simulates no mobs
+ * @param {boolean} [options.peaceful]  a world without monsters
  */
 export function createMultiplayerRoom({
   authority, seed, snapshot = null, onChange = () => {}, onPresence = () => {}, now = () => Date.now(),
+  createMobWorld = null, peaceful = false,
 }) {
   if (typeof seed !== "bigint") throw new TypeError("seed must be a bigint");
   let state = authority.empty();
@@ -81,6 +85,9 @@ export function createMultiplayerRoom({
   }
   const players = new Map();
   let nextId = 1;
+  const mobWorld = createMobWorld === null
+    ? null
+    : createMobWorld({ seed, edits: () => authority.room_edits(state), peaceful });
   const counters = { accepted: 0, rejected: 0, dropped: 0 };
 
   function broadcast(message, except = null) {
@@ -164,6 +171,7 @@ export function createMultiplayerRoom({
       counters.accepted += accepted.length;
       const seq = Number(authority.room_seq(state));
       broadcast({ t: "edits", seq, from: player.id, edits: accepted });
+      mobWorld?.applyEdits(accepted);
       for (const chest of chests) broadcast({ t: "chest", ...chest });
       for (const furnace of furnaces) broadcast({ t: "furnace", ...furnace });
       onChange({ seq, edits: accepted, chests, furnaces });
@@ -222,8 +230,43 @@ export function createMultiplayerRoom({
     onChange({ seq: Number(authority.room_seq(state)), edits: [], chests: [], furnaces: [furnace] });
   }
 
-  // One smelting step for every furnace; only furnaces that moved are sent.
+  function handleAttack(player, message) {
+    const result = mobWorld === null || player.pose === null
+      ? { hit: false, killed: false, kind: 0 }
+      : mobWorld.attack(player.pose, message.mob, message.damage, message.ranged);
+    player.send(JSON.stringify({ t: "attack-result", id: message.id, mob: message.mob, ...result }));
+    if (result.hit) broadcast({ t: "entities", ...mobWorld.snapshot() });
+  }
+
+  function handlePickup(player, message) {
+    const result = mobWorld === null || player.pose === null
+      ? { ok: false, item: 0, amount: 0 }
+      : mobWorld.pickup(player.pose, message.drop);
+    player.send(JSON.stringify({ t: "pickup-result", id: message.id, drop: message.drop, ...result }));
+    if (result.ok) broadcast({ t: "entities", ...mobWorld.snapshot() });
+  }
+
+  function handleDrop(message) {
+    if (mobWorld === null) return;
+    mobWorld.addDrop(message.item, message.amount, message.x, message.y, message.z);
+    broadcast({ t: "entities", ...mobWorld.snapshot() });
+  }
+
+  // One simulation step: mobs and drops (sent to everyone every step while
+  // anyone is online) and furnaces (only the ones that moved are sent).
   function tick() {
+    if (mobWorld !== null) {
+      const online = [...players.values()].filter((player) => player.ready && player.pose !== null);
+      if (online.length > 0) {
+        const hurts = mobWorld.tick(TICK_MS / 1000, worldTime(), online.map((player) => ({ id: player.id, ...player.pose })));
+        for (const [id, amount] of hurts) players.get(id)?.send(JSON.stringify({ t: "hurt", amount }));
+        broadcast({ t: "entities", ...mobWorld.snapshot() });
+      }
+    }
+    return tickFurnaces();
+  }
+
+  function tickFurnaces() {
     const before = bendFurnacesToWire(authority.room_furnaces(state));
     if (before.length === 0) return 0;
     state = authority.tick(state);
@@ -287,6 +330,9 @@ export function createMultiplayerRoom({
       else if (message.t === "edits") handleEdits(player, message);
       else if (message.t === "chest") handleChest(player, message);
       else if (message.t === "furnace") handleFurnace(player, message);
+      else if (message.t === "attack") handleAttack(player, message);
+      else if (message.t === "pickup") handlePickup(player, message);
+      else if (message.t === "drop") handleDrop(message);
       else if (message.t === "time") handleTime(message);
     }
 

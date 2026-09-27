@@ -8,7 +8,7 @@
 // Edits travel as [x, y, z, block] in stored (Bend) coordinates: the same
 // non-negative encoding WorldState keeps (see web/world-coordinates.js).
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 export const MULTIPLAYER_PATH = "/multiplayer";
 export const MAX_MESSAGE_BYTES = 256 * 1024;
 export const MAX_EDITS_PER_MESSAGE = 4096;
@@ -135,6 +135,19 @@ export function decodeClientMessage(text) {
       return null;
     case "time":
       return message.op === "morning" ? { t: "time", op: "morning" } : null;
+    case "attack":
+      return isU32(message.id) && isStoredInteger(message.mob) && Number.isFinite(message.damage)
+        && message.damage >= 0 && typeof message.ranged === "boolean"
+        ? { t: "attack", id: message.id, mob: message.mob, damage: message.damage, ranged: message.ranged }
+        : null;
+    case "pickup":
+      return isU32(message.id) && isStoredInteger(message.drop) ? { t: "pickup", id: message.id, drop: message.drop } : null;
+    case "drop":
+      return isU32(message.item) && message.item > 0 && Number.isInteger(message.amount)
+        && message.amount > 0 && message.amount <= MAX_STACK
+        && [message.x, message.y, message.z].every(Number.isFinite)
+        ? { t: "drop", item: message.item, amount: message.amount, x: message.x, y: message.y, z: message.z }
+        : null;
     case "furnace":
       if (!isU32(message.id) || !isWirePosition(message.pos)) return null;
       if (message.op !== "input" && message.op !== "fuel" && message.op !== "output") return null;
@@ -181,8 +194,17 @@ export function decodeServerMessage(text) {
       return typeof message.message === "string" ? message : null;
     case "chest":
       return isWireChest(message) ? message : null;
+    case "entities":
+      return Array.isArray(message.mobs) && message.mobs.every((mob) => Array.isArray(mob) && mob.length === 11 && mob.every(Number.isFinite))
+        && Array.isArray(message.drops) && message.drops.every((drop) => Array.isArray(drop) && drop.length === 6 && drop.every(Number.isFinite))
+        ? message
+        : null;
+    case "hurt":
+      return Number.isFinite(message.amount) && message.amount >= 0 ? message : null;
     case "chest-result":
     case "furnace-result":
+    case "attack-result":
+    case "pickup-result":
       return isU32(message.id) && typeof message.ok === "boolean" ? message : null;
     case "furnace":
       return isWireFurnace(message) ? message : null;

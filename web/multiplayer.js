@@ -188,8 +188,9 @@ export function connectMultiplayer({
       const id = nextRequestId;
       nextRequestId += 1;
       return new Promise((resolve, reject) => {
-        if (!send({ t: type, op, id, ...fields })) {
-          resolve({ ok: false, item: 0, amount: 0, durability: 0, offline: true });
+        const message = op === undefined ? { t: type, id, ...fields } : { t: type, op, id, ...fields };
+        if (!send(message)) {
+          resolve({ ok: false, hit: false, item: 0, amount: 0, durability: 0, offline: true });
           return;
         }
         const timer = setTimeout(() => {
@@ -288,6 +289,18 @@ export function connectMultiplayer({
           furnaceRequest(op, fields) {
             return request("furnace", op, fields);
           },
+          /** Hits a mob; resolves with `{ hit, killed, kind }`. */
+          attackRequest(fields) {
+            return request("attack", undefined, fields);
+          },
+          /** Picks up a drop; resolves with `{ ok, item, amount }`. */
+          pickupRequest(fields) {
+            return request("pickup", undefined, fields);
+          },
+          /** Puts an item the player threw or spilled into the world. */
+          sendDrop(fields) {
+            return send({ t: "drop", ...fields });
+          },
           /** Starts a new day for everyone (after a successful sleep). */
           sendMorning() {
             return send({ t: "time", op: "morning" });
@@ -308,7 +321,7 @@ export function connectMultiplayer({
         timeBase = message.time;
         timeAt = clock();
       }
-      if (message.t === "chest-result" || message.t === "furnace-result") {
+      if (message.t.endsWith("-result")) {
         const request = pendingRequests.get(message.id);
         if (request !== undefined) {
           pendingRequests.delete(message.id);
@@ -331,4 +344,39 @@ export function connectMultiplayer({
       if (!settled) fail(new Error(`Could not reach the multiplayer server at ${url}.`));
     });
   });
+}
+
+/**
+ * The server's mobs and drops, as the views the game renders. Snapshots arrive
+ * every simulation tick; mob positions are blended from the previous snapshot
+ * to the latest over one tick, so bodies glide instead of stepping.
+ */
+export function createEntityMirror({ tickMs = 200 } = {}) {
+  let previous = new Map();
+  let latest = [];
+  let latestAt = 0;
+  let drops = [];
+
+  function mobView(wire) {
+    const [id, kind, x, y, z, headingX, headingZ, health, alive, burning] = wire;
+    return { id, kind, x, y, z, headingX, headingZ, health, alive: alive === 1, burning: burning === 1 };
+  }
+
+  return {
+    push(message, now) {
+      previous = new Map(latest.map((mob) => [mob.id, mob]));
+      latest = message.mobs.map(mobView);
+      latestAt = now;
+      drops = message.drops.map(([id, item, x, y, z, amount]) => ({ id, item, x, y, z, amount, velocityY: 0, settled: true }));
+    },
+    mobs(now) {
+      const t = Math.min(1, Math.max(0, (now - latestAt) / tickMs));
+      return latest.map((mob) => {
+        const from = previous.get(mob.id);
+        if (from === undefined || t >= 1) return mob;
+        return { ...mob, x: from.x + (mob.x - from.x) * t, y: from.y + (mob.y - from.y) * t, z: from.z + (mob.z - from.z) * t };
+      });
+    },
+    drops: () => drops,
+  };
 }

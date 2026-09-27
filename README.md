@@ -238,6 +238,22 @@ items handed over after the inventory filled up drop at the player's feet. The
 world clock is the server's as well: every player sees the same time of day,
 and sleeping starts the morning for everyone.
 
+Mobs and dropped items run on the server too (`server/mob-world.js`). The
+server caches the chunks around players and mobs with Bend's bulk
+`WorldState.chunk`, patches them with every accepted edit, and every 200 ms runs
+the Bend entity rules: `MultiplayerMobs.step_world` (each mob chases or flees
+the nearest player), `Entities.sunlight_damage`, `Entities.threat_damage` for
+each player (sent to that player as damage), `Entities.step_drops`, night spawns
+around every player (`web/mob-spawning.js`, shared with single player) and
+`MultiplayerMobs.despawn` (only mobs far from every player). Every player
+receives the mobs and drops each tick and renders them blended between
+snapshots. Hits (`MultiplayerMobs.attack`: damage clamped to the strongest
+weapon, melee or bow reach from the server's pose of the attacker), pickups
+(`MultiplayerMobs.pickup`: the drop must exist and be within reach) and thrown
+items go through the server, so two players cannot pick up the same drop.
+`PEACEFUL=1` (or `vars.PEACEFUL` in `wrangler.jsonc`) hosts a world without
+monsters.
+
 - `server/multiplayer-room.js`: the transport-agnostic room (players, fan-out,
   snapshots) around the compiled Bend authority.
 - `server/websocket.mjs`, `server/node-host.mjs`: a dependency-free WebSocket
@@ -281,8 +297,8 @@ npx wrangler deploy
 Then open `https://<worker>.workers.dev/?play=1&mp=1`. The deployment hosts one
 shared world; `vars.SEED` in `wrangler.jsonc` sets the seed of a new one.
 
-Scope so far: block edits, player presence, chests, furnaces and the time of
-day are shared. Mobs, villagers, dropped items, crops' growth timers and
+Scope so far: block edits, player presence, chests, furnaces, the time of
+day, mobs and dropped items are shared. Villagers, crops' growth timers and
 fluid/fire simulation state stay local to each client (a simulation's block
 changes are shared by the client that runs it), and player movement is still
 client-trusted, as `web/game-state.js` owns physics. Inventory, equipment and

@@ -86,7 +86,9 @@ import {
 import { bindInterleavedPositions, bindInterleavedTerrain, createWebglChunkBuffers } from "./webgl-chunk-buffers.js";
 import { extractClipPlanes } from "./chunk-frustum.js";
 import { MOB_BODY, dropBoxes, faceYaw, mobBoxes, playerBoxes, villagerBoxes } from "./mob-models.js";
-import { connectMultiplayer, createRemotePlayers } from "./multiplayer.js";
+import { connectMultiplayer, createEntityMirror, createRemotePlayers } from "./multiplayer.js";
+import { NIGHT_DAYLIGHT, daylightForTime } from "./daylight.js";
+import { nightSpawns } from "./mob-spawning.js";
 import { multiplayerUrl, wireEditsToBend, wireFurnaceToBend, wireSlotsToBend } from "./multiplayer-protocol.js";
 import { isHostileKind, mobKind } from "./mob-kinds.js";
 import { createAsyncChunkMeshCache } from "./mesh-cache.js";
@@ -186,7 +188,7 @@ import { decodeSave } from "./save-state.js";
 import { loadTransactional, saveTransactional } from "./persistent-save.js";
 import { packEntityState, restoreEntities, restoreVillagers } from "./entity-save.js";
 import { createFixedTicker } from "./simulation-ticker.js";
-import { createColumnHeightCache } from "./drop-ground-cache.js";
+import { createColumnHeightCache, isDropSolid } from "./drop-ground-cache.js";
 import { buildChunkBuckets, concatBendLists } from "./entity-chunks.js";
 import { seedFromSearch, seedLabel } from "./seed.js";
 import { createPointerLockController } from "./pointer-lock.js";
@@ -561,9 +563,6 @@ let atlasTexture = null;
 let atlasMipmapVerdict = { safe: false, reason: "not probed", levels: [], contaminated: [] };
 let cloudTexture = null;
 
-function daylightForTime(time) {
-  return 0.28 + 0.72 * (0.5 + 0.5 * Math.sin(Number(time) * 0.08));
-}
 
 function createWebglContext() {
   const probeCanvas = document.createElement("canvas");
@@ -652,6 +651,10 @@ try {
     };
   }
   const remotePlayers = createRemotePlayers();
+  // On a multiplayer server, mobs and drops are the server's: this mirror holds
+  // its snapshots and the game only renders and aims at them.
+  const entityMirror = createEntityMirror();
+  const pendingPickups = new Set();
   const nametagElements = new Map();
 
   // A torch flood depends only on the seed and the source (its walls are the
@@ -2291,7 +2294,7 @@ try {
   }
 
   function refreshMobs() {
-    if (mobDomainState === null) mobDomainState = PEACEFUL
+    if (mobDomainState === null) mobDomainState = PEACEFUL || multiplayer !== null
       ? { $: "Nil" }
       : Entities.spawn_for_player(
         SEED,
@@ -2309,11 +2312,7 @@ try {
     drops = dropViews(dropDomainState);
   }
 
-  function dropSolid(block) {
-    return (block > 0 && block < 16) || block === 20;
-  }
-
-  dropGroundCache = createColumnHeightCache({ maxY: MAX_Y, blockAt, isSolid: dropSolid });
+  dropGroundCache = createColumnHeightCache({ maxY: MAX_Y, blockAt, isSolid: isDropSolid });
 
   function groundSourcesForDrops(list = dropDomainState) {
     let grounds = { $: "Nil" };
@@ -2322,9 +2321,12 @@ try {
       const x = Math.floor(Number(drop.x));
       const z = Math.floor(Number(drop.z));
       const floorY = dropGroundCache.get(x, z);
+      // Entities.ground_y matches a drop's own x and z exactly, so the ground
+      // source carries them; a cell-centre key only matched drops that sat on
+      // a cell centre, and every other drop fell out of the world.
       grounds = {
         $: "Con",
-        head: { $: "Ground", x: x + 0.5, z: z + 0.5, y: floorY },
+        head: { $: "Ground", x: Number(drop.x), z: Number(drop.z), y: floorY },
         tail: grounds,
       };
     }
@@ -2558,8 +2560,43 @@ try {
     return true;
   }
 
+  // Multiplayer hits: the server applies them to its mobs (Bend's rules, from
+  // this player's pose) and answers; effects and XP follow its answer.
+  function sharedAttack(target, damage, ranged, slainLabel, hitLabel, onHit = () => {}) {
+    multiplayer.attackRequest({ mob: Number(target.id), damage: Number(damage), ranged }).then(
+      (result) => {
+        if (!result.hit) return;
+        audio.play("pop");
+        playMobHurtSound(target.kind);
+        emitImpact(vfx, target.x, target.y + 0.9, target.z, HIT_SPARK_TINT, ranged ? 7 : 6);
+        onHit();
+        if (result.killed) {
+          killCount += 1;
+          const xp = Number(Experience.xp_for_kind(Number(result.kind || target.kind || 2)));
+          xpState = Experience.award(xpState, Number(result.kind || target.kind || 2));
+          emitDeathPuff(vfx, target.x, target.y, target.z, mobPuffTint(target.kind), 16);
+          setInventoryMessage(`${slainLabel} (+${xp} XP).`);
+        } else {
+          setInventoryMessage(hitLabel);
+        }
+        mobFlash.set(target.id, worldTime);
+        refreshInventoryUi();
+        updateHud();
+      },
+      () => setInventoryMessage("The server did not answer."),
+    );
+    return true;
+  }
+
   function attackMob(target, damage, selectedId) {
     if (mobDomainState === null) return false;
+    if (multiplayer !== null) {
+      return sharedAttack(target, damage, false, "Mob slain", "Mob hit.", () => {
+        if (["wooden_sword", "stone_sword", "iron_sword", "diamond_sword"].includes(selectedId)) {
+          useTool(inventory, selectedSlot);
+        }
+      });
+    }
     const result = Entities.attack(mobDomainState, BigInt(target.id), damage, player.x, player.y, player.z, MELEE_ATTACK_RANGE, dropDomainState);
     if (!result.hit) return false;
     audio.play("pop");
@@ -2660,6 +2697,12 @@ try {
       refreshInventoryUi();
       return true;
     }
+    if (multiplayer !== null) {
+      useTool(inventory, selectedSlot);
+      consume(inventory, arrowSlot, 1);
+      refreshInventoryUi();
+      return sharedAttack(target, 6.0, true, "Mob shot", "Arrow hit.");
+    }
     const result = Entities.attack(mobDomainState, BigInt(target.id), 6.0, player.x, player.y, player.z, RANGED_ATTACK_RANGE, dropDomainState);
     if (!result.hit) return false;
     useTool(inventory, selectedSlot);
@@ -2672,7 +2715,42 @@ try {
     return applyMobHit(result, target, "Mob shot", "Arrow hit.");
   }
 
+  // Multiplayer pickups: the nearest server drop within reach is asked for; the
+  // server removes it and hands it over (or refuses if someone was first).
+  function sharedCollectDrops() {
+    let list = Entities.empty_drops();
+    for (const drop of drops) {
+      if (pendingPickups.has(drop.id)) continue;
+      list = Entities.cons_drop(Entities.make_drop(BigInt(drop.id), drop.item, drop.x, drop.y, drop.z, drop.amount), list);
+    }
+    const target = Entities.nearest_drop(list, player.x, player.y, player.z);
+    if (!String(target.$).endsWith("DropFound")) return false;
+    const item = itemNameFromId(target.item);
+    const trial = inventory.map((entry) => ({ ...entry }));
+    if (item === null || !collectItem(trial, item, Number(target.amount))) return false;
+    const dropId = Number(target.id);
+    pendingPickups.add(dropId);
+    multiplayer.pickupRequest({ drop: dropId }).then(
+      (result) => {
+        pendingPickups.delete(dropId);
+        const name = result.ok ? itemNameFromId(result.item) : null;
+        if (name === null) return;
+        if (!collectItem(inventory, name, Number(result.amount))) {
+          multiplayer.sendDrop({ item: result.item, amount: result.amount, x: player.x, y: player.y + 0.6, z: player.z });
+          return;
+        }
+        emitSparkle(vfx, player.x, player.y + 0.3, player.z, hexToRgb(itemColor({ item: name })), 6);
+        setInventoryMessage(`${itemName({ item: name })} collected.`);
+        refreshInventoryUi();
+        updateHud();
+      },
+      () => pendingPickups.delete(dropId),
+    );
+    return true;
+  }
+
   function collectNearbyDrops() {
+    if (multiplayer !== null) return sharedCollectDrops();
     const target = Entities.nearest_drop(dropDomainState, player.x, player.y, player.z);
     if (target.$ !== "DropFound") return false;
     const item = itemNameFromId(target.item);
@@ -2694,6 +2772,13 @@ try {
     const amount = dropAmount(item?.count ?? 0, stack);
     if (id === null || amount <= 0 || ITEM_IDS[id] === undefined) return false;
     if (!consume(inventory, slot, amount)) return false;
+    if (multiplayer !== null) {
+      multiplayer.sendDrop({ item: ITEM_IDS[id], amount, x: player.x, y: player.y + 0.6, z: player.z });
+      setInventoryMessage(`${itemName(item)} dropped${stack ? " (stack)" : ""}.`);
+      refreshInventoryUi();
+      updateHud();
+      return true;
+    }
     const dropId = BigInt(Date.now()) * 1000n + BigInt(drops.length);
     dropDomainState = Entities.cons_drop(
       Entities.make_drop(dropId, ITEM_IDS[id], player.x, player.y + 0.6, player.z, amount),
@@ -3195,6 +3280,10 @@ try {
   // handed over after the inventory filled up.
   function dropAtPlayer(numericItem, amount) {
     if (!(amount > 0)) return;
+    if (multiplayer !== null) {
+      multiplayer.sendDrop({ item: numericItem, amount, x: player.x, y: player.y + 0.6, z: player.z });
+      return;
+    }
     const dropId = BigInt(Date.now()) * 1000n + BigInt(drops.length);
     dropDomainState = Entities.cons_drop(
       Entities.make_drop(dropId, numericItem, player.x, player.y + 0.6, player.z, amount),
@@ -4769,6 +4858,14 @@ try {
       const name = itemId(slot);
       const count = Number(slot?.count ?? 0);
       if (name === null || count <= 0) continue;
+      if (multiplayer !== null) {
+        // Stacks above 64 go out as several drops.
+        for (let left = count; left > 0; left -= 64) {
+          multiplayer.sendDrop({ item: ITEM_IDS[name], amount: Math.min(64, left), x: player.x, y: player.y + 0.5, z: player.z });
+        }
+        scattered += 1;
+        continue;
+      }
       dropDomainState = Entities.cons_drop(
         Entities.make_drop(base + BigInt(scattered), ITEM_IDS[name], player.x, player.y + 0.5, player.z, count),
         dropDomainState,
@@ -5462,31 +5559,17 @@ try {
   // addresses columns with Nat.
   function spawnNightMobs() {
     if (PEACEFUL || mobDomainState === null) return;
-    const alive = mobs.filter((mob) => mob.alive);
-    if (alive.length >= 24) return;
-    if (alive.filter((mob) => isHostileKind(mob.kind)).length >= 8) return;
+    const spawns = nightSpawns({ seed: SEED, mobs, anchorX: player.x, anchorZ: player.z, maxY: MAX_Y });
     let nextId = 1;
     for (const mob of mobs) nextId = Math.max(nextId, Number(mob.id) + 1);
-    let spawned = 0;
-    for (let attempt = 0; attempt < 6 && spawned < 2; attempt += 1) {
-      const angle = Math.random() * Math.PI * 2;
-      const dist = 18 + Math.random() * 10;
-      const nx = Math.floor(player.x + Math.cos(angle) * dist);
-      const nz = Math.floor(player.z + Math.sin(angle) * dist);
-      if (nx < 0 || nz < 0) continue;
-      const height = Number(World.column_height(SEED, BigInt(nx), BigInt(nz)));
-      if (!Number.isFinite(height) || height <= 0 || height >= MAX_Y - 2) continue;
-      if (Number(World.block(SEED, BigInt(nx), BigInt(height), BigInt(nz))) !== 0) continue;
-      if (Number(World.block(SEED, BigInt(nx), BigInt(height + 1), BigInt(nz))) !== 0) continue;
-      const kind = Math.random() < 0.8 ? 2 : 4;
+    for (const spawn of spawns) {
       mobDomainState = Entities.cons_mob(
-        Entities.make_mob(BigInt(nextId), kind, nx + 0.5, height, nz + 0.5, kind === 4 ? 40.0 : 20.0, true),
+        Entities.make_mob(BigInt(nextId), spawn.kind, spawn.x, spawn.y, spawn.z, spawn.health, true),
         mobDomainState,
       );
       nextId += 1;
-      spawned += 1;
     }
-    if (spawned > 0) {
+    if (spawns.length > 0) {
       mobs = mobViews(mobDomainState);
       rebuildDynamicMesh(worldTime);
     }
@@ -5498,20 +5581,23 @@ try {
       showDeath();
       return;
     }
-    updateMobs(dt);
-    stepDrops(dt);
+    // A multiplayer server runs the mobs and drops; this client only picks up.
+    if (multiplayer === null) {
+      updateMobs(dt);
+      stepDrops(dt);
+    }
     collectNearbyDrops();
     if (tickFluids()) simulationTerrainDirty = true;
     if (lavaContact(world, player)) applyLavaDamage(player, dt);
     nightSpawnTimer += dt;
     if (nightSpawnTimer >= 5) {
       nightSpawnTimer = 0;
-      if (daylight < 0.4) spawnNightMobs();
+      if (daylight < NIGHT_DAYLIGHT && multiplayer === null) spawnNightMobs();
     }
     despawnTimer += dt;
     if (despawnTimer >= 10) {
       despawnTimer = 0;
-      if (mobDomainState !== null) {
+      if (mobDomainState !== null && multiplayer === null) {
         mobDomainState = Entities.despawn(mobDomainState, player.x, player.z, 48.0);
         mobs = mobViews(mobDomainState);
       }
@@ -5588,6 +5674,10 @@ try {
       if (simulationTerrainDirty) {
         simulationTerrainDirty = false;
         rebuildMesh(false);
+      }
+      if (multiplayer !== null) {
+        mobs = entityMirror.mobs(now);
+        drops = entityMirror.drops();
       }
       rebuildDynamicMesh(worldTime);
       multiplayer?.sendPose({ x: player.x, y: player.y, z: player.z, yaw: player.yaw, pitch: player.pitch }, now);
@@ -5711,6 +5801,21 @@ try {
       }
     };
     multiplayer.on("furnace", applyServerFurnace);
+    multiplayer.on("entities", (message) => {
+      const now = performance.now();
+      entityMirror.push(message, now);
+      // The frame blends positions; this keeps a paused client current too.
+      mobs = entityMirror.mobs(now);
+      drops = entityMirror.drops();
+    });
+    multiplayer.on("hurt", (message) => {
+      if (!isPlayerAlive(player)) return;
+      const blocking = Equipment.blocks_damage(equipmentState)
+        || itemId(selectedItem(inventory, selectedSlot)) === "shield";
+      applyDamage(player, Number(message.amount) * (blocking ? 0.34 : 1));
+      audio.play("hurt");
+      if (!isPlayerAlive(player)) showDeath();
+    });
     multiplayer.on("furnaces", (message) => message.furnaces.forEach(applyServerFurnace));
     multiplayer.on("chest", (chest) => {
       chestWorldState = mirrorServerChest(chestWorldState, chest);

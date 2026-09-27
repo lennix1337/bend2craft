@@ -42,8 +42,12 @@ export function lanAddresses() {
  * @param {object} options.authority  the compiled world/multiplayer.bend module
  * @param {bigint} options.seed        seed for a new world (a saved world keeps its own)
  * @param {string|null} options.file   where the world is saved; null keeps it in memory
+ * @param {Function} [options.createMobWorld]  server-owned mobs and drops
+ * @param {boolean} [options.peaceful]  no monsters
  */
-export function attachMultiplayer(server, { authority, seed, file = null, log = console.log }) {
+export function attachMultiplayer(server, {
+  authority, seed, file = null, log = console.log, createMobWorld = null, peaceful = false,
+}) {
   const saved = file === null ? null : readSnapshot(file);
   const worldSeed = saved === null ? seed : BigInt(saved.seed);
   let saveTimer = null;
@@ -60,6 +64,8 @@ export function attachMultiplayer(server, { authority, seed, file = null, log = 
     authority,
     seed: worldSeed,
     snapshot: saved,
+    createMobWorld,
+    peaceful,
     onChange: () => {
       if (saveTimer === null) saveTimer = setTimeout(save, SAVE_DELAY_MS);
     },

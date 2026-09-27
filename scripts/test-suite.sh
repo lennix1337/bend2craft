@@ -7,9 +7,11 @@ TESTS=(
   tests/world-bridge.test.mjs
   tests/world-state-bend.test.mjs
   tests/multiplayer-bend.test.mjs
+  tests/multiplayer-mobs-bend.test.mjs
   tests/multiplayer-room.test.mjs
   tests/multiplayer-transport.test.mjs
   tests/multiplayer-client.test.mjs
+  tests/multiplayer-mob-world.test.mjs
   tests/world-chunk-golden.test.mjs
   tests/world-coordinates.test.mjs
   tests/chunk-world.test.mjs

@@ -1,7 +1,6 @@
 import World from "../world/world.bend";
 import WorldState from "../world/world_state.bend";
 import Structures from "../world/structures.bend";
-import Horizon from "../world/horizon.bend";
 import Light from "../world/light.bend";
 import LightDirty from "../world/light-dirty.bend";
 import Entities from "../world/entities.bend";
@@ -75,12 +74,21 @@ import {
   waterCurrentPush,
 } from "./game-state.js";
 import { createChunkedWorld } from "./chunk-world.js";
-import { canPatchHiddenTerrain, quadContainsCell } from "./terrain-edit-visibility.js";
+import {
+  canonicalCells,
+  generationChunkCoordinate,
+  migrateLegacyEdits,
+  stencilCoordinate,
+  storageCoordinate as storageCoordinateFor,
+  worldCoordinate,
+} from "./world-coordinates.js";
+import { bindInterleavedPositions, bindInterleavedTerrain, createWebglChunkBuffers } from "./webgl-chunk-buffers.js";
+import { extractClipPlanes } from "./chunk-frustum.js";
 import { MOB_BODY, dropBoxes, faceYaw, mobBoxes, villagerBoxes } from "./mob-models.js";
-import { createAsyncChunkMeshCache, shouldPublishMeshSnapshot } from "./mesh-cache.js";
+import { createAsyncChunkMeshCache } from "./mesh-cache.js";
 import { createMeshRebuildScheduler } from "./mesh-rebuild-scheduler.js";
 import { villagerEditsChanged } from "./villager-simulation.js";
-import { sampleSignedSurfaceGrid } from "./horizon-grid.js";
+import { createLodTerrain, normalizeLodDistance } from "./lod-terrain.js";
 import { certifyAtlasMipmaps, readAtlasTilePixels } from "./atlas-probe.js";
 import {
   ATLAS_TILE_GUTTER,
@@ -401,19 +409,6 @@ let gl = null;
 let program;
 let skyProgram;
 let skyPositionBuffer;
-let positionBuffer;
-let colorBuffer;
-let terrainLightBuffer;
-let terrainNormalBuffer;
-let uvBuffer;
-let terrainMaterialBuffer;
-let waterPositionBuffer;
-let waterColorBuffer;
-let waterLightBuffer;
-let waterNormalBuffer;
-let waterUvBuffer;
-let waterMaterialBuffer;
-let waterTileBuffer;
 let dynamicPositionBuffer;
 let dynamicColorBuffer;
 let dynamicLightBuffer;
@@ -438,7 +433,6 @@ let normalLocation;
 let uvLocation;
 let materialLocation;
 let tileLocation;
-let tileBuffer;
 let viewProjectionLocation;
 let cameraLocation;
 let terrainSkyColorLocation;
@@ -513,10 +507,6 @@ let terrainQuadCount = 0;
 let waterQuadCount = 0;
 let dynamicQuadCount = 0;
 let shadowQuadCount = 0;
-let horizonMesh = {
-  opaque: { positions: [], colors: [], lights: [], normals: [], uvs: [], tiles: [], materials: [], quadCount: 0 },
-  water: { positions: [], colors: [], lights: [], normals: [], uvs: [], materials: [], tiles: [], quadCount: 0 },
-};
 let visibleFaceCount = 0;
 let daylight = 1;
 let worldTime = 0;
@@ -529,6 +519,10 @@ let shaderQuality = 1;
 let webgpuProbe = { supported: false, adapterName: null, reason: "not probed" };
 let gpuRenderer = null;
 let lastGpuChunkUpdate = null;
+// WebGL keeps one interleaved buffer per chunk (and per LOD section), like the
+// WebGPU backend, instead of one whole-world array re-uploaded on every change.
+let glChunkBuffers = null;
+let glSubmit = null;
 let timeLocation;
 let daylightLocation;
 let surfacePassLocation;
@@ -613,31 +607,60 @@ try {
     savedGame = null;
   }
 
+  // A torch flood depends only on the seed and the source (its walls are the
+  // generated terrain), so a cached field stays valid across every other edit.
+  // Only placing or removing a light source changes which fields exist.
   const lightSourceFieldCache = new Map();
   const sourceFieldKey = (source) => `${source.x},${source.y},${source.z},${source.block}`;
   const invalidateLightFields = (x, y, z, previousBlock, value) => {
-    if (previousBlock === 12 || value === 12) {
-      lightSourceFieldCache.delete(`${BigInt(x)},${BigInt(y)},${BigInt(z)},12`);
-    } else if (previousBlock === 7 || value === 7 || previousBlock === 21 || value === 21) {
-      return;
-    } else {
-      lightSourceFieldCache.clear();
-    }
+    const touchesSource = [previousBlock, value].some((block) => block === 12 || block === 21);
+    if (!touchesSource) return;
+    const storedX = storageCoordinateFor(x, asNumber(World.chunk_size()));
+    const storedZ = storageCoordinateFor(z, asNumber(World.chunk_size()));
+    for (const block of [12, 21]) lightSourceFieldCache.delete(`${storedX},${y},${storedZ},${block}`);
   };
-  const generateLightCells = (cells, edits) => {
-    const sources = WorldState.light_sources(edits);
-    let fields = { $: "Nil" };
-    for (let node = sources; node?.$ === "Con"; node = node.tail) {
-      const source = node.head;
-      const key = sourceFieldKey(source);
-      let own = lightSourceFieldCache.get(key);
-      if (own === undefined) {
-        own = Light.source_fields_one(source, SEED);
-        lightSourceFieldCache.set(key, own);
-      }
-      fields = Light.append_fields(own, fields);
+  const lightFieldsFor = (source) => {
+    const key = sourceFieldKey(source);
+    let own = lightSourceFieldCache.get(key);
+    if (own === undefined) {
+      own = Light.source_fields_one(source, SEED);
+      lightSourceFieldCache.set(key, own);
     }
-    return Light.patch_fields_with_edits(fields, edits, SEED, cells);
+    return own;
+  };
+  // Light for a batch of dirty cells (stored coordinates). Only the sources
+  // whose flood can reach the cells' chunks contribute fields, and only the
+  // edits inside the cells' bounding box are scanned; both are exact, since a
+  // field outside its flood never matches and a cell reads only its column.
+  const generateLightCells = (cells, edits) => {
+    const chunkSize = asNumber(World.chunk_size());
+    const chunks = new Map();
+    let minX = Infinity;
+    let minZ = Infinity;
+    let maxX = -Infinity;
+    let maxZ = -Infinity;
+    for (let node = cells; node?.$ === "Con"; node = node.tail) {
+      const x = Number(node.head.x);
+      const z = Number(node.head.z);
+      minX = Math.min(minX, x);
+      minZ = Math.min(minZ, z);
+      maxX = Math.max(maxX, x);
+      maxZ = Math.max(maxZ, z);
+      const chunkX = Math.floor(x / chunkSize);
+      const chunkZ = Math.floor(z / chunkSize);
+      chunks.set(`${chunkX},${chunkZ}`, [chunkX, chunkZ]);
+    }
+    if (chunks.size === 0) return { $: "Nil" };
+    const sources = WorldState.light_sources(edits);
+    const relevant = new Map();
+    for (const [chunkX, chunkZ] of chunks.values()) {
+      for (let node = Light.relevant_sources(sources, BigInt(chunkX), BigInt(chunkZ)); node?.$ === "Con"; node = node.tail) {
+        relevant.set(sourceFieldKey(node.head), node.head);
+      }
+    }
+    let fields = { $: "Nil" };
+    for (const source of relevant.values()) fields = Light.append_fields(lightFieldsFor(source), fields);
+    return Light.patch_fields_box(fields, edits, SEED, cells, BigInt(minX), BigInt(minZ), BigInt(maxX), BigInt(maxZ));
   };
 
   const MAX_Y = asNumber(World.max_y());
@@ -646,24 +669,20 @@ try {
   // Keep the camera clip and fog beyond the selected chunk window. Without
   // this, a larger setting would load chunks that WebGL immediately clips or
   // fades into the sky.
+  // Distant terrain (the LOD rings) extends the view far past the streamed
+  // chunks, so the far plane and the fog follow the LOD distance when it is on.
+  const LOD_DISTANCE = normalizeLodDistance(options.lodDistance);
   const RENDER_FAR = Math.max(
     120,
     Math.ceil((CHUNK_RENDER_RADIUS + 2) * CHUNK_SIZE * Math.SQRT2),
+    Math.ceil(LOD_DISTANCE * 1.05 + 32),
   );
   const FOG_DISTANCE = Math.max(
     72,
     (CHUNK_RENDER_RADIUS + 1) * CHUNK_SIZE * 1.5 - 24,
+    LOD_DISTANCE * 1.1,
   );
-  const GENERATION_CHUNK_OFFSET = 1_000_000;
-  const generationChunkCoordinate = (chunk) => chunk < 0
-    ? GENERATION_CHUNK_OFFSET + (-chunk)
-    : chunk;
-  const storageCoordinate = (value) => {
-    if (value >= 0) return value;
-    const chunk = Math.floor(value / CHUNK_SIZE);
-    const local = value - chunk * CHUNK_SIZE;
-    return (GENERATION_CHUNK_OFFSET + (-chunk)) * CHUNK_SIZE + local;
-  };
+  const storageCoordinate = (value) => storageCoordinateFor(value, CHUNK_SIZE);
   if (rendererKind === "webgpu") {
     try {
       // The WebGPU path has no WebGL context to certify against, so the
@@ -773,17 +792,10 @@ try {
     }
     if (terrainMeshCache?.applyBuild(id, event.data)) {
       meshWorkerResponseCount += 1;
-      if (hiddenTerrainBlocks.size > 0) {
-        // The edit overlay already hides the stale block. Defer the expensive
-        // full-buffer upload so the interaction does not become a long frame.
-        if (deferredMeshRebuildTimer === null) {
-          deferredMeshRebuildTimer = window.setTimeout(() => {
-            deferredMeshRebuildTimer = null;
-            if (streamingMeshScheduler === null) rebuildMesh(false);
-            else streamingMeshScheduler.request();
-          }, 450);
-        }
-      } else if (streamingMeshScheduler === null) rebuildMesh(false);
+      // Both backends upload per chunk, so a finished edit rebuild costs one
+      // small upload: publish it at once so the edited block updates without
+      // waiting for the streaming cadence.
+      if (hiddenTerrainBlocks.size > 0 || streamingMeshScheduler === null) rebuildMesh(false);
       else streamingMeshScheduler.request();
     }
   };
@@ -820,26 +832,37 @@ try {
     maxY: MAX_Y,
     renderRadius: CHUNK_RENDER_RADIUS,
     loadBudget: CHUNK_WORKER_COUNT,
+    // Saves from before the continuous negative mapping stored x < 0 edits in
+    // a remapped chunk range; they are moved to the current encoding on load.
     initialEdits: savedGame?.edits?.$ === "Nil" || savedGame?.edits?.$ === "Con"
-      ? savedGame.edits
+      ? migrateLegacyEdits(savedGame.edits, CHUNK_SIZE)
       : WorldState.empty(),
     generateChunk: (chunkX, chunkZ, edits) => WorldState.chunk(
       SEED,
-      BigInt(generationChunkCoordinate(chunkX)),
-      BigInt(generationChunkCoordinate(chunkZ)),
+      BigInt(generationChunkCoordinate(chunkX, CHUNK_SIZE)),
+      BigInt(generationChunkCoordinate(chunkZ, CHUNK_SIZE)),
       edits,
     ),
     generateLightChunk: (chunkX, chunkZ, edits) => Light.chunk_with_edits(
       WorldState.light_sources(edits),
       edits,
       SEED,
-      BigInt(generationChunkCoordinate(chunkX)),
-      BigInt(generationChunkCoordinate(chunkZ)),
+      BigInt(generationChunkCoordinate(chunkX, CHUNK_SIZE)),
+      BigInt(generationChunkCoordinate(chunkZ, CHUNK_SIZE)),
     ),
     generateLightCells,
     affectedLightChunks: (x, z, chunkSize) => LightDirty.chunks(BigInt(x), BigInt(z), BigInt(chunkSize)),
-    affectedLightCells: (x, y, z) => LightDirty.cells_plane(BigInt(x), BigInt(y), BigInt(z)),
-    affectedLightColumnCells: (x, y, z) => LightDirty.cells_column(BigInt(x), BigInt(y), BigInt(z)),
+    // Dirty-cell stencils run on aliased coordinates so they can step across
+    // zero, then come back in the canonical encoding the light rules read.
+    affectedLightCells: (x, y, z) => canonicalCells(
+      LightDirty.cells_plane(BigInt(stencilCoordinate(x)), BigInt(y), BigInt(stencilCoordinate(z))),
+      CHUNK_SIZE,
+    ),
+    affectedLightColumnCells: (x, y, z) => canonicalCells(
+      LightDirty.cells_column(BigInt(stencilCoordinate(x)), BigInt(y), BigInt(stencilCoordinate(z))),
+      CHUNK_SIZE,
+    ),
+    lightCellCoordinate: worldCoordinate,
     invalidateLightFields,
     requestChunk: (chunkX, chunkZ, edits, version) => {
       workerRequestCount += 1;
@@ -849,8 +872,9 @@ try {
         seed: SEED,
         chunkX,
         chunkZ,
-        generationChunkX: generationChunkCoordinate(chunkX),
-        generationChunkZ: generationChunkCoordinate(chunkZ),
+        generationChunkX: generationChunkCoordinate(chunkX, CHUNK_SIZE),
+        generationChunkZ: generationChunkCoordinate(chunkZ, CHUNK_SIZE),
+        cellCount: CHUNK_SIZE * CHUNK_SIZE * MAX_Y,
         edits,
       });
     },
@@ -1025,20 +1049,7 @@ try {
   program = terrainProgram.program;
   if (terrainProgram.usedFallback) shaderQuality = 0;
 
-  positionBuffer = gl.createBuffer();
-  colorBuffer = gl.createBuffer();
-  terrainLightBuffer = gl.createBuffer();
-  terrainNormalBuffer = gl.createBuffer();
-  uvBuffer = gl.createBuffer();
-  terrainMaterialBuffer = gl.createBuffer();
-  tileBuffer = gl.createBuffer();
-  waterPositionBuffer = gl.createBuffer();
-  waterColorBuffer = gl.createBuffer();
-  waterLightBuffer = gl.createBuffer();
-  waterNormalBuffer = gl.createBuffer();
-  waterUvBuffer = gl.createBuffer();
-  waterMaterialBuffer = gl.createBuffer();
-  waterTileBuffer = gl.createBuffer();
+  glChunkBuffers = createWebglChunkBuffers(gl);
   dynamicPositionBuffer = gl.createBuffer();
   dynamicColorBuffer = gl.createBuffer();
   dynamicLightBuffer = gl.createBuffer();
@@ -1211,70 +1222,59 @@ try {
   // god-ray stage thinks it is, instead of trusting a constant.
   let lastSunDirection = [0, 1, 0];
 
-  let horizonCenterKey = null;
-  function rebuildHorizon() {
-    const centerChunkX = Math.floor(player.x / CHUNK_SIZE);
-    const centerChunkZ = Math.floor(player.z / CHUNK_SIZE);
-    const key = `${centerChunkX},${centerChunkZ}`;
-    if (key === horizonCenterKey) return;
-    horizonCenterKey = key;
-    const step = 4;
-    const radius = Math.max(128, CHUNK_RENDER_RADIUS * CHUNK_SIZE + 64);
-    const columns = Math.floor((radius * 2) / step) + 1;
-    const minX = Math.floor(player.x) - radius;
-    const minZ = Math.floor(player.z) - radius;
-    const surfaces = sampleSignedSurfaceGrid({
-      minX,
-      minZ,
-      columns,
-      rows: columns,
-      step,
-      encodeCoordinate: storageCoordinate,
-      sample: (count, points) => Horizon.surface_points(SEED, count, points),
-    }).values;
-    const opaque = { positions: [], colors: [], lights: [], normals: [], uvs: [], tiles: [], materials: [], quadCount: 0 };
-    const waterMesh = { positions: [], colors: [], lights: [], normals: [], uvs: [], materials: [], tiles: [], quadCount: 0 };
-    const innerRadius = CHUNK_RENDER_RADIUS * CHUNK_SIZE + step;
-    for (let z = 0; z < columns - 1; z += 1) {
-      for (let x = 0; x < columns - 1; x += 1) {
-        // Keep render positions in the signed browser coordinate system. The
-        // Bend request uses the encoded Nat coordinate separately.
-        const globalX = minX + x * step;
-        const globalZ = minZ + z * step;
-        const centerDistance = Math.hypot(globalX + step / 2 - player.x, globalZ + step / 2 - player.z);
-        if (centerDistance <= innerRadius) continue;
-        const encodedSurface = Number(surfaces[x + columns * z]);
-        const isWater = encodedSurface >= 32;
-        const height = isWater ? encodedSurface - 32 : encodedSurface;
-        const corners = [
-          [globalX, height, globalZ],
-          [globalX + step, height, globalZ],
-          [globalX + step, height, globalZ + step],
-          [globalX, height, globalZ + step],
-        ];
-        const tile = isWater ? 7 : 3;
-        const color = faceColorGrade(0, globalX, globalZ);
-        const uv = atlasUV(blockFaceTileAt(tile, 0, globalX, globalZ));
-        const tileRect = [uv[0], uv[1], uv[4], uv[5]];
-        const localUv = [[0, 0], [step, 0], [step, step], [0, step]];
-        const target = isWater ? waterMesh : opaque;
-        for (const cornerIndex of [0, 1, 2, 0, 2, 3]) {
-          const corner = corners[cornerIndex];
-          target.positions.push(corner[0], corner[1], corner[2]);
-          target.colors.push(color[0], color[1], color[2]);
-          // The horizon skirt is a flat top surface far outside the shadow
-          // cascade: unoccluded, fully lit, facing straight up.
-          target.lights.push(1, 1);
-          target.normals.push(0, 1, 0);
-          target.uvs.push(localUv[cornerIndex][0], localUv[cornerIndex][1]);
-          target.tiles.push(...tileRect);
-          if (isWater) target.materials.push(1);
-          else target.materials.push(10 + tile);
+  // Distant terrain: a quadtree of cached LOD tiles generated by its own worker
+  // from the Bend `Horizon.lod_points` sampler (see web/lod-terrain.js).
+  let lodWorker = null;
+  let lodWorkerFailures = 0;
+  const lodTerrain = createLodTerrain({
+    chunkSize: CHUNK_SIZE,
+    requestTile: (job) => {
+      lodWorker?.postMessage({
+        type: "lodTile",
+        ...job,
+        seed: SEED,
+        chunkSize: CHUNK_SIZE,
+        waterSurface: asNumber(World.sea_level()) + 1,
+      });
+    },
+  });
+  if (LOD_DISTANCE > 0) {
+    try {
+      lodWorker = new Worker("/lod-worker.js", { type: "module" });
+      lodWorker.onmessage = (event) => {
+        const message = event.data;
+        if (message?.type !== "lodTile") return;
+        if (message.error !== undefined) {
+          lodWorkerFailures += 1;
+          lodTerrain.fail(message.id);
+          console.warn(`LOD tile failed: ${message.error}`);
+          return;
         }
-        target.quadCount += 1;
-      }
+        if (lodTerrain.receive(message.id, message.sections)) streamingMeshScheduler?.request();
+      };
+      lodWorker.onerror = (event) => {
+        // Distant terrain is optional: without its worker the game keeps
+        // running on the streamed chunks alone.
+        lodWorkerFailures += 1;
+        console.warn(`LOD worker unavailable: ${event.message ?? "error"}`);
+        lodWorker = null;
+        lodTerrain.configure({ renderDistance: CHUNK_RENDER_RADIUS, lodDistance: 0 });
+      };
+    } catch (error) {
+      lodWorker = null;
     }
-    horizonMesh = { opaque, water: waterMesh };
+  }
+  lodTerrain.configure({ renderDistance: CHUNK_RENDER_RADIUS, lodDistance: lodWorker === null ? 0 : LOD_DISTANCE });
+
+  // Returns true when the drawn LOD set changed and needs a publication.
+  function rebuildHorizon() {
+    return lodTerrain.update(player.x, player.z);
+  }
+
+  // The LOD sections to publish next to the real chunks. A real chunk that is
+  // drawn hides its stand-in, which reappears if the chunk is unloaded.
+  function horizonSections(realChunks) {
+    return lodTerrain.sections(new Set(realChunks.map((chunk) => String(chunk.key))));
   }
 
   function rotatePartPoint(x, y, z, part) {
@@ -1498,56 +1498,18 @@ try {
     }
   }
 
-  function patchHiddenTerrainGpu(terrain) {
-    if (gpuRenderer !== null) return false;
-    if (hiddenTerrainBlocks.size === 0 || terrain.vertexData === null) return false;
-    const hidden = [...hiddenTerrainBlocks].map((key) => key.split(",").map(Number));
-    if (!canPatchHiddenTerrain(terrain.quads, hidden)) return false;
-    const containsHiddenCell = (quad) => hidden.some(([x, y, z]) => quadContainsCell(quad, x, y, z));
-    let opaqueVertex = 0;
-    let waterVertex = 0;
-    let patched = false;
-    for (const quad of terrain.quads) {
-      const water = quad.block === 7 || quad.block === 21 || quad.block === 24;
-      const vertexOffset = (quad.block === 7 || quad.block === 21 || quad.block === 24)
-        ? waterVertex
-        : opaqueVertex;
-      const shouldHide = containsHiddenCell(quad);
-      if (shouldHide) {
-        const positions = new Float32Array(18);
-        for (let vertex = 0; vertex < 6; vertex += 1) {
-          positions[vertex * 3 + 1] = -10000;
-        }
-        gl.bindBuffer(gl.ARRAY_BUFFER, water ? waterPositionBuffer : positionBuffer);
-        gl.bufferSubData(gl.ARRAY_BUFFER, vertexOffset * 12, positions);
-        patched = true;
-      }
-      if (water) waterVertex += 6;
-      else opaqueVertex += 6;
-    }
-    return patched;
-  }
-
-  function rebuildMesh(merge = true) {
-    if (terrainImmediateDirty) {
-      terrainMeshCache.rebuildDirty();
-      if (patchHiddenTerrainGpu(terrainMeshCache.snapshot(merge))) {
-        terrainImmediateDirty = false;
-        return;
-      }
-      terrainImmediateDirty = false;
-    }
+  function rebuildMesh() {
+    terrainImmediateDirty = false;
     terrainMeshCache.rebuildDirty();
-    if (!shouldPublishMeshSnapshot(rendererKind, terrainMeshCache.pending)) return;
-    const terrain = terrainMeshCache.snapshot(merge);
+    const terrain = terrainMeshCache.snapshot(false);
     if (terrain.chunks.some((chunk) => chunk.key === spawnChunkKey)) spawnMeshReady = true;
     if (!terrainMeshCache.pending && hiddenTerrainBlocks.size > 0) hiddenTerrainBlocks.clear();
     blockCount = terrain.blockCount;
+    const chunks = [
+      ...(terrain.chunks ?? []),
+      ...horizonSections(terrain.chunks ?? []),
+    ];
     if (gpuRenderer !== null) {
-      const chunks = [
-        ...(terrain.chunks ?? []),
-        { key: "horizon", vertexData: horizonMesh },
-      ];
       // An edit keeps the resident set and only replaces the chunks whose
       // vertex data changed; streaming changes retire buffers and resync.
       lastGpuChunkUpdate = gpuRenderer.updateChunks(chunks);
@@ -1563,147 +1525,18 @@ try {
       );
       return;
     }
-    let positions;
-    let colors;
-    let lights;
-    let normals;
-    let uvs;
-    let terrainMaterials;
-    let tiles;
-    let waterPositions;
-    let waterColors;
-    let waterLights;
-    let waterNormals;
-    let waterUvs;
-    let waterMaterials;
-    let waterTiles;
-
-    if (terrain.vertexData !== null) {
-      const opaque = terrain.vertexData.opaque;
-      const water = terrain.vertexData.water;
-      positions = concatFloat32Arrays(opaque.positions, horizonMesh.opaque.positions);
-      colors = concatFloat32Arrays(opaque.colors, horizonMesh.opaque.colors);
-      lights = concatFloat32Arrays(opaque.lights, horizonMesh.opaque.lights);
-      normals = concatFloat32Arrays(opaque.normals, horizonMesh.opaque.normals);
-      uvs = concatFloat32Arrays(opaque.uvs, horizonMesh.opaque.uvs);
-      terrainMaterials = concatFloat32Arrays(opaque.materials, horizonMesh.opaque.materials);
-      tiles = concatFloat32Arrays(opaque.tiles, horizonMesh.opaque.tiles);
-      waterPositions = concatFloat32Arrays(water.positions, horizonMesh.water.positions);
-      waterColors = concatFloat32Arrays(water.colors, horizonMesh.water.colors);
-      waterLights = concatFloat32Arrays(water.lights, horizonMesh.water.lights);
-      waterNormals = concatFloat32Arrays(water.normals, horizonMesh.water.normals);
-      waterUvs = concatFloat32Arrays(water.uvs, horizonMesh.water.uvs);
-      waterMaterials = concatFloat32Arrays(water.materials, horizonMesh.water.materials);
-      waterTiles = concatFloat32Arrays(water.tiles, horizonMesh.water.tiles);
-      terrainQuadCount = opaque.quadCount + horizonMesh.opaque.quadCount;
-      waterQuadCount = water.quadCount + horizonMesh.water.quadCount;
-    } else {
-      const positionValues = [];
-      const colorValues = [];
-      const lightValues = [];
-      const normalValues = [];
-      const uvValues = [];
-      const terrainMaterialValues = [];
-      const tileValues = [];
-      const waterPositionValues = [];
-      const waterColorValues = [];
-      const waterLightValues = [];
-      const waterNormalValues = [];
-      const waterUvValues = [];
-      const waterMaterialValues = [];
-      const waterTileValues = [];
-      terrainQuadCount = 0;
-      waterQuadCount = 0;
-      for (const quad of terrain.quads) {
-        if (quad.block === 7 || quad.block === 21 || quad.block === 24) {
-          appendTexturedQuad(
-            waterPositionValues, waterColorValues, waterLightValues, waterNormalValues,
-            waterUvValues, quad, waterMaterialValues, waterTileValues,
-          );
-          waterQuadCount += 1;
-        } else {
-          appendTexturedQuad(
-            positionValues, colorValues, lightValues, normalValues,
-            uvValues, quad, terrainMaterialValues, tileValues,
-          );
-          terrainQuadCount += 1;
-        }
-      }
-      positionValues.push(...horizonMesh.opaque.positions);
-      colorValues.push(...horizonMesh.opaque.colors);
-      lightValues.push(...horizonMesh.opaque.lights);
-      normalValues.push(...horizonMesh.opaque.normals);
-      uvValues.push(...horizonMesh.opaque.uvs);
-      terrainMaterialValues.push(...horizonMesh.opaque.materials);
-      tileValues.push(...horizonMesh.opaque.tiles);
-      terrainQuadCount += horizonMesh.opaque.quadCount;
-      waterPositionValues.push(...horizonMesh.water.positions);
-      waterColorValues.push(...horizonMesh.water.colors);
-      waterLightValues.push(...horizonMesh.water.lights);
-      waterNormalValues.push(...horizonMesh.water.normals);
-      waterUvValues.push(...horizonMesh.water.uvs);
-      waterMaterialValues.push(...horizonMesh.water.materials);
-      waterTileValues.push(...horizonMesh.water.tiles);
-      waterQuadCount += horizonMesh.water.quadCount;
-      positions = new Float32Array(positionValues);
-      colors = new Float32Array(colorValues);
-      lights = new Float32Array(lightValues);
-      normals = new Float32Array(normalValues);
-      uvs = new Float32Array(uvValues);
-      terrainMaterials = new Float32Array(terrainMaterialValues);
-      tiles = new Float32Array(tileValues);
-      waterPositions = new Float32Array(waterPositionValues);
-      waterColors = new Float32Array(waterColorValues);
-      waterLights = new Float32Array(waterLightValues);
-      waterNormals = new Float32Array(waterNormalValues);
-      waterUvs = new Float32Array(waterUvValues);
-      waterMaterials = new Float32Array(waterMaterialValues);
-      waterTiles = new Float32Array(waterTileValues);
-    }
-    terrainVertexCount = positions.length / 3;
-    waterVertexCount = waterPositions.length / 3;
-    if (typeof window !== "undefined" && !window.__meshLogged) {
-      window.__meshLogged = true;
-      console.log(JSON.stringify({
-        uvHead: uvs.slice(0, 24),
-        colorHead: colors.slice(0, 24),
-        posHead: positions.slice(0, 18),
-      }));
-    }
-    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, positions, gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, colors, gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, terrainLightBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, lights, gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, terrainNormalBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, normals, gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, terrainMaterialBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, terrainMaterials, gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, tileBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, tiles, gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, waterPositionBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, waterPositions, gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, waterColorBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, waterColors, gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, waterLightBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, waterLights, gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, waterNormalBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, waterNormals, gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, waterUvBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, waterUvs, gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, waterMaterialBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, waterMaterials, gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, waterTileBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, waterTiles, gl.DYNAMIC_DRAW);
+    lastGpuChunkUpdate = glChunkBuffers.update(chunks);
+    const totals = glChunkBuffers.totals();
+    terrainQuadCount = totals.opaqueQuads;
+    waterQuadCount = totals.waterQuads;
+    terrainVertexCount = totals.opaqueVertices;
+    waterVertexCount = totals.waterVertices;
   }
 
   streamingMeshScheduler = createMeshRebuildScheduler(
     () => {
       rebuildHorizon();
-      rebuildMesh(false);
+      rebuildMesh();
     },
     (callback) => window.setTimeout(() => window.requestAnimationFrame(callback), 100),
   );
@@ -1734,9 +1567,9 @@ try {
   world.loadAround(spawnCell[0], spawnCell[1], undefined, 9);
   terrainMeshCache = createAsyncChunkMeshCache(world, requestMeshBuild, null, {
     maxTargetsPerJob: MESH_TARGET_BATCH_SIZE,
-    // The WebGPU backend uploads one buffer per chunk and never reads the
-    // merged snapshot, so the worker must not compose one on every edit.
-    perChunkOnly: rendererKind === "webgpu",
+    // Both backends upload one buffer per chunk and never read a merged
+    // snapshot, so the worker must not compose one on every edit.
+    perChunkOnly: true,
   });
   const inventory = createInventory();
   if (Array.isArray(savedGame?.inventory) && savedGame.inventory.length === inventory.length) {
@@ -2614,18 +2447,12 @@ try {
     audio.play(Number(kind) === 2 || Number(kind) === 4 ? "groan" : "oink");
   }
 
-  function attackMob(target, damage, selectedId) {
-    if (mobDomainState === null) return false;
-    const result = Entities.attack(mobDomainState, BigInt(target.id), damage, player.x, player.y, player.z, MELEE_ATTACK_RANGE, dropDomainState);
-    if (!result.hit) return false;
-    audio.play("pop");
-    playMobHurtSound(target.kind);
-    // The spark lands on the body that was hit, at chest height, so it reads as
-    // contact rather than as a burst in the middle of the screen.
-    emitImpact(vfx, target.x, target.y + 0.9, target.z, HIT_SPARK_TINT, 6);
-    if (["wooden_sword", "stone_sword", "iron_sword", "diamond_sword"].includes(selectedId)) {
-      useTool(inventory, selectedSlot);
-    }
+  // The single owner of everything a confirmed hit does to shared state. The
+  // melee and arrow paths used to carry their own copy of this tail and had
+  // already drifted: the bounded mobFlash prune only ran for melee, so a player
+  // who only shot arrows grew the map for every mob ever hit, without limit.
+  // `slainLabel` and `hitLabel` are the only part that legitimately differs.
+  function applyMobHit(result, target, slainLabel, hitLabel) {
     mobDomainState = result.mobs;
     mobs = mobViews(mobDomainState);
     dropDomainState = result.drops;
@@ -2633,11 +2460,12 @@ try {
     const slain = mobs.find((mob) => String(mob.id) === String(target.id));
     if (slain !== undefined && !slain.alive) {
       killCount += 1;
+      const xp = Number(Experience.xp_for_kind(Number(target.kind ?? 2)));
       xpState = Experience.award(xpState, Number(target.kind ?? 2));
       emitDeathPuff(vfx, target.x, target.y, target.z, mobPuffTint(target.kind), 16);
-      setInventoryMessage(`Mob slain (+${Number(Experience.xp_for_kind(Number(target.kind ?? 2)))} XP).`);
+      setInventoryMessage(`${slainLabel} (+${xp} XP).`);
     } else {
-      setInventoryMessage("Mob hit.");
+      setInventoryMessage(hitLabel);
     }
     mobFlash.set(target.id, worldTime);
     if (mobFlash.size > 64) {
@@ -2657,6 +2485,21 @@ try {
     refreshInventoryUi();
     rebuildDynamicMesh(worldTime);
     return true;
+  }
+
+  function attackMob(target, damage, selectedId) {
+    if (mobDomainState === null) return false;
+    const result = Entities.attack(mobDomainState, BigInt(target.id), damage, player.x, player.y, player.z, MELEE_ATTACK_RANGE, dropDomainState);
+    if (!result.hit) return false;
+    audio.play("pop");
+    playMobHurtSound(target.kind);
+    // The spark lands on the body that was hit, at chest height, so it reads as
+    // contact rather than as a burst in the middle of the screen.
+    emitImpact(vfx, target.x, target.y + 0.9, target.z, HIT_SPARK_TINT, 6);
+    if (["wooden_sword", "stone_sword", "iron_sword", "diamond_sword"].includes(selectedId)) {
+      useTool(inventory, selectedSlot);
+    }
+    return applyMobHit(result, target, "Mob slain", "Mob hit.");
   }
 
   function aimedMob(maxDistance = 4) {
@@ -2755,31 +2598,7 @@ try {
     // An arrow used to land with no effect at all: the mob flashed for a third
     // of a second and nothing marked where the shot went.
     emitImpact(vfx, target.x, target.y + 0.9, target.z, HIT_SPARK_TINT, 7);
-    mobDomainState = result.mobs;
-    mobs = mobViews(mobDomainState);
-    dropDomainState = result.drops;
-    drops = dropViews(dropDomainState);
-    const slain = mobs.find((mob) => String(mob.id) === String(target.id));
-    if (slain !== undefined && !slain.alive) {
-      killCount += 1;
-      xpState = Experience.award(xpState, Number(target.kind ?? 2));
-      emitDeathPuff(vfx, target.x, target.y, target.z, mobPuffTint(target.kind), 16);
-      setInventoryMessage(`Mob shot (+${Number(Experience.xp_for_kind(Number(target.kind ?? 2)))} XP).`);
-    } else {
-      setInventoryMessage("Arrow hit.");
-    }
-    mobFlash.set(target.id, worldTime);
-    crosshairEl?.animate(
-      [
-        { transform: "translate(-50%, -50%) scale(1)" },
-        { transform: "translate(-50%, -50%) scale(1.8)" },
-        { transform: "translate(-50%, -50%) scale(1)" },
-      ],
-      { duration: 180 },
-    );
-    refreshInventoryUi();
-    rebuildDynamicMesh(worldTime);
-    return true;
+    return applyMobHit(result, target, "Mob shot", "Arrow hit.");
   }
 
   function collectNearbyDrops() {
@@ -4045,8 +3864,12 @@ try {
       meshRebuilds: terrainMeshCache.rebuildCount,
       meshRebuildRequests: streamingMeshScheduler?.requestCount ?? 0,
       meshRebuildRuns: streamingMeshScheduler?.runCount ?? 0,
-      meshRebuildPending: (streamingMeshScheduler?.pending ?? false) || (terrainMeshCache?.pending ?? false),
+      // Distant terrain still generating counts as pending: until its tiles
+      // land the far view changes from one frame to the next.
+      meshRebuildPending: (streamingMeshScheduler?.pending ?? false) || (terrainMeshCache?.pending ?? false)
+        || lodTerrain.stats().inFlight > 0 || lodTerrain.stats().missingTiles > 0,
       lastGpuChunkUpdate,
+      lod: { ...lodTerrain.stats(), workerFailures: lodWorkerFailures },
       meshWorkerRequests: meshWorkerRequestCount,
       meshWorkerResponses: meshWorkerResponseCount,
       meshWorkerRejects: meshWorkerRejectCount,
@@ -4288,16 +4111,24 @@ try {
 
     gl.uniform1f(surfacePassLocation, 0);
     gl.uniform1f(shadowPassLocation, 0);
-    bindTerrainAttributes({
-      position: positionBuffer,
-      color: colorBuffer,
-      light: terrainLightBuffer,
-      normal: terrainNormalBuffer,
-      uv: uvBuffer,
-      material: terrainMaterialBuffer,
-      tile: tileBuffer,
-    }, true);
-    gl.drawArrays(gl.TRIANGLES, 0, terrainVertexCount);
+    // One draw per chunk that survives the frustum test. The water pass below
+    // reuses the same selection.
+    const terrainSelection = glChunkBuffers.select(extractClipPlanes(viewProjectionMatrix));
+    glSubmit = terrainSelection.metrics;
+    const terrainLocations = {
+      position: positionLocation,
+      color: colorLocation,
+      light: lightLocation,
+      normal: normalLocation,
+      uv: uvLocation,
+      material: materialLocation,
+      tile: tileLocation,
+    };
+    for (const chunk of terrainSelection.visible) {
+      if (chunk.opaque === null) continue;
+      bindInterleavedTerrain(gl, chunk.opaque, terrainLocations);
+      gl.drawArrays(gl.TRIANGLES, 0, chunk.opaqueVertices);
+    }
 
     // The sky only needs to shade untouched depth. Drawing it after opaque
     // terrain avoids running the cloud march for pixels the world already covers.
@@ -4333,16 +4164,11 @@ try {
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       gl.depthMask(false);
       gl.uniform1f(surfacePassLocation, 1);
-      bindTerrainAttributes({
-        position: waterPositionBuffer,
-        color: waterColorBuffer,
-        light: waterLightBuffer,
-        normal: waterNormalBuffer,
-        uv: waterUvBuffer,
-        material: waterMaterialBuffer,
-        tile: waterTileBuffer,
-      }, true);
-      gl.drawArrays(gl.TRIANGLES, 0, waterVertexCount);
+      for (const chunk of terrainSelection.visible) {
+        if (chunk.water === null) continue;
+        bindInterleavedTerrain(gl, chunk.water, terrainLocations);
+        gl.drawArrays(gl.TRIANGLES, 0, chunk.waterVertices);
+      }
       gl.depthMask(true);
       gl.disable(gl.BLEND);
     }
@@ -4499,15 +4325,20 @@ try {
     const depthProgram = shadowPass.begin();
     gl.uniformMatrix4fv(depthProgram.lightViewProjection, false, lightViewProjection);
     gl.uniform1f(depthProgram.time, shaderTimeValue);
-    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
-    gl.drawArrays(gl.TRIANGLES, 0, terrainVertexCount);
-    if (waterVertexCount > 0) {
-      gl.bindBuffer(gl.ARRAY_BUFFER, waterPositionBuffer);
-      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
-      gl.drawArrays(gl.TRIANGLES, 0, waterVertexCount);
+    // Only chunks inside the sun's cascade can cast into it.
+    const casters = glChunkBuffers.select(extractClipPlanes(lightViewProjection)).visible;
+    for (const chunk of casters) {
+      if (chunk.lod) continue;
+      if (chunk.opaque !== null) {
+        bindInterleavedPositions(gl, chunk.opaque, 0);
+        gl.drawArrays(gl.TRIANGLES, 0, chunk.opaqueVertices);
+      }
+      if (chunk.water !== null) {
+        bindInterleavedPositions(gl, chunk.water, 0);
+        gl.drawArrays(gl.TRIANGLES, 0, chunk.waterVertices);
+      }
     }
+    gl.enableVertexAttribArray(0);
     if (dynamicVertexCount > 0) {
       gl.bindBuffer(gl.ARRAY_BUFFER, dynamicPositionBuffer);
       gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
@@ -5022,7 +4853,9 @@ try {
       const mesh = terrainMeshCache.snapshot();
       return {
         blockCount: mesh.blockCount,
-        quadCount: mesh.quads.length,
+        // Per-chunk publication keeps no merged quad list; report the uploaded
+        // terrain faces instead (distant LOD sections included).
+        quadCount: terrainQuadCount + waterQuadCount,
         rebuildCount: mesh.rebuildCount,
         dirtyChunks: mesh.dirtyChunks,
         sample: mesh.quads
@@ -5160,26 +4993,13 @@ try {
     hurt: (amount) => applyDamage(player, amount),
     glBufferSizes: () => {
       if (gpuRenderer !== null) return gpuRenderer.getStats();
-      const sizes = {};
-      for (const [name, buffer] of [
-        ["position", positionBuffer],
-        ["color", colorBuffer],
-        ["uv", uvBuffer],
-        ["waterPosition", waterPositionBuffer],
-        ["waterColor", waterColorBuffer],
-        ["waterUv", waterUvBuffer],
-      ]) {
-        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-        sizes[name] = gl.getBufferParameter(gl.ARRAY_BUFFER, gl.BUFFER_SIZE);
-      }
       return {
-        ...sizes,
+        ...glChunkBuffers.stats(),
+        ...(glSubmit ?? {}),
         terrainVertexCount,
         waterVertexCount,
         dynamicVertexCount,
-        positionNull: positionBuffer === null,
-        colorNull: colorBuffer === null,
-        uvNull: uvBuffer === null,
+        positionNull: glChunkBuffers === null,
       };
     },
     toggleInventory,
@@ -5459,6 +5279,8 @@ try {
       if (world.loadAround(player.x, player.z).changed) {
         rebuildHorizon();
         rebuildMesh(false);
+      } else if (rebuildHorizon()) {
+        streamingMeshScheduler?.request();
       }
       if (simulationTerrainDirty) {
         simulationTerrainDirty = false;

@@ -24,6 +24,9 @@ import {
   validateWorldConfig,
   WORLD_MODES,
   worldModeLabel,
+  DEFAULT_LOD_DISTANCE,
+  LOD_DISTANCE_CHOICES,
+  normalizeLodDistance,
 } from "../web/settings.js";
 import { VISUAL_QUALITY_TIERS } from "../web/visual-quality.js";
 
@@ -35,9 +38,15 @@ function memoryStore(entries = {}) {
   };
 }
 
-assert.equal(DEFAULT_RENDER_DISTANCE, 2);
+assert.equal(DEFAULT_RENDER_DISTANCE, 4);
 assert.equal(MIN_RENDER_DISTANCE, 2);
-assert.equal(MAX_RENDER_DISTANCE, 6);
+assert.equal(MAX_RENDER_DISTANCE, 8);
+assert.equal(DEFAULT_LOD_DISTANCE, 512);
+assert.deepEqual(LOD_DISTANCE_CHOICES, [0, 256, 512, 1024, 2048]);
+assert.equal(sanitizeOptions({ lodDistance: 0 }).lodDistance, 0, "distant terrain can be turned off");
+assert.equal(sanitizeOptions({ lodDistance: 2048 }).lodDistance, 2048);
+assert.equal(sanitizeOptions({ lodDistance: 700 }).lodDistance, DEFAULT_LOD_DISTANCE);
+assert.equal(normalizeLodDistance("1024"), 1024);
 assert.equal(DEFAULT_RENDERER, RENDERER_MODES.WEBGL);
 assert.equal(runtimeRendererMode(RENDERER_MODES.AUTO), RENDERER_MODES.WEBGL);
 assert.equal(runtimeRendererMode(RENDERER_MODES.WEBGPU), RENDERER_MODES.WEBGPU);
@@ -46,7 +55,8 @@ assert.deepEqual(createDefaultOptions(), {
   fov: 75,
   sensitivity: 1,
   showCoords: true,
-  renderDistance: 2,
+  renderDistance: 4,
+  lodDistance: 512,
   renderer: "webgl",
   graphicsQuality: "auto",
   volumeMaster: 0.7,
@@ -58,7 +68,8 @@ assert.deepEqual(sanitizeOptions({ fov: 200, sensitivity: -1, renderDistance: 99
   fov: 110,
   sensitivity: 0.5,
   showCoords: true,
-  renderDistance: 6,
+  renderDistance: 8,
+  lodDistance: 512,
   renderer: "webgl",
   graphicsQuality: "auto",
   volumeMaster: 0.7,
@@ -94,7 +105,8 @@ assert.deepEqual(loadOptions(memoryStore({ "bend2craft-options": "{\"fov\":90}" 
   fov: 90,
   sensitivity: 1,
   showCoords: true,
-  renderDistance: 2,
+  renderDistance: 4,
+  lodDistance: 512,
   renderer: "webgl",
   graphicsQuality: "auto",
   volumeMaster: 0.7,
@@ -118,6 +130,7 @@ assert.deepEqual(loadOptions(store), {
   sensitivity: 2,
   showCoords: false,
   renderDistance: 6,
+  lodDistance: 512,
   renderer: "webgpu",
   graphicsQuality: "auto",
   volumeMaster: 0.7,

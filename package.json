@@ -14,6 +14,7 @@
     "bench:fluid-reaction": "bash scripts/run-bun.sh benchmarks/fluid-reaction.mjs",
     "bench:fire": "bash scripts/run-bun.sh benchmarks/fire-step.mjs",
     "bench:chunks": "bash scripts/run-bun.sh benchmarks/chunk-generation.mjs",
+    "bench:lod": "bash scripts/run-bun.sh benchmarks/lod-tiles.mjs",
     "bench:chunk-culling": "bash scripts/run-bun.sh benchmarks/chunk-culling.mjs",
     "bench:chunk-edit": "bash scripts/run-bun.sh benchmarks/chunk-edit.mjs",
     "bench:render-distance": "bash scripts/run-bun.sh benchmarks/render-distance.mjs",

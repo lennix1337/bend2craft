@@ -22,3 +22,4 @@ async function buildWorker(entrypoint, filename, plugins = []) {
 
 await buildWorker("web/chunk-worker-entry.js", "chunk-worker.js", [bendPlugin]);
 await buildWorker("web/mesh-worker-entry.js", "mesh-worker.js");
+await buildWorker("web/lod-worker-entry.js", "lod-worker.js", [bendPlugin]);

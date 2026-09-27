@@ -21,6 +21,8 @@ Status markers:
 - [x] Per-chunk frustum culling on the WebGPU terrain path, reporting visible chunks, culled chunks, draw calls and submitted vertex bytes.
 - [x] A block edit re-uploads only the edited chunk instead of composing a whole-world vertex array on the per-chunk backend.
 - [x] Padded atlas with a per-tile gutter, and mipmaps enabled only after a Foreign Tile Contamination probe passes against the real GPU mip chain.
+- [x] High-definition procedural materials: 128-texel tiles painted per material (stones, blades, bark fissures, faceted ores, planks, bricks) in a 2048x2048 atlas certified through mip level 6, with the atlas composed in memory instead of self-copying the canvas.
+- [ ] Item icons for placeable blocks drawn from the high-definition atlas instead of the 16px pixel pass.
 - [x] Material response split into albedo, lighting and material stages with parity between the WebGL and WGSL sources, plus water depth tinting carried in the material band.
 - [x] The WebGPU gate reads a real presented frame back out of the swap chain and probes the scene; an unavailable backend is marked skipped with an explicit diagnostic.
 
@@ -43,7 +45,17 @@ Status markers:
 
 ## P0 — world and performance
 
-- [x] Chunk streaming keeps desired/active/pending state separate and supports render distances 2–6.
+- [x] Chunk streaming keeps desired/active/pending state separate and supports render distances 2–8 (default 4).
+- [x] Terrain chunk generation runs through a U32 core with per-column precomputation, byte-identical to the original Nat rules (`tests/world-chunk-golden.test.mjs`); `bench:chunks` dropped from ~475 ms to ~4 ms per chunk.
+- [x] Chunk light is filled column by column with chunk-local edits, pre-binned torch fields and lazy source floods; the chunk worker caches each source's flood.
+- [x] Chunk and mesh workers transfer typed arrays instead of structured-cloning them, and per-chunk mesh jobs no longer ship every resident mesh to the worker.
+- [x] WebGL keeps one interleaved buffer per chunk with frustum culling (view and sun cascade) instead of a whole-world array re-uploaded on every change; edits publish as soon as their chunk is rebuilt.
+- [x] 24-bit depth texture for the HDR scene where available.
+- [x] Distant terrain (Distant Horizons style): quadtree LOD rings of cached tiles from the Bend `Horizon.lod_points` sampler on a dedicated worker, per-chunk stand-ins in the nearest ring, skirts between rings, Off/256/512/1024/2048-block option.
+- [ ] Torch floods (`world/lightflood.bend`) still use list-based BFS with O(n²) visited and wall scans (~50 ms per source); an array-backed flood would make torch placement and first-time chunk light cheap.
+- [ ] Village structure cells still run through the Nat `Structures.block` path (~20 ms for a village chunk versus ~4 ms elsewhere).
+- [ ] Negative coordinates are generated from a remapped region (`GENERATION_CHUNK_OFFSET + |chunk|`), so the terrain has a visible seam along x = 0 and z = 0. Fixing it needs a continuous signed mapping plus a save migration for stored edit coordinates.
+- [ ] LOD tiles are generated from the pure world generator, so player edits outside the streamed window are not reflected in the distant rings.
 - [x] Edited blocks, entities and simulation state are persisted in the seed-scoped save.
 - [ ] Fix the WebGPU atlas mip generator, then enable the chain. WebGPU has no `generateMipmap`, so each level is written by hand. The current implementation renders each level while sampling the same texture, which WebGPU forbids, so the levels stay zero-initialized and the chain misses the box-filter reference by a max delta of 255. The gate detects this and refuses the chain, so WebGPU currently samples the base level with linear minification. The ping-pong version through a scratch texture is in place; the remaining work is making the downsample match `atlasBoxDownsample`. Measured cost of shipping the broken chain: mean per-pixel delta against WebGL rises from 1.43 to 41.77, with 76% of pixels differing by more than 8.
 - [~] Larger `max_y`: the current world remains at `20`; benchmark and decide a larger height without regressing browser frame time.

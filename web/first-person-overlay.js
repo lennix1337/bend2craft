@@ -1,5 +1,5 @@
 import { drawItemTexture, itemTexture } from "./item-atlas.js";
-import { ATLAS_COLUMNS, blockFaceTile } from "./texture-atlas.js";
+import { ATLAS_TILE_GUTTER, ATLAS_TILE_SIZE, atlasCellOrigin, blockFaceTile } from "./texture-atlas.js";
 import { cameraMotion } from "./visual-motion.js";
 
 export const FIRST_PERSON_OVERLAY_SIZE = 192;
@@ -64,18 +64,30 @@ function drawArm(context) {
   context.fillRect(7, 28, 13, 18);
 }
 
+// The atlas is padded: each tile sits inside its own cell, offset by the
+// gutter, so the source rectangle is the cell's interior at the atlas tile size.
 function drawAtlasTile(context, atlasCanvas, tile, size) {
-  const columns = ATLAS_COLUMNS;
-  const sourceSize = 16;
-  const sourceX = (tile % columns) * sourceSize;
-  const sourceY = Math.floor(tile / columns) * sourceSize;
-  context.drawImage(atlasCanvas, sourceX, sourceY, sourceSize, sourceSize, 0, 0, size, size);
+  const origin = atlasCellOrigin(tile);
+  context.drawImage(
+    atlasCanvas,
+    origin.x + ATLAS_TILE_GUTTER,
+    origin.y + ATLAS_TILE_GUTTER,
+    ATLAS_TILE_SIZE,
+    ATLAS_TILE_SIZE,
+    0,
+    0,
+    size,
+    size,
+  );
 }
 
 function drawBlock(context, atlasCanvas, tile) {
   context.save();
   context.translate(4, -18);
-  context.imageSmoothingEnabled = false;
+  // A 128-texel tile lands on a face roughly thirty pixels across, so it is
+  // filtered down; nearest sampling would alias it into speckle.
+  context.imageSmoothingEnabled = true;
+  if ("imageSmoothingQuality" in context) context.imageSmoothingQuality = "high";
 
   context.save();
   context.transform(1.75, -0.85, 1.75, 0.85, -28, -14);

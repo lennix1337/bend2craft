@@ -1,8 +1,9 @@
 // Menu options and world creation settings.
 // Pure and dependency-free; persistence is injected by the caller so the
 // rules stay testable without a browser. Only options the game implements
-// are exposed: field of view, mouse sensitivity, render distance, the
-// coordinates readout, the renderer backend and the graphics quality tier.
+// are exposed: field of view, mouse sensitivity, render distance, distant
+// terrain, the coordinates readout, the renderer backend and the graphics
+// quality tier.
 import { normalizeRendererMode, RENDERER_MODES } from "./webgpu-capabilities.js";
 import { VISUAL_QUALITY_TIERS } from "./visual-quality.js";
 
@@ -48,8 +49,18 @@ export const MAX_FOV = 110;
 export const MIN_SENSITIVITY = 0.5;
 export const MAX_SENSITIVITY = 3;
 export const MIN_RENDER_DISTANCE = 2;
-export const MAX_RENDER_DISTANCE = 6;
-export const DEFAULT_RENDER_DISTANCE = 2;
+// Chunk generation runs through the U32 terrain core and the renderers keep one
+// buffer per chunk, so a wider window no longer costs a whole-world rebuild.
+export const MAX_RENDER_DISTANCE = 8;
+export const DEFAULT_RENDER_DISTANCE = 4;
+// Distant terrain (LOD rings past the streamed chunks), in blocks. 0 turns it off.
+export const LOD_DISTANCE_CHOICES = Object.freeze([0, 256, 512, 1024, 2048]);
+export const DEFAULT_LOD_DISTANCE = 512;
+
+export function normalizeLodDistance(value) {
+  const parsed = Number(value);
+  return LOD_DISTANCE_CHOICES.includes(parsed) ? parsed : DEFAULT_LOD_DISTANCE;
+}
 export const DEFAULT_RENDERER = RENDERER_MODES.WEBGL;
 export const DEFAULT_CONTROLS = Object.freeze({
   sneak: "ShiftLeft",
@@ -84,6 +95,7 @@ export function createDefaultOptions() {
     sensitivity: 1,
     showCoords: true,
     renderDistance: DEFAULT_RENDER_DISTANCE,
+    lodDistance: DEFAULT_LOD_DISTANCE,
     renderer: DEFAULT_RENDERER,
     graphicsQuality: DEFAULT_GRAPHICS_QUALITY,
     volumeMaster: DEFAULT_VOLUME_MASTER,
@@ -120,6 +132,7 @@ export function sanitizeOptions(raw = {}) {
     sensitivity: clampNumber(raw.sensitivity, MIN_SENSITIVITY, MAX_SENSITIVITY, fallback.sensitivity),
     showCoords: raw.showCoords === undefined ? fallback.showCoords : Boolean(raw.showCoords),
     renderDistance: clampInteger(raw.renderDistance, MIN_RENDER_DISTANCE, MAX_RENDER_DISTANCE, fallback.renderDistance),
+    lodDistance: raw.lodDistance === undefined ? fallback.lodDistance : normalizeLodDistance(raw.lodDistance),
     renderer: runtimeRendererMode(raw.renderer),
     graphicsQuality: normalizeGraphicsQuality(raw.graphicsQuality),
     volumeMaster: clampVolume(raw.volumeMaster, fallback.volumeMaster),

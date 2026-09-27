@@ -113,12 +113,12 @@ const TEXTURE_USAGE = {
   RENDER_ATTACHMENT: 0x0010,
 };
 const SHADER_STAGE = { VERTEX: 0x1, FRAGMENT: 0x2 };
-const FRAME_UNIFORM_BYTES = 224;
-// An rgba8 round trip through a box filter rounds by at most one step, so a
-// correct chain lands inside this; anything larger is a real generator bug.
-const MIP_CHAIN_TOLERANCE = 2;
-
-export const WEBGPU_TERRAIN_SHADER = `
+// The per-frame uniform, declared once and prepended to both pipelines. Terrain
+// and sky bind the same buffer at the same binding, so a field added to one copy
+// and not the other would leave the sky pass reading a different layout than the
+// terrain pass, with no error on either side. FRAME_UNIFORM_BYTES is asserted
+// against this struct in tests/webgpu-terrain-presentation.test.mjs.
+export const WGSL_FRAME_UNIFORMS = `
 struct Frame {
   viewProjection: mat4x4<f32>,
   camera: vec4<f32>,
@@ -134,6 +134,14 @@ struct Frame {
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
+`;
+// One mat4x4 (64 bytes) plus ten vec4<f32> (16 bytes each).
+export const FRAME_UNIFORM_BYTES = 224;
+// An rgba8 round trip through a box filter rounds by at most one step, so a
+// correct chain lands inside this; anything larger is a real generator bug.
+const MIP_CHAIN_TOLERANCE = 2;
+
+export const WEBGPU_TERRAIN_SHADER = `${WGSL_FRAME_UNIFORMS}
 @group(0) @binding(1) var atlasSampler: sampler;
 @group(0) @binding(2) var atlasTexture: texture_2d<f32>;
 @group(0) @binding(3) var cloudSampler: sampler;
@@ -317,22 +325,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 `;
 
-export const WEBGPU_SKY_SHADER = `
-struct Frame {
-  viewProjection: mat4x4<f32>,
-  camera: vec4<f32>,
-  skyColor: vec4<f32>,
-  params: vec4<f32>,
-  fog: vec4<f32>,
-  skyHorizon: vec4<f32>,
-  cameraRight: vec4<f32>,
-  cameraUp: vec4<f32>,
-  cameraForward: vec4<f32>,
-  sunDirection: vec4<f32>,
-  sunColor: vec4<f32>,
-};
-
-@group(0) @binding(0) var<uniform> frame: Frame;
+export const WEBGPU_SKY_SHADER = `${WGSL_FRAME_UNIFORMS}
 @group(0) @binding(3) var cloudSampler: sampler;
 @group(0) @binding(4) var cloudTexture: texture_2d<f32>;
 

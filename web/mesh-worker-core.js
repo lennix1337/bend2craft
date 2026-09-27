@@ -1,17 +1,9 @@
 import { buildGreedyQuads } from "./greedy-mesh.js";
 import { mergeChunkQuads } from "./mesh-merge.js";
+import { concatFloat32Arrays } from "./vertex-buffer-compose.js";
+import { buildTerrainVertexArrays } from "./terrain-vertex-builder.js";
+import { chunkIndex, chunkKey, forEachBlockInChunk } from "./chunk-world.js";
 export { mergeChunkQuads } from "./mesh-merge.js";
-
-function concatFloat32Arrays(values) {
-  const total = values.reduce((sum, value) => sum + value.length, 0);
-  const result = new Float32Array(total);
-  let offset = 0;
-  for (const value of values) {
-    result.set(value, offset);
-    offset += value.length;
-  }
-  return result;
-}
 
 function composeVertexData(meshes) {
   const opaque = [];
@@ -26,13 +18,13 @@ function composeVertexData(meshes) {
     waterQuadCount += vertexData.water.quadCount;
   }
   const composeLayer = (layers, quadCount) => ({
-    positions: concatFloat32Arrays(layers.map((layer) => layer.positions)),
-    colors: concatFloat32Arrays(layers.map((layer) => layer.colors)),
-    lights: concatFloat32Arrays(layers.map((layer) => layer.lights)),
-    normals: concatFloat32Arrays(layers.map((layer) => layer.normals)),
-    uvs: concatFloat32Arrays(layers.map((layer) => layer.uvs)),
-    materials: concatFloat32Arrays(layers.map((layer) => layer.materials)),
-    tiles: concatFloat32Arrays(layers.map((layer) => layer.tiles)),
+    positions: concatFloat32Arrays(...layers.map((layer) => layer.positions)),
+    colors: concatFloat32Arrays(...layers.map((layer) => layer.colors)),
+    lights: concatFloat32Arrays(...layers.map((layer) => layer.lights)),
+    normals: concatFloat32Arrays(...layers.map((layer) => layer.normals)),
+    uvs: concatFloat32Arrays(...layers.map((layer) => layer.uvs)),
+    materials: concatFloat32Arrays(...layers.map((layer) => layer.materials)),
+    tiles: concatFloat32Arrays(...layers.map((layer) => layer.tiles)),
     quadCount,
   });
   return {
@@ -40,12 +32,6 @@ function composeVertexData(meshes) {
     water: composeLayer(water, waterQuadCount),
   };
 }
-import { buildTerrainVertexArrays } from "./terrain-vertex-builder.js";
-
-function chunkKey(chunkX, chunkZ) {
-  return `${chunkX},${chunkZ}`;
-}
-
 export function buildChunkMeshes({
   chunkSize,
   maxY,
@@ -62,7 +48,7 @@ export function buildChunkMeshes({
 
   const active = new Set(activeKeys);
   const byKey = new Map(chunks.map((chunk) => [chunk.key ?? chunkKey(chunk.chunkX, chunk.chunkZ), chunk]));
-  const indexOf = (x, y, z) => x + chunkSize * (z + chunkSize * y);
+  const indexOf = (x, y, z) => chunkIndex(chunkSize, x, y, z);
 
   function chunkAt(x, z) {
     const chunkX = Math.floor(x / chunkSize);
@@ -94,18 +80,7 @@ export function buildChunkMeshes({
     if (chunk === undefined || !active.has(key)) continue;
     const mesh = buildGreedyQuads({
       forEachLoadedBlock(callback) {
-        for (let y = 0; y < maxY; y += 1) {
-          for (let z = 0; z < chunkSize; z += 1) {
-            for (let x = 0; x < chunkSize; x += 1) {
-              callback(
-                chunk.chunkX * chunkSize + x,
-                y,
-                chunk.chunkZ * chunkSize + z,
-                chunk.data[indexOf(x, y, z)],
-              );
-            }
-          }
-        }
+        forEachBlockInChunk(chunk, chunkSize, maxY, callback);
       },
       blockAt,
       isActive: (x, z) => active.has(chunkKey(Math.floor(x / chunkSize), Math.floor(z / chunkSize))),
@@ -131,10 +106,13 @@ export function buildChunkMeshBatch({
   const meshes = buildChunkMeshes(options);
   const activeKeys = [...new Set(options.activeKeys)];
   const active = new Set(activeKeys);
-  // The WebGPU backend uploads one buffer per chunk, so composing a single
+  // Per-chunk backends upload one buffer per chunk, so composing a single
   // whole-world vertex array would be a global rebuild on every block edit.
+  // They only read each mesh's vertex data and block count, so the quad
+  // objects are not sent back either.
   if (perChunkOnly) {
-    return { meshes, blockCount: null, quads: null, vertexData: null, activeKeys, perChunkOnly: true };
+    const slim = meshes.map((mesh) => ({ ...mesh, quads: [] }));
+    return { meshes: slim, blockCount: null, quads: null, vertexData: null, activeKeys, perChunkOnly: true };
   }
   const byKey = new Map(existingMeshes.map((mesh) => [mesh.key, mesh]));
   for (const mesh of meshes) byKey.set(mesh.key, mesh);
@@ -156,4 +134,24 @@ export function buildChunkMeshBatch({
     activeKeys,
     perChunkOnly: false,
   };
+}
+
+function layerBuffers(layer, into) {
+  if (layer === null || layer === undefined) return;
+  for (const name of ["positions", "colors", "lights", "normals", "uvs", "materials", "tiles"]) {
+    const array = layer[name];
+    if (ArrayBuffer.isView(array) && !into.includes(array.buffer)) into.push(array.buffer);
+  }
+}
+
+/** The ArrayBuffers of a batch result that can be transferred, each once. */
+export function meshBatchTransferables(result) {
+  const buffers = [];
+  for (const mesh of result?.meshes ?? []) {
+    layerBuffers(mesh.vertexData?.opaque, buffers);
+    layerBuffers(mesh.vertexData?.water, buffers);
+  }
+  layerBuffers(result?.vertexData?.opaque, buffers);
+  layerBuffers(result?.vertexData?.water, buffers);
+  return buffers;
 }

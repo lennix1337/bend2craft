@@ -282,9 +282,20 @@
               <input id="input-fov" type="range" min="60" max="110" step="1" value="75">
             </label>
             <label class="field">
-              <span>Render Distance: <output id="render-distance-value">2</output> chunks</span>
-              <input id="input-render-distance" type="range" min="2" max="6" step="1" value="2">
+              <span>Render Distance: <output id="render-distance-value">4</output> chunks</span>
+              <input id="input-render-distance" type="range" min="2" max="8" step="1" value="4">
               <span class="field-hint">Higher values load more terrain and use more memory.</span>
+            </label>
+            <label class="field">
+              <span>Distant Terrain</span>
+              <select id="input-lod-distance">
+                <option value="0">Off</option>
+                <option value="256">256 blocks</option>
+                <option value="512">512 blocks</option>
+                <option value="1024">1024 blocks</option>
+                <option value="2048">2048 blocks</option>
+              </select>
+              <span class="field-hint">Low-detail terrain past the render distance, generated in the background. Applies when a world is opened.</span>
             </label>
           </section>
 

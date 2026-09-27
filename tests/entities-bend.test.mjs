@@ -1,102 +1,63 @@
 import assert from "node:assert/strict";
 import Entities from "../world/entities.bend";
 import World from "../world/world.bend";
+import { bendList, listValues } from "../web/bend-list.js";
 
-function listValues(list) {
-  const values = [];
-  for (let node = list; node?.$ === "Con"; node = node.tail) values.push(node.head);
-  return values;
+// The Region record is a Bend ADT, so it can only be built field by field. Three
+// builders below need it, and one list fold serves all of them, so the shape lives
+// here instead of drifting across the copies.
+const REGION_SIZE = { width: 5, height: 6, depth: 5 };
+
+function bendRegion(originX, originY, originZ, values) {
+  return {
+    $: "Region",
+    blocks: bendList(values),
+    origin_x: BigInt(originX),
+    origin_y: BigInt(originY),
+    origin_z: BigInt(originZ),
+    width: BigInt(REGION_SIZE.width),
+    height: BigInt(REGION_SIZE.height),
+    depth: BigInt(REGION_SIZE.depth),
+  };
 }
+
+const regionList = bendList;
 
 function flatRegion(originX, originY, originZ, wallX = null) {
   const values = [];
-  for (let ly = 0; ly < 6; ly += 1) {
-    for (let lz = 0; lz < 5; lz += 1) {
-      for (let lx = 0; lx < 5; lx += 1) {
+  for (let ly = 0; ly < REGION_SIZE.height; ly += 1) {
+    for (let lz = 0; lz < REGION_SIZE.depth; lz += 1) {
+      for (let lx = 0; lx < REGION_SIZE.width; lx += 1) {
         const wx = originX + lx;
         const wy = originY + ly;
         values.push(wy === 0 || (wallX !== null && wx === wallX && wy <= 3) ? 1 : 0);
       }
     }
   }
-  let cells = { $: "Nil" };
-  for (let index = values.length - 1; index >= 0; index -= 1) {
-    cells = { $: "Con", head: values[index], tail: cells };
-  }
-  return {
-    $: "Region",
-    blocks: cells,
-    origin_x: BigInt(originX),
-    origin_y: BigInt(originY),
-    origin_z: BigInt(originZ),
-    width: 5n,
-    height: 6n,
-    depth: 5n,
-  };
+  return bendRegion(originX, originY, originZ, values);
 }
 
 function airRegions(count) {
-  let cells = { $: "Nil" };
-  for (let index = 5 * 6 * 5 - 1; index >= 0; index -= 1) {
-    cells = { $: "Con", head: 0, tail: cells };
-  }
-  const region = {
-    $: "Region",
-    blocks: cells,
-    origin_x: 0n,
-    origin_y: 0n,
-    origin_z: 0n,
-    width: 5n,
-    height: 6n,
-    depth: 5n,
-  };
-  let list = { $: "Nil" };
-  for (let index = 0; index < count; index += 1) {
-    list = { $: "Con", head: region, tail: list };
-  }
-  return list;
+  const cells = REGION_SIZE.width * REGION_SIZE.height * REGION_SIZE.depth;
+  const region = bendRegion(0, 0, 0, new Array(cells).fill(0));
+  return bendList(new Array(count).fill(region));
 }
 
 // Melee line-of-sight needs the same small block window the browser already
 // builds for `step_world`: the mob cell plus two cells of slack on each side.
 function meleeRegion(mobX, mobY, mobZ, isSolid = () => false) {
-  const width = 5;
-  const height = 6;
-  const depth = 5;
   const originX = Math.max(0, Math.floor(mobX) - 2);
   const originY = Math.max(0, Math.floor(mobY) - 2);
   const originZ = Math.max(0, Math.floor(mobZ) - 2);
   const values = [];
-  for (let ly = 0; ly < height; ly += 1) {
-    for (let lz = 0; lz < depth; lz += 1) {
-      for (let lx = 0; lx < width; lx += 1) {
-        const solid = isSolid(originX + lx, originY + ly, originZ + lz);
-        values.push(solid ? 1 : 0);
+  for (let ly = 0; ly < REGION_SIZE.height; ly += 1) {
+    for (let lz = 0; lz < REGION_SIZE.depth; lz += 1) {
+      for (let lx = 0; lx < REGION_SIZE.width; lx += 1) {
+        values.push(isSolid(originX + lx, originY + ly, originZ + lz) ? 1 : 0);
       }
     }
   }
-  let cells = { $: "Nil" };
-  for (let index = values.length - 1; index >= 0; index -= 1) {
-    cells = { $: "Con", head: values[index], tail: cells };
-  }
-  return {
-    $: "Region",
-    blocks: cells,
-    origin_x: BigInt(originX),
-    origin_y: BigInt(originY),
-    origin_z: BigInt(originZ),
-    width: BigInt(width),
-    height: BigInt(height),
-    depth: BigInt(depth),
-  };
-}
-
-function regionList(regions) {
-  let list = { $: "Nil" };
-  for (let index = regions.length - 1; index >= 0; index -= 1) {
-    list = { $: "Con", head: regions[index], tail: list };
-  }
-  return list;
+  return bendRegion(originX, originY, originZ, values);
 }
 
 function regionListFor(list) {
@@ -738,6 +699,44 @@ assert.equal(flagOf(underground, 0), false, "a mob under the terrain must not bu
 assert.equal(flagOf(shadedTick, 0), false, "an opaque edit overhead must clear the fire");
 assert.equal(flagOf(canopyTick, 0), false, "a generated canopy must clear the fire");
 assert.equal(burned[0].burning, false, "a mob the sun finished off must not be left burning on the corpse");
+
+// Water is the way out of the fire: a body touching water is not in direct sun,
+// so it neither catches nor keeps the flame. Both halves of the world have to
+// answer it, because a mob can reach water as generated sea or as a bucket the
+// player poured on it.
+const seaMobs = {
+  $: "Con",
+  head: Entities.make_mob(2006n, 2, 0.5, 7.0, 0.5, 20.0, true),
+  tail: { $: "Nil" },
+};
+// The regression only means anything in a cell that is both open sky and water,
+// so the fixture is checked instead of assumed: the ocean surface of this seed
+// sits at sea level, above a seabed that leaves the sky clear.
+assert.equal(World.water_at(1337n, 0n, 7n, 0n), true, "the fixture column must hold generated water");
+assert.equal(Entities.sun_exposed_generated(1337n, 0.5, 7.0, 0.5), true, "the fixture column must be open sky");
+const seaTick = Entities.sunlight_damage(seaMobs, { $: "Nil" }, 1337n, 1.0, 0.2, { $: "Nil" });
+assert.equal(Number(listValues(seaTick.mobs)[0].health), 20, "a mob under the sea must not burn in daylight");
+assert.equal(flagOf(seaTick, 0), false, "a mob in the sea must not be reported burning");
+
+const waterEdit = (y) => ({
+  $: "Con",
+  head: { $: "Edit", x: 10n, y: BigInt(y), z: 5n, block: 7 },
+  tail: { $: "Nil" },
+});
+const dousedTick = Entities.sunlight_damage(sunMobs, waterEdit(15), 1337n, 1.0, 0.2, { $: "Nil" });
+assert.equal(Number(listValues(dousedTick.mobs)[0].health), 20, "water at a mob's feet must stop the sun");
+assert.equal(flagOf(dousedTick, 0), false, "water under a burning mob must put the fire out on the next tick");
+const wadingTick = Entities.sunlight_damage(sunMobs, waterEdit(16), 1337n, 1.0, 0.2, { $: "Nil" });
+assert.equal(flagOf(wadingTick, 0), false, "water at head height must put the fire out too");
+const dryTick = Entities.sunlight_damage(
+  sunMobs,
+  { $: "Con", head: { $: "Edit", x: 10n, y: 14n, z: 5n, block: 7 }, tail: { $: "Nil" } },
+  1337n,
+  1.0,
+  0.2,
+  { $: "Nil" },
+);
+assert.equal(flagOf(dryTick, 0), true, "water in a neighbouring cell must not douse the mob");
 
 // Movement, knockback and the despawn filter all rebuild the record, so each of
 // them has to preserve the flag rather than default it back to false.

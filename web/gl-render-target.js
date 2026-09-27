@@ -170,6 +170,14 @@ function createColorTexture(gl, capabilities, width, height, filter) {
   return texture;
 }
 
+// WEBGL_depth_texture accepts UNSIGNED_INT for DEPTH_COMPONENT, which drivers
+// back with a 24-bit (or better) depth buffer. A 16-bit buffer with the 0.05
+// near plane resolves only ~3 blocks at 100 blocks away, so distant terrain
+// z-fights; 24 bits keep sub-block precision out to the far LOD rings.
+export function depthTextureType(gl) {
+  return gl.UNSIGNED_INT ?? gl.UNSIGNED_SHORT;
+}
+
 function createDepthTexture(gl, width, height) {
   const texture = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -181,7 +189,7 @@ function createDepthTexture(gl, width, height) {
     height,
     0,
     gl.DEPTH_COMPONENT,
-    gl.UNSIGNED_SHORT,
+    depthTextureType(gl),
     null,
   );
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);

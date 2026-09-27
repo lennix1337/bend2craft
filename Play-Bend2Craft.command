@@ -37,7 +37,7 @@ if ! npm run build; then
   exit 1
 fi
 
-for required in dist/index.html dist/chunk-worker.js dist/mesh-worker.js; do
+for required in dist/index.html dist/chunk-worker.js dist/mesh-worker.js dist/lod-worker.js; do
   if [[ ! -f "$required" ]]; then
     printf 'The build completed without %s. Nothing was served.\n' "$required" >&2
     exit 1

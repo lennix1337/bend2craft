@@ -1,7 +1,17 @@
-import { buildChunkMeshBatch } from "./mesh-worker-core.js";
+import { buildChunkMeshBatch, meshBatchTransferables } from "./mesh-worker-core.js";
 
 self.onmessage = (event) => {
-  const { id, chunkSize, maxY, activeKeys, targets, chunks, existingMeshes } = event.data;
+  const {
+    id,
+    chunkSize,
+    maxY,
+    activeKeys,
+    targets,
+    chunks,
+    existingMeshes,
+    merge,
+    perChunkOnly,
+  } = event.data;
   try {
     const result = buildChunkMeshBatch({
       chunkSize,
@@ -10,8 +20,11 @@ self.onmessage = (event) => {
       targets,
       chunks,
       existingMeshes,
+      merge,
+      perChunkOnly,
     });
-    self.postMessage({ id, ...result });
+    // Vertex arrays are handed over rather than structured-cloned.
+    self.postMessage({ id, ...result }, meshBatchTransferables(result));
   } catch (error) {
     self.postMessage({ id, error: String(error?.stack ?? error) });
   }

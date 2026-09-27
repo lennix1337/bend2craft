@@ -11,6 +11,23 @@ page.on("console", (message) => {
 });
 page.on("pageerror", (error) => pageErrors.push(String(error)));
 
+// The one definition of "the reloaded world is ready to assert against". Chunks
+// resident and mesh rebuilds drained are separate conditions, and a reload that
+// only waited for the first would read state from a half-built world.
+async function reloadAndSettle() {
+  await page.reload({ waitUntil: "domcontentloaded", timeout: 30000 });
+  await page.waitForFunction(
+    () => window.__bend2craft?.world?.activeChunks > 0 && window.__bend2craft?.world?.pendingChunks === 0,
+    null,
+    { timeout: 30000 },
+  );
+  await page.waitForFunction(
+    () => window.__bend2craft?.getFrameDiagnostics?.().meshRebuildPending === false,
+    null,
+    { timeout: 30000 },
+  );
+}
+
 try {
   await page.goto(`${baseUrl}/?test=1`, { waitUntil: "load", timeout: 30000 });
   await page.waitForFunction(
@@ -133,20 +150,20 @@ try {
   });
   assert.deepEqual(renderDistanceOptions, {
     min: 2,
-    max: 6,
-    value: 2,
-    output: "2",
+    max: 8,
+    value: 4,
+    output: "4",
     rendererValue: "webgl",
     rendererOptions: ["auto", "webgpu", "webgl"],
   });
   await page.locator("#input-render-distance").evaluate((input) => {
-    input.value = "4";
+    input.value = "5";
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
   const savedRenderDistance = await page.evaluate(() => JSON.parse(
     window.localStorage.getItem("bend2craft-options"),
   ).renderDistance);
-  assert.equal(savedRenderDistance, 4);
+  assert.equal(savedRenderDistance, 5);
   await page.locator("#input-renderer").selectOption("webgl");
   const savedRenderer = await page.evaluate(() => JSON.parse(
     window.localStorage.getItem("bend2craft-options"),
@@ -493,17 +510,7 @@ try {
   assert.equal(entityPersistenceBefore.mob?.alive, false);
   assert.ok(entityPersistenceBefore.drop !== undefined);
 
-  await page.reload({ waitUntil: "domcontentloaded", timeout: 30000 });
-  await page.waitForFunction(
-    () => window.__bend2craft?.world?.activeChunks > 0 && window.__bend2craft?.world?.pendingChunks === 0,
-    null,
-    { timeout: 30000 },
-  );
-  await page.waitForFunction(
-    () => window.__bend2craft?.getFrameDiagnostics?.().meshRebuildPending === false,
-    null,
-    { timeout: 30000 },
-  );
+  await reloadAndSettle();
   const entityPersistenceAfter = await page.evaluate(({ mobId, dropId }) => ({
     mob: window.__bend2craft.getMobs().find((entry) => entry.id === mobId),
     drop: window.__bend2craft.getDrops().find((entry) => entry.id === dropId),
@@ -593,6 +600,117 @@ try {
     { timeout: 2000 },
   ).catch(() => {});
 
+  // Water is the way out of a fire, and the symptom is on screen: a hostile in
+  // direct sun burns and is drawn aflame, and water under it has to put the fire
+  // out and stop the sun damage. Both halves are measured from the outside, so a
+  // tick that stopped publishing the flag cannot pass this.
+  const douseSetup = await page.evaluate(() => {
+    // Leftover hostiles from the combat scenarios would report as burning too,
+    // and this scenario counts bodies, so it starts from an empty mob set.
+    const remaining = window.__bend2craft.despawnMobsForTest(0);
+    window.__bend2craft.setWorldTimeForTest(32);
+    window.__bend2craft.teleportForTest(40.5, 24.5, 8);
+    const hostile = window.__bend2craft.spawnHostileForTest(2, 0.5);
+    window.__bend2craft.resumeForTest();
+    return { remaining, hostile };
+  });
+  assert.equal(douseSetup.remaining, 0, "the dousing scenario needs an empty mob set");
+  assert.ok(douseSetup.hostile !== null, "a burning hostile is required for the dousing smoke");
+  await page.waitForFunction(
+    () => window.__bend2craft.presentation.burningMobs === 1,
+    null,
+    { timeout: 10000 },
+  );
+  const litProbe = await page.evaluate(async () => {
+    const read = () => {
+      const mob = window.__bend2craft.getMobs().find((entry) => entry.alive);
+      return { health: mob.health, x: mob.x, y: mob.y, z: mob.z };
+    };
+    // The body has to be on the ground before it is boxed in, and a mob that is
+    // still falling would be measured in mid-air.
+    const first = read();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const settled = read();
+    return { first, settled };
+  });
+  const sameSpot = (a, b) => Math.abs(a.x - b.x) < 1e-3 && Math.abs(a.y - b.y) < 1e-3 && Math.abs(a.z - b.z) < 1e-3;
+  assert.ok(
+    sameSpot(litProbe.settled, litProbe.first),
+    "the burning mob has to settle on the ground before it can be boxed in",
+  );
+  // Side walls only: they stop the body from wandering out of the cell it is
+  // measured in, and a block overhead would shade it and put the fire out for a
+  // completely different reason than water.
+  const boxSetup = await page.evaluate((mob) => {
+    const x = Math.floor(mob.x);
+    const y = Math.floor(mob.y);
+    const z = Math.floor(mob.z);
+    const walls = [];
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      for (const height of [0, 1]) {
+        walls.push(window.__bend2craft.setBlockForTest(x + dx, y + height, z + dz, 1));
+      }
+    }
+    return { walls, x, y, z };
+  }, litProbe.settled);
+  assert.ok(boxSetup.walls.every(Boolean), "the dousing scenario needs four walls around the mob");
+  await page.waitForTimeout(400);
+  const litStart = await page.evaluate(() => {
+    const mob = window.__bend2craft.getMobs().find((entry) => entry.alive);
+    return { health: mob.health, x: mob.x, y: mob.y, z: mob.z, burningMobs: window.__bend2craft.presentation.burningMobs };
+  });
+  assert.ok(
+    sameSpot(litStart, litProbe.settled),
+    "the boxed-in mob must not wander while the scenario measures it",
+  );
+  assert.equal(litStart.burningMobs, 1, "side walls must not shade the body out of the sun");
+  await page.waitForTimeout(1200);
+  const burningProbe = await page.evaluate(() => {
+    const mob = window.__bend2craft.getMobs().find((entry) => entry.alive);
+    return { health: mob.health, burningMobs: window.__bend2craft.presentation.burningMobs };
+  });
+  assert.equal(burningProbe.burningMobs, 1, "a hostile in direct sun stays on fire while it burns");
+  assert.ok(
+    burningProbe.health < litStart.health,
+    `the sun has to be doing damage before water can be credited with stopping it, ${litStart.health} -> ${burningProbe.health}`,
+  );
+  const poured = await page.evaluate(
+    (cell) => window.__bend2craft.seedWaterAt(cell.x, cell.y, cell.z),
+    boxSetup,
+  );
+  assert.ok(poured, "the dousing scenario needs an empty body cell to pour into");
+  await page.waitForFunction(
+    () => window.__bend2craft.presentation.burningMobs === 0,
+    null,
+    { timeout: 10000 },
+  );
+  const dousedProbe = await page.evaluate(() => {
+    const mob = window.__bend2craft.getMobs().find((entry) => entry.alive);
+    return { health: mob.health, burning: mob.burning };
+  });
+  assert.equal(dousedProbe.burning, false, "water under a burning body must clear the fire flag");
+  await page.waitForTimeout(1200);
+  const soakedProbe = await page.evaluate(() => {
+    const mob = window.__bend2craft.getMobs().find((entry) => entry.alive);
+    return {
+      health: mob.health,
+      burningMobs: window.__bend2craft.presentation.burningMobs,
+      vfxParticles: window.__bend2craft.presentation.vfxParticles,
+    };
+  });
+  assert.equal(soakedProbe.burningMobs, 0, "a mob in water must not be presented as burning");
+  assert.ok(
+    soakedProbe.health >= dousedProbe.health - 0.001,
+    `water has to stop the sun damage, ${dousedProbe.health} -> ${soakedProbe.health}`,
+  );
+  // The flames are drawn per burning body, so the fire particles have to drain
+  // with the flag rather than linger over a drowned mob.
+  await page.waitForFunction(
+    () => window.__bend2craft.presentation.vfxParticles === 0,
+    null,
+    { timeout: 5000 },
+  ).catch(() => {});
+
   await page.locator("#inventory-toggle").click();
   await page.waitForFunction(() => document.getElementById("inventory-panel")?.hidden === false);
   await page.evaluate(() => window.__bend2craft.hurt(100));
@@ -636,17 +754,7 @@ try {
   assert.ok(persistenceBefore.inventory.some((item) => item.item === "wool"));
   assert.equal(persistenceBefore.placedBlock, 1);
 
-  await page.reload({ waitUntil: "domcontentloaded", timeout: 30000 });
-  await page.waitForFunction(
-    () => window.__bend2craft?.world?.activeChunks > 0 && window.__bend2craft?.world?.pendingChunks === 0,
-    null,
-    { timeout: 30000 },
-  );
-  await page.waitForFunction(
-    () => window.__bend2craft?.getFrameDiagnostics?.().meshRebuildPending === false,
-    null,
-    { timeout: 30000 },
-  );
+  await reloadAndSettle();
   const persistenceAfter = await page.evaluate(({ place }) => ({
     player: window.__bend2craft.getPlayer(),
     inventory: window.__bend2craft.getInventory(),
@@ -854,6 +962,33 @@ try {
   assert.deepEqual(consoleErrors, []);
   assert.deepEqual(pageErrors, []);
   console.log(JSON.stringify({ ...state, continuedWorld, textureProbe, animatedSurfaceProbe, atlasProbe, interactionResult, mobProbe, collectedInventory, damageProbe, recoveryInventory, deathModalProbe, persistenceBefore, persistenceAfter, entityPersistenceBefore, entityPersistenceAfter, negativeState, streamingSwap, inventoryToggle: "ok", modalProbe, shapedLoaded, shapedCrafted, shieldInventory, equipped, unequipped, chestProbe, dropProbe, narrowProbe, narrowAir, consoleErrors, pageErrors }));
+} catch (error) {
+  // A bare Playwright timeout says which line waited, never why the page never
+  // got there. The page's own errors are the only evidence, and the success path
+  // asserts on them, so report them on the way out instead of discarding them.
+  process.exitCode = 1;
+  const detail = {
+    message: error?.message ?? String(error),
+    consoleErrors,
+    pageErrors,
+  };
+  try {
+    detail.url = page.url();
+    detail.state = await page.evaluate(() => ({
+      health: window.__bend2craft?.getPlayer?.().health ?? null,
+      paused: window.__bend2craft?.getInputState?.().paused ?? null,
+      visibleScreens: [...document.querySelectorAll("[data-screen]")]
+        .filter((node) => !node.hidden)
+        .map((node) => node.id),
+      inventoryHidden: document.getElementById("inventory-panel")?.hidden ?? null,
+      deathHidden: document.getElementById("death")?.hidden ?? null,
+      modalInert: [...document.querySelectorAll("[inert]")].map((node) => node.id),
+    }));
+  } catch (probeError) {
+    detail.stateUnavailable = String(probeError);
+  }
+  console.error(`browser smoke failed: ${JSON.stringify(detail, null, 2)}`);
+  throw error;
 } finally {
   await browser.close();
 }

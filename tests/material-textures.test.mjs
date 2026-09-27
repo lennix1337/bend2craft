@@ -1,115 +1,95 @@
 import assert from "node:assert/strict";
 import {
-  MATERIAL_RECIPES,
-  materialGrain,
-  materialHeight,
-  shadeBySurface,
-  synthesizeSurface,
+  MATERIAL_PAINTERS,
+  MaterialSurface,
+  createRandom,
+  fbm,
+  gradientNoise,
+  hexToRgb,
+  materialSeed,
+  paintMaterial,
+  worley,
 } from "../web/material-textures.js";
+import { ATLAS_TEXTURES } from "../web/texture-atlas.js";
 
-// Determinism: the same seed must give the same field, or the atlas would
-// change between boots and the texel probe could never certify a tile.
-const a = synthesizeSurface(MATERIAL_RECIPES.cellular, 32, 1234);
-const b = synthesizeSurface(MATERIAL_RECIPES.cellular, 32, 1234);
-assert.deepEqual(Array.from(a.heights), Array.from(b.heights));
-assert.deepEqual(Array.from(a.grains), Array.from(b.grains));
-const c = synthesizeSurface(MATERIAL_RECIPES.cellular, 32, 1235);
-assert.notDeepEqual(Array.from(a.heights), Array.from(c.heights), "a different seed gives a different surface");
-assert.equal(a.heights.length, 32 * 32);
-assert.equal(a.grains.length, 32 * 32);
-
-// Every recipe must stay in 0..1 across a full tile, or the shading below would
-// clip and the relief would invert.
-for (const [name, recipe] of Object.entries(MATERIAL_RECIPES)) {
-  const surface = synthesizeSurface(recipe, 32, 7);
-  for (const height of surface.heights) {
-    assert.ok(height >= 0 && height <= 1, `${name} produced an out-of-range height ${height}`);
-  }
-  for (const grain of surface.grains) {
-    assert.ok(grain >= 0 && grain <= 1, `${name} produced an out-of-range grain ${grain}`);
-  }
-  // A flat field would make the material indistinguishable and the bump dead.
-  let min = 1;
-  let max = 0;
-  for (const height of surface.heights) {
-    if (height < min) min = height;
-    if (height > max) max = height;
-  }
-  assert.ok(max - min > 0.08, `${name} has no usable relief (spread ${max - min})`);
-  assert.ok(recipe.contrast > 0 && recipe.contrast <= 0.5, `${name} contrast is out of band`);
-  assert.ok(recipe.grain >= 0 && recipe.grain < 0.3, `${name} grain is out of band`);
+// Tileable noise: the lattice wraps at its period, so a tile sampled at an
+// integer frequency has no seam. This is the property every ground material
+// depends on, because the same tile is repeated across every block.
+for (const [x, y] of [[0.3, 0.7], [2.9, 1.1], [3.5, 0.25]]) {
+  const a = gradientNoise(x, y, 4, 4, 17);
+  assert.ok(Math.abs(a - gradientNoise(x + 4, y, 4, 4, 17)) < 1e-9, "gradient noise must wrap along x");
+  assert.ok(Math.abs(a - gradientNoise(x, y + 4, 4, 4, 17)) < 1e-9, "gradient noise must wrap along y");
+  assert.ok(Math.abs(gradientNoise(x, y, 6, 2, 3) - gradientNoise(x + 6, y + 2, 6, 2, 3)) < 1e-9, "anisotropic periods must wrap independently");
 }
+for (let index = 0; index < 400; index += 1) {
+  const value = gradientNoise(index * 0.173, index * 0.311, 8, 8, 5);
+  assert.ok(value >= -1 && value <= 1, `gradient noise left -1..1: ${value}`);
+}
+assert.ok(Math.abs(fbm(0.02, 0.4, 3, 3, 5, 9) - fbm(1.02, 0.4, 3, 3, 5, 9)) < 1e-9, "fbm must tile over one unit");
+assert.ok(Math.abs(fbm(0.4, 0.02, 3, 5, 4, 9) - fbm(0.4, 1.02, 3, 5, 4, 9)) < 1e-9, "fbm must tile over one unit in v");
 
-// Materials must not look alike: the recipes exist to tell stone from soil from
-// foliage, so two recipes cannot produce the same field.
-const spreads = Object.entries(MATERIAL_RECIPES).map(([name, recipe]) => {
-  const surface = synthesizeSurface(recipe, 32, 99);
-  const values = Array.from(surface.heights);
-  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-  const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
-  return { name, mean, sigma: Math.sqrt(variance) };
+// Worley must be deterministic and tile, since a stone at the tile edge has to
+// be the same stone on the other side of the seam.
+const cellA = worley(0.01, 0.5, 4, 11, {});
+const cellB = worley(1.01, 0.5, 4, 11, {});
+assert.ok(Math.abs(cellA.f1 - cellB.f1) < 1e-9 && cellA.id === cellB.id, "worley must wrap");
+assert.ok(cellA.f2 >= cellA.f1, "the second-nearest feature cannot be nearer than the nearest");
+
+const randomA = createRandom(5);
+const randomB = createRandom(5);
+for (let index = 0; index < 10; index += 1) {
+  const value = randomA();
+  assert.equal(value, randomB(), "the scatter stream must be deterministic");
+  assert.ok(value >= 0 && value < 1);
+}
+assert.equal(materialSeed("stone"), materialSeed("stone"));
+assert.notEqual(materialSeed("stone"), materialSeed("stone_variant"));
+assert.deepEqual([...hexToRgb("#ff8000")], [1, 128 / 255, 0]);
+assert.throws(() => hexToRgb("red"), /Invalid palette colour/);
+
+// The baked relief must be lit from the upper left. A raised disc has to come
+// out brighter on its upper-left flank than on its lower-right one; this was
+// inverted once, which turned every pebble into a crater and every
+// cobblestone into a dent.
+const surface = new MaterialSurface(32);
+surface.each((x, y, u, v, index) => {
+  const distance = Math.hypot(x + 0.5 - 16, y + 0.5 - 16);
+  surface.set(index, [0.5, 0.5, 0.5], distance < 8 ? Math.sqrt(1 - (distance / 8) ** 2) : 0);
 });
-for (const entry of spreads) {
-  assert.ok(entry.sigma > 0.02, `${entry.name} is essentially flat (sigma ${entry.sigma})`);
-}
-const distinct = new Set(spreads.map((entry) => entry.sigma.toFixed(4)));
-assert.ok(distinct.size >= Object.keys(MATERIAL_RECIPES).length - 1, "recipes must be visually distinct from each other");
+surface.emboss(0.8, 0);
+const upperLeft = surface.color[(11 * 32 + 11) * 3];
+const lowerRight = surface.color[(20 * 32 + 20) * 3];
+assert.ok(upperLeft > 0.5 && lowerRight < 0.5, `the upper-left flank must be lit (${upperLeft} vs ${lowerRight})`);
 
-// Shading must stay anchored to the material's own colour: bright is raised and
-// dark is recessed, and the hue must not invert.
-const base = [0.4, 0.5, 0.35];
-const raised = shadeBySurface(base, 1, 0.5, MATERIAL_RECIPES.cellular);
-const level = shadeBySurface(base, 0.5, 0.5, MATERIAL_RECIPES.cellular);
-const recessed = shadeBySurface(base, 0, 0.5, MATERIAL_RECIPES.cellular);
-assert.ok(raised[0] > level[0] && level[0] > recessed[0], "height must map monotonically to brightness");
-assert.ok(raised[1] > level[1] && level[1] > recessed[1], "height must map monotonically in green too");
-for (const shade of [raised, level, recessed]) {
-  for (const channel of shade) {
-    assert.ok(channel >= 0 && channel <= 1, `a shaded channel left the unit range: ${channel}`);
-  }
-  // Green stays the largest channel, so a grey scale recipe cannot turn grass
-  // into something unrecognisable.
-  assert.ok(shade[1] > shade[0] && shade[1] > shade[2], "shading must preserve the dominant channel");
-}
-// A neutral height leaves the colour essentially alone: the detail is a
-// modulation, not a repaint.
-for (let channel = 0; channel < 3; channel += 1) {
-  assert.ok(
-    Math.abs(level[channel] - base[channel]) < base[channel] * MATERIAL_RECIPES.cellular.contrast + 0.02,
-    "a mid height must stay close to the base colour",
-  );
-}
-// Grain adds a small, bounded amount of tooth.
-const grainLow = shadeBySurface(base, 0.5, 0, MATERIAL_RECIPES.cellular);
-const grainHigh = shadeBySurface(base, 0.5, 1, MATERIAL_RECIPES.cellular);
-assert.ok(grainHigh[0] > grainLow[0], "grain must modulate brightness");
-const grainSwing = Math.abs(grainHigh[0] - grainLow[0]);
-assert.ok(grainSwing <= MATERIAL_RECIPES.cellular.grain * 2 + 0.01, `grain swing ${grainSwing} is out of band`);
+// Strokes wrap across the edge of a tileable surface and clamp on a
+// non-tileable one.
+const wrapping = new MaterialSurface(16);
+wrapping.stroke(14, 8, 18, 8, 2, 2, (t, across, out) => { out[0] = 1; out[1] = 1; out[2] = 1; return out; }, () => 1);
+assert.ok(wrapping.color[(8 * 16 + 1) * 3] > 0.5, "a stroke crossing the edge must continue on the other side");
+const clamped = new MaterialSurface(16);
+clamped.wrapX = false;
+clamped.stroke(14, 8, 18, 8, 2, 2, (t, across, out) => { out[0] = 1; out[1] = 1; out[2] = 1; return out; }, () => 1);
+assert.equal(clamped.color[(8 * 16 + 1) * 3], 0, "a stroke must not wrap on a non-tileable surface");
 
-// The single-texel entry points must agree with the tiled synthesis.
-const recipe = MATERIAL_RECIPES.clumpy;
-const surface = synthesizeSurface(recipe, 8, 42);
-for (let y = 0; y < 8; y += 1) {
-  for (let x = 0; x < 8; x += 1) {
-    // The field is stored in a Float32Array, so compare with float32 slack.
-    assert.ok(
-      Math.abs(materialHeight(recipe, x, y, 8, 42) - surface.heights[y * 8 + x]) < 1e-6,
-      "the single-texel height must match the synthesised field",
-    );
-    assert.ok(
-      Math.abs(materialGrain(x, y, 8, 42) - surface.grains[y * 8 + x]) < 1e-6,
-      "the single-texel grain must match the synthesised field",
-    );
-  }
+// Every painter the atlas names is deterministic, fills the tile, stays in
+// range and depends on its seed.
+const usedPainters = new Set(ATLAS_TEXTURES.map((texture) => texture.painter));
+for (const name of Object.keys(MATERIAL_PAINTERS)) {
+  assert.ok(usedPainters.has(name), `painter ${name} is registered but no atlas tile uses it`);
+}
+for (const texture of ATLAS_TEXTURES.filter((entry, index, list) => list.findIndex((other) => other.painter === entry.painter) === index)) {
+  const options = { opacity: texture.opacity, options: texture.options };
+  const first = paintMaterial(texture.painter, 32, texture.seed, texture.palette, options);
+  const second = paintMaterial(texture.painter, 32, texture.seed, texture.palette, options);
+  assert.equal(first.length, 32 * 32 * 4);
+  assert.deepEqual(first, second, `${texture.painter} must be deterministic`);
+  const reseeded = paintMaterial(texture.painter, 32, texture.seed + 1, texture.palette, options);
+  assert.notDeepEqual(first, reseeded, `${texture.painter} must depend on its seed`);
+  const alpha = Math.round(texture.opacity * 255);
+  for (let index = 3; index < first.length; index += 4) assert.equal(first[index], alpha);
 }
 
-// Determinism must not depend on the caller's tile size in a way that breaks the
-// "same block, same texture" promise: a 16px tile and a 32px tile describe the
-// same material, just at different resolutions.
-const small = synthesizeSurface(MATERIAL_RECIPES.blade, 16, 5);
-const large = synthesizeSurface(MATERIAL_RECIPES.blade, 32, 5);
-assert.equal(small.heights.length, 16 * 16);
-assert.equal(large.heights.length, 32 * 32);
-assert.notEqual(small.heights[0], undefined);
+assert.throws(() => paintMaterial("marble", 16, 1, {}), /Unknown material painter/);
+assert.throws(() => paintMaterial("stone", 16, 1, { base: "#808080" }), /needs palette colour/);
 
 console.log("material textures ok");

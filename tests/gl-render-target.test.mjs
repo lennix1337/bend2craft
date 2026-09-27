@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  depthTextureType,
   RENDER_TARGET_FILTER,
   RENDER_TARGET_WRAP,
   createRenderTarget,
@@ -221,3 +222,8 @@ assert.equal(floored.height, 1);
 assert.ok(RENDER_TARGET_WRAP.CLAMP !== undefined);
 
 console.log("gl render target ok");
+
+// Depth textures ask for 32-bit integer depth (24-bit on real drivers) when the
+// context exposes it, and fall back to 16-bit otherwise.
+assert.equal(depthTextureType({ UNSIGNED_INT: 0x1405, UNSIGNED_SHORT: 0x1403 }), 0x1405);
+assert.equal(depthTextureType({ UNSIGNED_SHORT: 0x1403 }), 0x1403);

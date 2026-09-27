@@ -71,8 +71,10 @@ import {
   isSoftwareRenderer,
 } from "../web/webgl-shaders.js";
 import {
+  FRAME_UNIFORM_BYTES,
   WEBGPU_SKY_SHADER,
   WEBGPU_TERRAIN_SHADER,
+  WGSL_FRAME_UNIFORMS,
 } from "../web/webgpu-terrain-renderer.js";
 import { SURFACE_MATERIAL_OPAQUE_BASE } from "../web/surface-materials.js";
 const rendererSource = await readFile(new URL("../web/webgpu-terrain-renderer.js", import.meta.url), "utf8");
@@ -235,6 +237,36 @@ assert.equal(isSoftwareRenderer("Microsoft Basic Render Driver"), true);
 assert.equal(isSoftwareRenderer("NVIDIA GeForce RTX 4070"), false);
 
 assert.equal(typeof WEBGPU_TERRAIN_SHADER, "string");
+
+// The terrain and sky pipelines bind the same per-frame uniform, so they must
+// agree on its layout. Derive the size from the struct instead of trusting the
+// constant the buffer is allocated with: a field added to the struct without
+// updating FRAME_UNIFORM_BYTES writes past the end of the binding, and the
+// resulting garbage is invisible in every other assertion.
+const frameStruct = WGSL_FRAME_UNIFORMS.match(/struct Frame \{([\s\S]*?)\n\}/)?.[1];
+assert.ok(frameStruct, "the shared uniform preamble must declare struct Frame");
+const frameFields = [...frameStruct.matchAll(/(\w+):\s*(mat4x4|vec[234])<f32>/g)].map(([, name, type]) => ({ name, type }));
+assert.ok(frameFields.length > 0, "struct Frame must declare fields");
+const WGSL_TYPE_BYTES = { mat4x4: 64, vec4: 16, vec3: 12, vec2: 8 };
+const frameBytes = frameFields.reduce((sum, { type }) => sum + WGSL_TYPE_BYTES[type], 0);
+assert.equal(
+  frameBytes,
+  FRAME_UNIFORM_BYTES,
+  `FRAME_UNIFORM_BYTES (${FRAME_UNIFORM_BYTES}) must match struct Frame (${frameBytes}): ${frameFields.map((f) => f.name).join(", ")}`,
+);
+assert.equal(FRAME_UNIFORM_BYTES % 16, 0, "a uniform buffer binding must be 16-byte aligned");
+assert.equal(FRAME_UNIFORM_BYTES / 4, new Float32Array(FRAME_UNIFORM_BYTES / 4).length);
+
+// Both pipelines must carry the identical declaration, exactly once each.
+for (const [label, shader] of [["terrain", WEBGPU_TERRAIN_SHADER], ["sky", WEBGPU_SKY_SHADER]]) {
+  assert.equal((shader.match(/struct Frame \{/g) ?? []).length, 1, `${label} must declare struct Frame once`);
+  assert.ok(shader.startsWith(WGSL_FRAME_UNIFORMS), `${label} must start with the shared uniform preamble`);
+  assert.equal(
+    (shader.match(/var<uniform> frame: Frame;/g) ?? []).length,
+    1,
+    `${label} must bind the frame uniform once`,
+  );
+}
 assert.match(gameSource, /createPermutedProgram/);
 assert.match(gameSource, /fallbackTerrainSources/);
 assert.match(gameSource, /configureWebglQuality\(\)/);
@@ -262,7 +294,10 @@ assert.ok(
 // must not compose a whole-world vertex array for it.
 assert.match(rendererSource, /function updateChunks\(chunks\)/);
 assert.match(rendererSource, /classifyChunkUpdate/);
-assert.match(gameSource, /perChunkOnly: rendererKind === "webgpu"/);
+// Both backends are per chunk now: WebGL keeps one interleaved buffer per chunk
+// too (web/webgl-chunk-buffers.js), so the cache never composes a world array.
+assert.match(gameSource, /perChunkOnly: true/);
+assert.match(gameSource, /glChunkBuffers\.update\(chunks\)/);
 assert.match(gameSource, /gpuRenderer\.updateChunks\(chunks\)/);
 assert.doesNotMatch(gameSource, /gpuRenderer\.uploadTerrain\(chunks\)/);
 assert.ok(

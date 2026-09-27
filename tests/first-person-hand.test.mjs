@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import {
+  drawFirstPersonOverlay,
   firstPersonOverlayItem,
   firstPersonOverlayPose,
 } from "../web/first-person-overlay.js";
-import { blockFaceTile } from "../web/texture-atlas.js";
+import { ATLAS_TILE_GUTTER, ATLAS_TILE_SIZE, atlasCellOrigin, blockFaceTile } from "../web/texture-atlas.js";
 
 const neutral = firstPersonOverlayPose({
   time: 0,
@@ -81,5 +82,28 @@ assert.match(gameSource, /drawFirstPersonOverlay/);
 assert.match(indexSource, /id="first-person-hand-canvas"/);
 assert.match(styleSource, /#first-person-hand-canvas/);
 assert.match(styleSource, /image-rendering:\s*pixelated/);
+
+// The held block samples its tile from the padded atlas: the tile interior of
+// its cell, not a 16px grid slot. Reading a 16px slot at the atlas origin lands
+// in another tile's gutter, which drew the held block as a flat sliver of the
+// wrong material.
+{
+  const sources = [];
+  const noop = () => {};
+  const context = {
+    clearRect: noop, save: noop, restore: noop, translate: noop, rotate: noop, scale: noop,
+    transform: noop, fillRect: noop, beginPath: noop, moveTo: noop, lineTo: noop, closePath: noop, fill: noop,
+    set imageSmoothingEnabled(value) { this.smoothing = value; },
+    drawImage(image, sx, sy, sw, sh) { if (image === atlasCanvas) sources.push([sx, sy, sw, sh]); },
+  };
+  const atlasCanvas = { width: 2048, height: 2048 };
+  const descriptor = drawFirstPersonOverlay(context, { atlasCanvas, selectedBlock: 1 });
+  assert.equal(descriptor.kind, "block");
+  const origin = atlasCellOrigin(descriptor.tile);
+  assert.ok(sources.length >= 3, "the held block draws its three visible faces from the atlas");
+  for (const source of sources) {
+    assert.deepEqual(source, [origin.x + ATLAS_TILE_GUTTER, origin.y + ATLAS_TILE_GUTTER, ATLAS_TILE_SIZE, ATLAS_TILE_SIZE]);
+  }
+}
 
 console.log("first person overlay ok");

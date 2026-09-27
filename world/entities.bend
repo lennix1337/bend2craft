@@ -82,9 +82,9 @@ def drop_for(mob: Mob) -> Drop:
 # this same predicate, so a mob can never be placed on ground the sunlight tick
 # would burn it on the very next step.
 def sun_exposed_generated(+seed: Nat, +x: F32, +y: F32, +z: F32) -> Bool:
-  +cell_x = Player.floor_nat(x)
+  +cell_x = World.cell(x)
   +cell_y = Player.floor_nat(y)
-  +cell_z = Player.floor_nat(z)
+  +cell_z = World.cell(z)
   +terrain_height = World.column_height(seed, cell_x, cell_z)
   +above_terrain = Nat.is_ge(cell_y, terrain_height)
   +generated_cover = Bool.and(
@@ -617,41 +617,82 @@ def attack(
 def hostile_kind(+kind: U32, +alive: Bool) -> Bool:
   Bool.and(alive, Bool.or(U32.is_eq(kind, 2), U32.is_eq(kind, 4)))
 
-def edit_opaque_above(
-  +edits: List<&2, WorldState.Edit>, +x: Nat, +z: Nat, +from_y: Nat
-) -> Bool:
+type BodyCells is Data:
+  BodyCells{shaded: Bool, placed_water: Bool}
+
+# A single pass over the persistent edits answers both questions the sunlight
+# tick asks about a body: whether an edit shades the column it stands in, and
+# whether one of its two body cells holds water. One traversal keeps the per-mob
+# cost of a growing edit list unchanged by the water rule.
+def body_cells.go(
+  +edits: List<&2, WorldState.Edit>, +cell_x: Nat, +cell_y: Nat, +cell_z: Nat,
+  +shaded: Bool, +placed_water: Bool
+) -> BodyCells:
   match edits:
     case Nil{}:
-      False{}
+      BodyCells{shaded, placed_water}
     case Con{+head, tail}:
       WorldState.Edit{+edit_x, +edit_y, +edit_z, +block} = head
-      +same_column = Bool.and(Nat.is_eq(edit_x, x), Nat.is_eq(edit_z, z))
-      +above = Nat.is_ge(edit_y, from_y)
-      +rest = edit_opaque_above(tail, x, z, from_y)
-      Bool.or(Bool.and(Bool.and(same_column, above), Player.solid(block)), rest)
+      +same_column = Bool.and(Nat.is_eq(edit_x, cell_x), Nat.is_eq(edit_z, cell_z))
+      +above = Bool.and(same_column, Nat.is_ge(edit_y, cell_y))
+      +next_shaded = Bool.or(shaded, Bool.and(above, Player.solid(block)))
+      # Feet and head count as one body, so a mob that has waded into the
+      # shallows is out of the fire before it is fully submerged.
+      +body = Bool.and(
+        same_column,
+        Bool.or(Nat.is_eq(edit_y, cell_y), Nat.is_eq(edit_y, Nat.add(cell_y, 1n)))
+      )
+      +next_water = Bool.or(placed_water, Bool.and(body, Player.is_water(block)))
+      body_cells.go(tail, cell_x, cell_y, cell_z, next_shaded, next_water)
+
+def body_cells(
+  +edits: List<&2, WorldState.Edit>, +cell_x: Nat, +cell_y: Nat, +cell_z: Nat
+) -> BodyCells:
+  body_cells.go(edits, cell_x, cell_y, cell_z, False{}, False{})
+
+# Water is not direct sun. A body standing in it is neither lit nor burning, so
+# the sea puts a fire out and keeps a mob from catching one, and water the player
+# poured with a bucket reads the same way. This is the generated half, the same
+# sea query the world generator answers with, so the tick still needs no
+# materialized block.
+def water_contact_generated(
+  +seed: Nat, +cell_x: Nat, +cell_y: Nat, +cell_z: Nat
+) -> Bool:
+  Bool.or(
+    World.water_at(seed, cell_x, cell_y, cell_z),
+    World.water_at(seed, cell_x, Nat.add(cell_y, 1n), cell_z)
+  )
 
 # Use the generated terrain height for the bulk sky query; only persistent
 # edits need a per-column scan, keeping the simulation tick independent of
 # world-generation cost for every mob. The generated half is shared with spawn.
-def sun_exposed.edited(
-  +exposed: Bool, +edits: List<&2, WorldState.Edit>,
-  +cell_x: Nat, +cell_z: Nat, +cell_y: Nat
+def sun_exposed.cells(
+  +cells: BodyCells, +seed: Nat, +cell_x: Nat, +cell_y: Nat, +cell_z: Nat
 ) -> Bool:
-  match exposed:
+  BodyCells{+shaded, +placed_water} = cells
+  +water = Bool.or(placed_water, water_contact_generated(seed, cell_x, cell_y, cell_z))
+  Bool.not(Bool.or(shaded, water))
+
+def sun_exposed.lit(
+  +lit: Bool, +edits: List<&2, WorldState.Edit>, +seed: Nat,
+  +cell_x: Nat, +cell_y: Nat, +cell_z: Nat
+) -> Bool:
+  match lit:
     case False{}:
       False{}
     case True{}:
-      Bool.not(edit_opaque_above(edits, cell_x, cell_z, cell_y))
+      sun_exposed.cells(body_cells(edits, cell_x, cell_y, cell_z), seed, cell_x, cell_y, cell_z)
 
 def sun_exposed(
   +edits: List<&2, WorldState.Edit>, +seed: Nat, +x: F32, +y: F32, +z: F32
 ) -> Bool:
-  sun_exposed.edited(
+  sun_exposed.lit(
     sun_exposed_generated(seed, x, y, z),
     edits,
-    Player.floor_nat(x),
-    Player.floor_nat(z),
+    seed,
+    World.cell(x),
     Player.floor_nat(y),
+    World.cell(z),
   )
 
 def sun_burning.hostile(

@@ -32,6 +32,8 @@ import {
   saveOptions,
   validateWorldConfig,
   worldModeLabel,
+  DEFAULT_LOD_DISTANCE,
+  normalizeLodDistance,
 } from "./settings.js";
 import { VISUAL_QUALITY_TIERS } from "./visual-quality.js";
 import { getAudioMixer } from "./audio.js";
@@ -354,6 +356,7 @@ export function runMenu() {
     renderDistance.max = String(MAX_RENDER_DISTANCE);
     renderDistance.value = String(fresh.renderDistance ?? DEFAULT_RENDER_DISTANCE);
     element("render-distance-value").textContent = String(fresh.renderDistance ?? DEFAULT_RENDER_DISTANCE);
+    element("input-lod-distance").value = String(normalizeLodDistance(fresh.lodDistance ?? DEFAULT_LOD_DISTANCE));
     element("input-renderer").value = fresh.renderer;
     const quality = element("input-graphics-quality");
     buildGraphicsQualityOptions(quality);
@@ -524,6 +527,9 @@ export function runMenu() {
       const value = Number(event.target.value);
       element("render-distance-value").textContent = String(value);
       saveOptions(window.localStorage, { ...loadOptions(window.localStorage), renderDistance: value });
+    } else if (event.target.id === "input-lod-distance") {
+      const value = normalizeLodDistance(event.target.value);
+      saveOptions(window.localStorage, { ...loadOptions(window.localStorage), lodDistance: value });
     } else if (event.target.id === "input-renderer") {
       saveOptions(window.localStorage, { ...loadOptions(window.localStorage), renderer: event.target.value });
     } else if (event.target.id === "input-graphics-quality") {

@@ -3,15 +3,21 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TESTS=(
+  tests/bend-list.test.mjs
   tests/world-bridge.test.mjs
   tests/world-state-bend.test.mjs
+  tests/world-chunk-golden.test.mjs
+  tests/world-coordinates.test.mjs
   tests/chunk-world.test.mjs
   tests/worker-scheduler.test.mjs
+  tests/chunk-worker-core.test.mjs
   tests/structures-bend.test.mjs
   tests/village-path-bend.test.mjs
   tests/villagers-bend.test.mjs
   tests/horizon-bend.test.mjs
   tests/horizon-grid.test.mjs
+  tests/horizon-lod-bend.test.mjs
+  tests/lod-terrain.test.mjs
   tests/simulation-bend.test.mjs
   tests/fluids-bend.test.mjs
   tests/fire-bend.test.mjs
@@ -41,6 +47,7 @@ TESTS=(
   tests/chunk-frustum.test.mjs
   tests/webgpu-capabilities.test.mjs
   tests/webgpu-chunk-buffers.test.mjs
+  tests/webgl-chunk-buffers.test.mjs
   tests/webgpu-chunk-updates.test.mjs
   tests/webgpu-frame-readback.test.mjs
   tests/webgpu-terrain-presentation.test.mjs
@@ -69,6 +76,7 @@ TESTS=(
   tests/light-bend.test.mjs
   tests/light-dirty-bend.test.mjs
   tests/light-flood-bend.test.mjs
+  tests/light-flood-grid.test.mjs
   tests/inventory-bend.test.mjs
   tests/chest-bend.test.mjs
   tests/chests-bend.test.mjs

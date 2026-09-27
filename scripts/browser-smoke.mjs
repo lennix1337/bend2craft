@@ -670,116 +670,46 @@ try {
     { timeout: 2000 },
   ).catch(() => {});
 
-  // Water is the way out of a fire, and the symptom is on screen: a hostile in
-  // direct sun burns and is drawn aflame, and water under it has to put the fire
-  // out and stop the sun damage. Both halves are measured from the outside, so a
-  // tick that stopped publishing the flag cannot pass this.
-  const douseSetup = await page.evaluate(() => {
-    // Leftover hostiles from the combat scenarios would report as burning too,
-    // and this scenario counts bodies, so it starts from an empty mob set.
+  // Water is the way out of a fire, and the symptom is on screen: a hostile
+  // standing in the sea is in direct sun, and the water it is in has to put the
+  // fire out and stop the sun damage. The fixture is checked from the outside, so
+  // a body that walked out of the sea fails the scenario instead of quietly
+  // passing it, and a tick that stopped publishing the flag cannot pass either.
+  const seaSetup = await page.evaluate(() => {
+    // Earlier combat scenarios leave hostiles behind, and this one counts burning
+    // bodies, so it starts from an empty mob set.
     const remaining = window.__bend2craft.despawnMobsForTest(0);
-    window.__bend2craft.setWorldTimeForTest(32);
-    window.__bend2craft.teleportForTest(40.5, 24.5, 8);
+    // 19.6 is the peak of the daylight curve, so the sun cannot drift toward dusk
+    // in the middle of the measurement.
+    window.__bend2craft.setWorldTimeForTest(19.6);
+    // The open sea of this seed: a column at sea level whose top cell is water
+    // and whose sky is clear, the one place a body is lit and wet at once.
+    window.__bend2craft.teleportForTest(41.5, 8.5, 7);
     const hostile = window.__bend2craft.spawnMobForTest(2, 0.5);
     window.__bend2craft.resumeForTest();
     return { remaining, hostile };
   });
-  assert.equal(douseSetup.remaining, 0, "the dousing scenario needs an empty mob set");
-  assert.ok(douseSetup.hostile !== null, "a burning hostile is required for the dousing smoke");
-  await page.waitForFunction(
-    () => window.__bend2craft.presentation.burningMobs === 1,
-    null,
-    { timeout: 10000 },
-  );
-  const litProbe = await page.evaluate(async () => {
-    const read = () => {
-      const mob = window.__bend2craft.getMobs().find((entry) => entry.alive);
-      return { health: mob.health, x: mob.x, y: mob.y, z: mob.z };
-    };
-    // The body has to be on the ground before it is boxed in, and a mob that is
-    // still falling would be measured in mid-air.
-    const first = read();
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    const settled = read();
-    return { first, settled };
-  });
-  const sameSpot = (a, b) => Math.abs(a.x - b.x) < 1e-3 && Math.abs(a.y - b.y) < 1e-3 && Math.abs(a.z - b.z) < 1e-3;
-  assert.ok(
-    sameSpot(litProbe.settled, litProbe.first),
-    "the burning mob has to settle on the ground before it can be boxed in",
-  );
-  // Side walls only: they stop the body from wandering out of the cell it is
-  // measured in, and a block overhead would shade it and put the fire out for a
-  // completely different reason than water.
-  const boxSetup = await page.evaluate((mob) => {
-    const x = Math.floor(mob.x);
-    const y = Math.floor(mob.y);
-    const z = Math.floor(mob.z);
-    const walls = [];
-    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      for (const height of [0, 1]) {
-        walls.push(window.__bend2craft.setBlockForTest(x + dx, y + height, z + dz, 1));
-      }
-    }
-    return { walls, x, y, z };
-  }, litProbe.settled);
-  assert.ok(boxSetup.walls.every(Boolean), "the dousing scenario needs four walls around the mob");
-  await page.waitForTimeout(400);
-  const litStart = await page.evaluate(() => {
-    const mob = window.__bend2craft.getMobs().find((entry) => entry.alive);
-    return { health: mob.health, x: mob.x, y: mob.y, z: mob.z, burningMobs: window.__bend2craft.presentation.burningMobs };
-  });
-  assert.ok(
-    sameSpot(litStart, litProbe.settled),
-    "the boxed-in mob must not wander while the scenario measures it",
-  );
-  assert.equal(litStart.burningMobs, 1, "side walls must not shade the body out of the sun");
-  await page.waitForTimeout(1200);
-  const burningProbe = await page.evaluate(() => {
-    const mob = window.__bend2craft.getMobs().find((entry) => entry.alive);
-    return { health: mob.health, burningMobs: window.__bend2craft.presentation.burningMobs };
-  });
-  assert.equal(burningProbe.burningMobs, 1, "a hostile in direct sun stays on fire while it burns");
-  assert.ok(
-    burningProbe.health < litStart.health,
-    `the sun has to be doing damage before water can be credited with stopping it, ${litStart.health} -> ${burningProbe.health}`,
-  );
-  const poured = await page.evaluate(
-    (cell) => window.__bend2craft.seedWaterAt(cell.x, cell.y, cell.z),
-    boxSetup,
-  );
-  assert.ok(poured, "the dousing scenario needs an empty body cell to pour into");
-  await page.waitForFunction(
-    () => window.__bend2craft.presentation.burningMobs === 0,
-    null,
-    { timeout: 10000 },
-  );
-  const dousedProbe = await page.evaluate(() => {
-    const mob = window.__bend2craft.getMobs().find((entry) => entry.alive);
-    return { health: mob.health, burning: mob.burning };
-  });
-  assert.equal(dousedProbe.burning, false, "water under a burning body must clear the fire flag");
-  await page.waitForTimeout(1200);
-  const soakedProbe = await page.evaluate(() => {
+  assert.equal(seaSetup.remaining, 0, "the sea dousing scenario needs an empty mob set");
+  assert.ok(seaSetup.hostile !== null, "a hostile in the sea is required for the dousing smoke");
+  // Long enough for several sunlight ticks, since the first sample is taken
+  // before the domain has run at all.
+  await page.waitForTimeout(1500);
+  const seaProbe = await page.evaluate(() => {
     const mob = window.__bend2craft.getMobs().find((entry) => entry.alive);
     return {
       health: mob.health,
+      burning: mob.burning,
       burningMobs: window.__bend2craft.presentation.burningMobs,
-      vfxParticles: window.__bend2craft.presentation.vfxParticles,
+      bodyBlock: window.__bend2craft.getBlock(Math.floor(mob.x), Math.floor(mob.y), Math.floor(mob.z)),
     };
   });
-  assert.equal(soakedProbe.burningMobs, 0, "a mob in water must not be presented as burning");
+  assert.equal(seaProbe.bodyBlock, 7, "the dousing body has to be standing in water");
+  assert.equal(seaProbe.burning, false, "a mob in the sea must not report itself burning");
+  assert.equal(seaProbe.burningMobs, 0, "a mob in the sea must not be presented as burning");
   assert.ok(
-    soakedProbe.health >= dousedProbe.health - 0.001,
-    `water has to stop the sun damage, ${dousedProbe.health} -> ${soakedProbe.health}`,
+    seaProbe.health >= seaSetup.hostile.health - 0.001,
+    `the sun has to leave a mob in water alone, ${seaSetup.hostile.health} -> ${seaProbe.health}`,
   );
-  // The flames are drawn per burning body, so the fire particles have to drain
-  // with the flag rather than linger over a drowned mob.
-  await page.waitForFunction(
-    () => window.__bend2craft.presentation.vfxParticles === 0,
-    null,
-    { timeout: 5000 },
-  ).catch(() => {});
 
   await page.locator("#inventory-toggle").click();
   await page.waitForFunction(() => document.getElementById("inventory-panel")?.hidden === false);

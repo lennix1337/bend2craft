@@ -22,10 +22,28 @@ run_followup() {
     bash "$ROOT/scripts/run-bun.sh" "$ROOT/scripts/visual-quality-smoke.mjs" "$BASE_URL"
   elif [[ "${1:-}" == "--renderer-benchmark" ]]; then
     bash "$ROOT/scripts/run-bun.sh" "$ROOT/scripts/renderer-benchmark.mjs" "$BASE_URL"
+  elif [[ "${1:-}" == "--fps-cap" ]]; then
+    bash "$ROOT/scripts/run-bun.sh" "$ROOT/benchmarks/fps-cap.mjs" "$BASE_URL"
   fi
 }
 
 mkdir -p "$TMP_DIR"
+
+# A server left running from an earlier session answers on the port long before
+# it reflects the current source. Reusing it would let every smoke below report a
+# green result against a stale bundle, so an already-listening port is refused
+# unless the caller asked for it with REUSE_SERVER=1 or picked another PORT.
+if curl --max-time 2 -fsS "$BASE_URL/" -o "$INDEX_FILE" 2>/dev/null; then
+  if [[ "${REUSE_SERVER:-0}" == "1" ]]; then
+    printf 'dev server already ready at %s/ (reused by request)\n' "$BASE_URL"
+    run_followup "${1:-}"
+    exit 0
+  fi
+  printf 'a dev server is already answering on %s/.\n' "$BASE_URL" >&2
+  printf 'It may predate the current source, so reusing it can report a stale build as passing.\n' >&2
+  printf 'Stop it, or re-run with PORT=<free port> or REUSE_SERVER=1 to accept the risk.\n' >&2
+  exit 1
+fi
 
 cleanup() {
   if [[ -n "$SERVER_PID" ]]; then
@@ -36,14 +54,13 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-if curl --max-time 2 -fsS "$BASE_URL/" -o "$INDEX_FILE" 2>/dev/null; then
-  printf 'dev server already ready at %s/\n' "$BASE_URL"
-  run_followup "${1:-}"
-  exit 0
-fi
-
-setsid bash "$ROOT/scripts/run-bun.sh" "$ROOT/scripts/dev-server.ts" >"$LOG_FILE" 2>&1 &
+# Job control gives the server its own process group, so the group kill in
+# cleanup() below reaps it with anything it spawned. This is a bash builtin,
+# which keeps the script working on macOS, where setsid is not available.
+set -m
+bash "$ROOT/scripts/run-bun.sh" "$ROOT/scripts/dev-server.ts" >"$LOG_FILE" 2>&1 &
 SERVER_PID=$!
+set +m
 
 for attempt in $(seq 1 30); do
   if curl --max-time 2 -fsS "$BASE_URL/" -o "$INDEX_FILE" 2>/dev/null; then

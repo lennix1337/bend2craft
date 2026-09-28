@@ -10,6 +10,9 @@ function isLightOpaque(value) {
 }
 
 function materializeChunk(generated, cellCount) {
+  // The chunk worker transfers exactly-sized bytes; adopt them instead of
+  // copying. Any other shape (a Bend array, a list) is copied cell by cell.
+  if (generated instanceof Uint8Array && generated.length === cellCount) return generated;
   const data = new Uint8Array(cellCount);
   if (Array.isArray(generated) || ArrayBuffer.isView(generated)) {
     for (let index = 0; index < cellCount; index += 1) {
@@ -31,13 +34,13 @@ function materializeChunk(generated, cellCount) {
   return data;
 }
 
-function applyLightPatch(generated, chunks, chunkSize, maxY, indexOf) {
+function applyLightPatch(generated, chunks, chunkSize, maxY, indexOf, cellCoordinate = Number) {
   let node = generated;
   while (node?.$ === "Con") {
     const cell = node.head;
-    const x = Number(cell.x);
+    const x = cellCoordinate(cell.x);
     const y = Number(cell.y);
-    const z = Number(cell.z);
+    const z = cellCoordinate(cell.z);
     if (validInteger(x) && validInteger(y) && validInteger(z) && y >= 0 && y < maxY) {
       const chunkX = Math.floor(x / chunkSize);
       const chunkZ = Math.floor(z / chunkSize);
@@ -57,6 +60,26 @@ export function chunkKey(chunkX, chunkZ) {
   return `${chunkX},${chunkZ}`;
 }
 
+// This module is the single owner of chunk storage order and of the local-to-
+// world mapping. The greedy mesher runs both here on the main thread and inside
+// the mesh worker, so a traversal that drifted between the two would make them
+// disagree about which faces are hidden, with no error on either side.
+export function chunkIndex(chunkSize, x, y, z) {
+  return x + chunkSize * (z + chunkSize * y);
+}
+
+export function forEachBlockInChunk(chunk, chunkSize, maxY, callback) {
+  const originX = chunk.chunkX * chunkSize;
+  const originZ = chunk.chunkZ * chunkSize;
+  for (let y = 0; y < maxY; y += 1) {
+    for (let z = 0; z < chunkSize; z += 1) {
+      for (let x = 0; x < chunkSize; x += 1) {
+        callback(originX + x, y, originZ + z, chunk.data[chunkIndex(chunkSize, x, y, z)]);
+      }
+    }
+  }
+}
+
 export function createChunkedWorld({
   chunkSize = DEFAULT_CHUNK_SIZE,
   maxY,
@@ -69,6 +92,9 @@ export function createChunkedWorld({
   affectedLightCells = null,
   affectedLightColumnCells = null,
   invalidateLightFields = null,
+  // Maps a coordinate in a light patch back to the signed world coordinate
+  // (the light rules run on stored coordinates).
+  lightCellCoordinate = Number,
   requestChunk = null,
   generateBlock,
   initialEdits = null,
@@ -99,7 +125,7 @@ export function createChunkedWorld({
   let activeKeys = new Set();
   let lastLightDirtyCells = { $: "Nil" };
 
-  const indexOf = (x, y, z) => x + chunkSize * (z + chunkSize * y);
+  const indexOf = (x, y, z) => chunkIndex(chunkSize, x, y, z);
 
   function inside(x, y, z) {
     return validInteger(x) && validInteger(y) && validInteger(z) && y >= 0 && y < maxY;
@@ -330,7 +356,7 @@ export function createChunkedWorld({
       : affectedLightCells;
     if (typeof generateLightCells === "function" && typeof dirtyCellSampler === "function") {
       lastLightDirtyCells = mergeLightCells(changes, dirtyCellSampler);
-      applyLightPatch(generateLightCells(lastLightDirtyCells, edits), chunks, chunkSize, maxY, indexOf);
+      applyLightPatch(generateLightCells(lastLightDirtyCells, edits), chunks, chunkSize, maxY, indexOf, lightCellCoordinate);
       return;
     }
     lastLightDirtyCells = { $: "Nil" };
@@ -422,18 +448,7 @@ export function createChunkedWorld({
   function forEachChunkBlock(chunkX, chunkZ, callback) {
     const chunk = chunks.get(chunkKey(chunkX, chunkZ));
     if (chunk === undefined) return;
-      for (let y = 0; y < maxY; y += 1) {
-        for (let z = 0; z < chunkSize; z += 1) {
-          for (let x = 0; x < chunkSize; x += 1) {
-            callback(
-              chunk.chunkX * chunkSize + x,
-              y,
-              chunk.chunkZ * chunkSize + z,
-              chunk.data[indexOf(x, y, z)],
-            );
-          }
-        }
-      }
+    forEachBlockInChunk(chunk, chunkSize, maxY, callback);
   }
 
   function getChunkData(chunkX, chunkZ) {

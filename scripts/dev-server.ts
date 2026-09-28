@@ -42,6 +42,19 @@ if (!meshWorker.success) {
   process.exit(1);
 }
 await Bun.write(path.join(outdir, "mesh-worker.js"), await meshWorker.outputs[0].arrayBuffer());
+const lodWorker = await Bun.build({
+  entrypoints: [path.resolve("web/lod-worker-entry.js")],
+  outdir,
+  plugins: [bendPlugin],
+  target: "browser",
+  minify: false,
+  sourcemap: "none",
+});
+if (!lodWorker.success) {
+  console.error(lodWorker.logs);
+  process.exit(1);
+}
+await Bun.write(path.join(outdir, "lod-worker.js"), await lodWorker.outputs[0].arrayBuffer());
 
 const server = Bun.serve({
   port: Number(process.env.PORT ?? 3000),

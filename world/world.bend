@@ -5,6 +5,9 @@ import ./structures.bend as Structures
 # 8 coal ore, 9 iron ore, 10 diamond ore, 11 furnace, 12 torch, 13 bed,
 # 14 closed door, 15 open door, 16-19 wheat growth stages, 20 farmland, 21 lava,
 # 22 cobblestone, 23 obsidian, 25 glass, 26 chest, 27 crafting table.
+# The redstone blocks continue that contract from 28; see world/redstone.bend,
+# which owns their ids and the single ordered list `block_ids` that keeps the
+# browser's BLOCK_INFO in step.
 
 def default_seed() -> Nat:
   1337n
@@ -24,6 +27,21 @@ def max_y() -> Nat:
 def sea_level() -> Nat:
   7n
 
+# Negative world coordinates are stored at negative_origin() + x (see
+# web/world-coordinates.js, which pins the same constant). 45 * 2^21 is a
+# multiple of every terrain period, so the world continues seamlessly below 0.
+def negative_origin() -> Nat:
+  94371840n
+
+# The stored cell of a signed world position: floor(value), with a negative
+# cell moved to negative_origin() + cell. Entity queries against the generated
+# world go through this, so a mob at x < 0 reads its own column instead of 0.
+def cell(+value: F32) -> Nat:
+  +floor = F32.floor(value)
+  Bool.pick(Nat, F32.is_lt(floor, 0.0),
+    Nat.sub(negative_origin(), F32.to_nat(F32.neg(floor))),
+    F32.to_nat(floor))
+
 def plains_limit() -> Nat:
   96n
 
@@ -38,65 +56,150 @@ def triangle(+value: Nat, +period: Nat) -> Nat:
   +phase = Nat.mod(value, period)
   Nat.min(phase, Nat.sub(period, phase))
 
+# ---------------------------------------------------------------------------
+# U32 terrain core
+#
+# The browser runs Bend on the JavaScript target, where every `Nat` is a
+# BigInt and every `Nat` operator is a trampolined call. Terrain generation
+# evaluates the same few formulas for every cell of every chunk, so the hot
+# path is written in `U32` (a native 32-bit integer on every target) and the
+# `Nat` API keeps its signatures as thin conversions around it.
+#
+# Domain: coordinates below 2^28. The encoded negative chunks sit near 1.6e7,
+# and every intermediate below (the largest is `mix`, under 1.1e9) then stays
+# inside 32 bits, so the U32 formulas equal the Nat ones exactly.
+# ---------------------------------------------------------------------------
+
+# Every seed-dependent constant the terrain formulas read, reduced once. The
+# seed itself is an unbounded Nat, so it is reduced in Nat before it narrows.
+type Terms is Data:
+  Terms{mix: U32, s24: U32, s18: U32, s48: U32, s40: U32, s32: U32, s17: U32, s9: U32, s89: U32}
+
+def terms(+seed: Nat) -> Terms:
+  Terms{
+    U32.from_nat(Nat.mul(Nat.mod(seed, 997n), 7n)),
+    U32.from_nat(Nat.mod(seed, 24n)),
+    U32.from_nat(Nat.mod(seed, 18n)),
+    U32.from_nat(Nat.mod(seed, 48n)),
+    U32.from_nat(Nat.mod(seed, 40n)),
+    U32.from_nat(Nat.mod(seed, 32n)),
+    U32.from_nat(Nat.mod(seed, 17n)),
+    U32.from_nat(Nat.mod(seed, 9n)),
+    U32.from_nat(Nat.mod(seed, 89n))
+  }
+
+# `Nat.sub` saturates at zero; the U32 core must too, or `x - 1` at the world
+# edge would wrap to 2^32 - 1 and hash a different column.
+def sat_sub32(+a: U32, +b: U32) -> U32:
+  Bool.pick(U32, U32.is_lt(a, b), 0, (a - b : U32))
+
+def terms.mix(+t: Terms) -> U32:
+  Terms{+mix, +s24, +s18, +s48, +s40, +s32, +s17, +s9, +s89} = t
+  mix
+
+def terms.s89(+t: Terms) -> U32:
+  Terms{+mix, +s24, +s18, +s48, +s40, +s32, +s17, +s9, +s89} = t
+  s89
+
+def triangle32(+value: U32, +period: U32) -> U32:
+  +phase = U32.mod(value, period)
+  U32.min(phase, (period - phase : U32))
+
+def mix32(+seed_mix: U32, +x: U32, +z: U32) -> U32:
+  +sx = U32.mod(x, 4096)
+  +sz = U32.mod(z, 4096)
+  U32.mod((sx * sx * 17 + sz * sz * 31 + sx * sz * 13 + seed_mix : U32), 97)
+
+def plains_at32(+x: U32, +z: U32) -> Bool:
+  Bool.and(U32.is_lt(x, 96), U32.is_lt(z, 96))
+
+def biome32.if(+seed_mix: U32, +x: U32, +z: U32, plains: Bool) -> U32:
+  match plains:
+    case True{}:
+      0
+    case False{}:
+      U32.mod(mix32(seed_mix, U32.div(x, 32), U32.div(z, 32)), 4)
+
+def biome32(+t: Terms, +x: U32, +z: U32) -> U32:
+  Terms{+mix, +s24, +s18, +s48, +s40, +s32, +s17, +s9, +s89} = t
+  biome32.if(mix, x, z, plains_at32(x, z))
+
+def rolling_height32(+t: Terms, +x: U32, +z: U32) -> U32:
+  Terms{+mix, +s24, +s18, +s48, +s40, +s32, +s17, +s9, +s89} = t
+  +macro = triangle32((x + z + s24 : U32), 24)
+  +ridge = triangle32((x * 2 + z * 3 + s18 : U32), 18)
+  +detail = U32.mod(mix32(mix, x, z), 3)
+  (5 + U32.div(macro, 3) + U32.div(ridge, 2) + detail : U32)
+
+def plains_height32(+t: Terms, +x: U32, +z: U32) -> U32:
+  Terms{+mix, +s24, +s18, +s48, +s40, +s32, +s17, +s9, +s89} = t
+  +macro = triangle32((x + z + s48 : U32), 48)
+  +ridge = triangle32((x * 2 + z + s40 : U32), 40)
+  +region = U32.mod(mix32(mix, U32.div(x, 4), U32.div(z, 4)), 2)
+  (7 + U32.div(macro, 12) + U32.div(ridge, 20) + region : U32)
+
+def desert_height32(+t: Terms, +x: U32, +z: U32) -> U32:
+  Terms{+mix, +s24, +s18, +s48, +s40, +s32, +s17, +s9, +s89} = t
+  +macro = triangle32((x + z + s32 : U32), 32)
+  +detail = U32.mod(mix32(mix, U32.div(x, 4), U32.div(z, 4)), 2)
+  (6 + U32.div(macro, 16) + detail : U32)
+
+def mountain_height32(+t: Terms, +x: U32, +z: U32) -> U32:
+  Terms{+mix, +s24, +s18, +s48, +s40, +s32, +s17, +s9, +s89} = t
+  +macro = triangle32((x + z + s32 : U32), 32)
+  +ridge = triangle32((x * 3 + z + s24 : U32), 24)
+  (10 + U32.div(macro, 4) + U32.div(ridge, 3) : U32)
+
+# Only the selected biome's formula runs; `Bool.pick` would evaluate all four.
+def height32.mountain(+t: Terms, +x: U32, +z: U32, mountain: Bool) -> U32:
+  match mountain:
+    case True{}:
+      mountain_height32(t, x, z)
+    case False{}:
+      rolling_height32(t, x, z)
+
+def height32.desert(+t: Terms, +x: U32, +z: U32, +biome: U32, desert: Bool) -> U32:
+  match desert:
+    case True{}:
+      desert_height32(t, x, z)
+    case False{}:
+      height32.mountain(t, x, z, U32.is_eq(biome, 3))
+
+def height32.biome(+t: Terms, +x: U32, +z: U32, +biome: U32, plains: Bool) -> U32:
+  match plains:
+    case True{}:
+      plains_height32(t, x, z)
+    case False{}:
+      height32.desert(t, x, z, biome, U32.is_eq(biome, 2))
+
+def height32.with_biome(+t: Terms, +x: U32, +z: U32, +biome: U32) -> U32:
+  height32.biome(t, x, z, biome, plains_at32(x, z))
+
+def height32(+t: Terms, +x: U32, +z: U32) -> U32:
+  height32.with_biome(t, x, z, biome32(t, x, z))
+
+def tree32(+t: Terms, +x: U32, +z: U32, +h: U32, +biome: U32, +mixed: U32) -> Bool:
+  Terms{+mix, +s24, +s18, +s48, +s40, +s32, +s17, +s9, +s89} = t
+  +forest = U32.is_eq(biome, 1)
+  +hash = U32.mod((mixed + s17 : U32), 37)
+  +forest_hash = U32.mod((mixed + s9 : U32), 9)
+  +selected = Bool.pick(Bool, forest, U32.is_eq(forest_hash, 0), U32.is_eq(hash, 0))
+  +highland = U32.is_gt(h, 8)
+  +woodland = Bool.or(U32.is_eq(biome, 0), forest)
+  highland && woodland && U32.is_gt(x, 1) && U32.is_gt(z, 1) && selected
+
 def mix(+seed: Nat, +x: Nat, +z: Nat) -> Nat:
-  +seed_part = Nat.mod(seed, 997n)
-  +safe_x = Nat.mod(x, 4096n)
-  +safe_z = Nat.mod(z, 4096n)
-  +x_square = Nat.mul(safe_x, safe_x)
-  +z_square = Nat.mul(safe_z, safe_z)
-  +quadratic = Nat.add(Nat.mul(x_square, 17n), Nat.mul(z_square, 31n))
-  +cross = Nat.mul(Nat.mul(safe_x, safe_z), 13n)
-  +spread = Nat.add(quadratic, cross)
-  Nat.mod(Nat.add(spread, Nat.mul(seed_part, 7n)), 97n)
+  +seed_mix = U32.from_nat(Nat.mul(Nat.mod(seed, 997n), 7n))
+  U32.to_nat(mix32(seed_mix, U32.from_nat(x), U32.from_nat(z)))
 
 def plains_at(+x: Nat, +z: Nat) -> Bool:
   Nat.is_lt(x, plains_limit()) && Nat.is_lt(z, plains_limit())
 
 def biome_at(+seed: Nat, +x: Nat, +z: Nat) -> U32:
-  Bool.pick(
-    U32, plains_at(x, z), 0,
-    U32.from_nat(Nat.mod(mix(seed, Nat.div(x, 32n), Nat.div(z, 32n)), 4n))
-  )
-
-def rolling_height(+seed: Nat, +x: Nat, +z: Nat) -> Nat:
-  +macro_phase = Nat.add(Nat.add(x, z), Nat.mod(seed, 24n))
-  +macro = triangle(macro_phase, 24n)
-  +ridge_phase = Nat.add(
-    Nat.add(Nat.mul(x, 2n), Nat.mul(z, 3n)),
-    Nat.mod(seed, 18n)
-  )
-  +ridge = triangle(ridge_phase, 18n)
-  +detail = Nat.mod(mix(seed, x, z), 3n)
-  Nat.add(5n, Nat.add(Nat.div(macro, 3n), Nat.add(Nat.div(ridge, 2n), detail)))
-
-def plains_height(+seed: Nat, +x: Nat, +z: Nat) -> Nat:
-  +macro_phase = Nat.add(Nat.add(x, z), Nat.mod(seed, 48n))
-  +macro = triangle(macro_phase, 48n)
-  +ridge_phase = Nat.add(
-    Nat.add(Nat.mul(x, 2n), z),
-    Nat.mod(seed, 40n)
-  )
-  +ridge = triangle(ridge_phase, 40n)
-  +region_noise = Nat.mod(mix(seed, Nat.div(x, 4n), Nat.div(z, 4n)), 2n)
-  Nat.add(7n, Nat.add(Nat.div(macro, 12n), Nat.add(Nat.div(ridge, 20n), region_noise)))
-
-def desert_height(+seed: Nat, +x: Nat, +z: Nat) -> Nat:
-  +macro = triangle(Nat.add(Nat.add(x, z), Nat.mod(seed, 32n)), 32n)
-  +detail = Nat.mod(mix(seed, Nat.div(x, 4n), Nat.div(z, 4n)), 2n)
-  Nat.add(6n, Nat.add(Nat.div(macro, 16n), detail))
-
-def mountain_height(+seed: Nat, +x: Nat, +z: Nat) -> Nat:
-  +macro = triangle(Nat.add(Nat.add(x, z), Nat.mod(seed, 32n)), 32n)
-  +ridge = triangle(Nat.add(Nat.add(Nat.mul(x, 3n), z), Nat.mod(seed, 24n)), 24n)
-  Nat.add(10n, Nat.add(Nat.div(macro, 4n), Nat.div(ridge, 3n)))
+  biome32(terms(seed), U32.from_nat(x), U32.from_nat(z))
 
 def column_height(+seed: Nat, +x: Nat, +z: Nat) -> Nat:
-  +biome = biome_at(seed, x, z)
-  +desert = U32.is_eq(biome, 2)
-  +mountain = U32.is_eq(biome, 3)
-  Bool.pick(Nat, plains_at(x, z), plains_height(seed, x, z),
-    Bool.pick(Nat, desert, desert_height(seed, x, z),
-      Bool.pick(Nat, mountain, mountain_height(seed, x, z), rolling_height(seed, x, z))))
+  U32.to_nat(height32(terms(seed), U32.from_nat(x), U32.from_nat(z)))
 
 def tree_at_height(+seed: Nat, +x: Nat, +z: Nat, +h: Nat) -> Bool:
   +biome = biome_at(seed, x, z)
@@ -442,159 +545,173 @@ def spawn_cell(+seed: Nat) -> SpawnCell:
     Nat.add(Nat.mul(Nat.div(depth(), 3n), width()), Nat.div(width(), 2n)),
   )
 
-def chunk_wood.if(
-  +seed: Nat, +x: Nat, +y: Nat, +z: Nat, +h: Nat, in_range: Bool
-) -> Bool:
-  match in_range:
-    case True{}:
-      trunk_at_height(seed, x, y, z, h)
+# ---------------------------------------------------------------------------
+# Bulk chunk generation
+#
+# The cell rule below is the chunk rule the browser has always streamed
+# (structures, trunks, canopy above y = 10, caves, sea water, terrain; no
+# generated lava), evaluated through the U32 core. Everything a cell needs that
+# only depends on its column (height, biome hash, sand surface, tree, the canopy
+# layers of the 3x3 neighbourhood, village proximity) is computed once per
+# column instead of once per cell. `tests/world-chunk-golden.test.mjs` pins the
+# output to fingerprints taken from the original per-cell Nat implementation.
+# ---------------------------------------------------------------------------
+
+type Column is Data:
+  Column{height: U32, mixed: U32, sand: Bool, tree: Bool, leaves: U32, village: Bool}
+
+def column.leaves(+column: Column) -> U32:
+  Column{+height, +mixed, +sand, +tree, +leaves, +village} = column
+  leaves
+
+def chunk32.bit(+y: U32) -> U32:
+  U32.shln(1, U32.to_nat(y))
+
+# Canopy layers contributed by the tree rooted at (cx, cz) to the column
+# (x, z), as a bit per y. The lower canopy fills the whole 3x3 ring at h + 2;
+# the upper arm at h + 3 only reaches the plus-shaped neighbours.
+def chunk32.leaf_bits(+t: Terms, +x: U32, +z: U32, +cx: U32, +cz: U32) -> U32:
+  Terms{+mix, +s24, +s18, +s48, +s40, +s32, +s17, +s9, +s89} = t
+  +biome = biome32(t, cx, cz)
+  +h = height32.with_biome(t, cx, cz, biome)
+  +tree = tree32(t, cx, cz, h, biome, mix32(mix, cx, cz))
+  +plus = Bool.or(U32.is_eq(cx, x), U32.is_eq(cz, z))
+  +lower = chunk32.bit((h + 2 : U32))
+  +upper = Bool.pick(U32, plus, chunk32.bit((h + 3 : U32)), 0)
+  Bool.pick(U32, tree, U32.or(lower, upper), 0)
+
+# Shoreline sand only changes the answer for a column exactly one block above
+# sea level: lower columns are beach sand and higher ones never qualify.
+def chunk32.shore(+t: Terms, +x: U32, +z: U32, +h: U32, check: Bool) -> Bool:
+  match check:
     case False{}:
       False{}
-
-def chunk_wood(+seed: Nat, +x: Nat, +y: Nat, +z: Nat, +h: Nat) -> Bool:
-  chunk_wood.if(seed, x, y, z, h,
-    Nat.is_ge(y, h) && Nat.is_lt(y, Nat.add(h, 3n)))
-
-def chunk_leaf.if(+seed: Nat, +x: Nat, +y: Nat, +z: Nat, visible: Bool) -> Bool:
-  match visible:
     case True{}:
-      canopy(seed, x, y, z)
-    case False{}:
-      False{}
+      +west = U32.is_lt(height32(t, sat_sub32(x, 1), z), h)
+      +east = U32.is_lt(height32(t, (x + 1 : U32), z), h)
+      +north = U32.is_lt(height32(t, x, sat_sub32(z, 1)), h)
+      +south = U32.is_lt(height32(t, x, (z + 1 : U32)), h)
+      Bool.or(Bool.or(west, east), Bool.or(north, south))
 
-def chunk_leaf(+seed: Nat, +x: Nat, +y: Nat, +z: Nat) -> Bool:
-  chunk_leaf.if(seed, x, y, z, Nat.is_gt(y, 10n))
+def chunk32.column(
+  +t: Terms, +x: U32, +z: U32, +origin_x: U32, +origin_z: U32, +village_valid: Bool
+) -> Column:
+  Terms{+mix, +s24, +s18, +s48, +s40, +s32, +s17, +s9, +s89} = t
+  +biome = biome32(t, x, z)
+  +h = height32.with_biome(t, x, z, biome)
+  +mixed = mix32(mix, x, z)
+  +tree = tree32(t, x, z, h, biome, mixed)
+  +desert = U32.is_eq(biome, 2)
+  +shore = chunk32.shore(t, x, z, h, Bool.and(U32.is_eq(h, 8), Bool.not(desert)))
+  +sand = Bool.or(U32.is_le(h, 7), Bool.or(desert, shore))
+  +xm = sat_sub32(x, 1)
+  +xp = (x + 1 : U32)
+  +zm = sat_sub32(z, 1)
+  +zp = (z + 1 : U32)
+  +west = U32.or(chunk32.leaf_bits(t, x, z, xm, zm), U32.or(chunk32.leaf_bits(t, x, z, xm, z), chunk32.leaf_bits(t, x, z, xm, zp)))
+  +middle = U32.or(chunk32.leaf_bits(t, x, z, x, zm), U32.or(chunk32.leaf_bits(t, x, z, x, z), chunk32.leaf_bits(t, x, z, x, zp)))
+  +east = U32.or(chunk32.leaf_bits(t, x, z, xp, zm), U32.or(chunk32.leaf_bits(t, x, z, xp, z), chunk32.leaf_bits(t, x, z, xp, zp)))
+  # Chunk canopy is only emitted above y = 10 (bits 11 and up).
+  +leaves = U32.and(U32.or(west, U32.or(middle, east)), 4294965248)
+  +near_x = Bool.and(U32.is_ge(x, sat_sub32(origin_x, 8)), U32.is_lt(x, (origin_x + 14 : U32)))
+  +near_z = Bool.and(U32.is_ge(z, sat_sub32(origin_z, 8)), U32.is_lt(z, (origin_z + 14 : U32)))
+  Column{h, mixed, sand, tree, leaves, Bool.and(village_valid, Bool.and(near_x, near_z))}
 
-def chunk_cave.if(
-  +seed: Nat, +x: Nat, +y: Nat, +z: Nat, +h: Nat, enclosed: Bool
-) -> Bool:
-  match enclosed:
-    case True{}:
-      cave_at_height(seed, x, y, z, h)
-    case False{}:
-      False{}
-
-def chunk_cave(+seed: Nat, +x: Nat, +y: Nat, +z: Nat, +h: Nat) -> Bool:
-  chunk_cave.if(seed, x, y, z, h,
-    Nat.is_gt(y, 1n) && Nat.is_lt(Nat.add(y, 2n), h))
-
-def chunk_structure.if(
-  +seed: Nat, +x: Nat, +y: Nat, +z: Nat, +village_height: Nat, near: Bool
+def chunk32.structure(
+  +seed: Nat, +x: U32, +y: U32, +z: U32, +village_height: Nat, village: Bool
 ) -> U32:
-  match near:
-    case True{}:
-      Structures.block(seed, x, y, z, village_height)
+  match village:
     case False{}:
       0
+    case True{}:
+      Structures.block(seed, U32.to_nat(x), U32.to_nat(y), U32.to_nat(z), village_height)
 
-def chunk_structure(
-  +seed: Nat, +x: Nat, +y: Nat, +z: Nat, +village_height: Nat
-) -> U32:
-  +origin_x = Structures.village_origin_x(seed)
-  +origin_z = Structures.village_origin_z(seed)
-  +near_x = Nat.is_ge(x, Nat.sub(origin_x, 8n))
-    && Nat.is_lt(x, Nat.add(origin_x, 14n))
-  +near_z = Nat.is_ge(z, Nat.sub(origin_z, 8n))
-    && Nat.is_lt(z, Nat.add(origin_z, 14n))
-  chunk_structure.if(
-    seed, x, y, z, village_height,
-    Structures.village_height_valid(village_height) && Bool.and(near_x, near_z)
-  )
+def chunk32.ore(+mixed: U32, +y: U32, +s89: U32) -> U32:
+  +hash = U32.mod((mixed + y * 17 + s89 : U32), 97)
+  Bool.pick(U32, U32.is_eq(hash, 0), 10,
+    Bool.pick(U32, U32.is_eq(U32.mod(hash, 31), 0), 9,
+      Bool.pick(U32, U32.is_eq(U32.mod(hash, 11), 0), 8, 1)))
 
-def chunk_terrain.if(
-  +seed: Nat, +x: Nat, +y: Nat, +z: Nat, +height: Nat, inside: Bool
-) -> U32:
+def chunk32.terrain(+s89: U32, +mixed: U32, +h: U32, +sand: Bool, +y: U32, inside: Bool) -> U32:
   match inside:
-    case True{}:
-      terrain_block_at(seed, x, y, z, height)
     case False{}:
       0
+    case True{}:
+      +deep_limit = sat_sub32(h, 3)
+      +deep = Bool.pick(U32, Bool.and(U32.is_gt(y, 0), U32.is_lt(y, deep_limit)), chunk32.ore(mixed, y, s89), 2)
+      Bool.pick(U32, U32.is_eq(y, sat_sub32(h, 1)), Bool.pick(U32, sand, 6, 3),
+        Bool.pick(U32, U32.is_eq(y, sat_sub32(h, 2)), Bool.pick(U32, sand, 6, 2),
+          Bool.pick(U32, U32.is_lt(y, deep_limit), deep, 2)))
 
-def chunk_terrain(
-  +seed: Nat, +x: Nat, +y: Nat, +z: Nat, +height: Nat
+def chunk32.cell(
+  +seed: Nat, +s89: U32, +village_height: Nat, +column: Column,
+  +x: U32, +z: U32, +y: U32, +leaf_mask: U32
 ) -> U32:
-  chunk_terrain.if(seed, x, y, z, height, Nat.is_lt(y, height))
-
-def chunk_block.height(
-  +seed: Nat, +x: Nat, +y: Nat, +z: Nat, +h: Nat, +village_height: Nat
-) -> U32:
-  +structure = chunk_structure(seed, x, y, z, village_height)
-  +wood = chunk_wood(seed, x, y, z, h)
-  +leaf = chunk_leaf(seed, x, y, z)
-  +cave = chunk_cave(seed, x, y, z, h)
-  +water = water_at_height(h, y)
-  +terrain = chunk_terrain(seed, x, y, z, h)
+  Column{+height, +mixed, +sand, +tree, +leaves, +village} = column
+  # Village blocks only exist from the floor (village height) to the roof.
+  +vh = U32.from_nat(village_height)
+  +in_band = Bool.and(U32.is_ge(y, vh), U32.is_le(y, (vh + 4 : U32)))
+  +structure = chunk32.structure(seed, x, y, z, village_height, Bool.and(village, in_band))
+  +wood = Bool.and(tree, Bool.and(U32.is_ge(y, height), U32.is_lt(y, (height + 3 : U32))))
+  +leaf = U32.is_ne(U32.and(leaf_mask, 1), 0)
+  +cave = Bool.and(Bool.and(U32.is_gt(y, 1), U32.is_lt((y + 2 : U32), height)),
+    U32.is_eq(U32.mod((mixed + y * 17 : U32), 43), 0))
+  +water = Bool.and(U32.is_le(height, y), U32.is_lt(y, 8))
+  +terrain = chunk32.terrain(s89, mixed, height, sand, y, U32.is_lt(y, height))
   Bool.pick(U32, U32.is_ne(structure, 0), structure,
     Bool.pick(U32, wood, 5,
       Bool.pick(U32, leaf, 4,
         Bool.pick(U32, cave, 0,
           Bool.pick(U32, water, 7, terrain)))))
 
-def chunk_block(+seed: Nat, +x: Nat, +y: Nat, +z: Nat) -> U32:
-  +h = column_height(seed, x, z)
-  +village_height = column_height(seed, Structures.village_origin_x(seed), Structures.village_origin_z(seed))
-  chunk_block.height(seed, x, y, z, h, village_height)
-
-def chunk.value.if(
-  +seed: Nat, +chunk_x: Nat, +chunk_z: Nat, +index: Nat, valid: Bool
-) -> U32:
-  match valid:
-    case True{}:
-      +column = Nat.mul(chunk_size(), chunk_size())
-      +y = Nat.div(index, column)
-      +in_column = Nat.mod(index, column)
-      +z = Nat.div(in_column, chunk_size())
-      +x = Nat.mod(in_column, chunk_size())
-      +global_x = Nat.add(Nat.mul(chunk_x, chunk_size()), x)
-      +global_z = Nat.add(Nat.mul(chunk_z, chunk_size()), z)
-      chunk_block(seed, global_x, y, global_z)
-    case False{}:
-      0
-
-def chunk_cells() -> Nat:
-  Nat.mul(Nat.mul(chunk_size(), chunk_size()), max_y())
-
-def chunk.value(+seed: Nat, +chunk_x: Nat, +chunk_z: Nat, +index: Nat) -> U32:
-  chunk.value.if(seed, chunk_x, chunk_z, index, Nat.is_lt(index, chunk_cells()))
-
-def chunk.column.fill(
-  +seed: Nat, +global_x: Nat, +global_z: Nat, +local_x: Nat, +local_z: Nat,
-  +height: Nat, +village_height: Nat, +remaining: Nat, +y: Nat,
+def chunk32.fill(
+  +seed: Nat, +s89: U32, +village_height: Nat, +column: Column,
+  +x: U32, +z: U32, +local: U32, +remaining: Nat, +y: U32, +leaf_mask: U32,
   blocks: Array<U32>
 ) -> Array<U32>:
   match remaining:
     case 0n:
       blocks
     case 1n+p:
-      +index = Nat.add(local_x, Nat.mul(chunk_size(), Nat.add(local_z, Nat.mul(chunk_size(), y))))
-      updated = blocks[U32.from_nat(index)] <- chunk_block.height(seed, global_x, y, global_z, height, village_height)
-      chunk.column.fill(seed, global_x, global_z, local_x, local_z, height, village_height, p, Nat.add(y, 1n), updated)
+      +index = (local + y * 256 : U32)
+      updated = blocks[index] <- chunk32.cell(seed, s89, village_height, column, x, z, y, leaf_mask)
+      chunk32.fill(seed, s89, village_height, column, x, z, local, p, (y + 1 : U32), U32.shr(leaf_mask), updated)
 
-def chunk.columns.x(
-  +seed: Nat, +chunk_x: Nat, +chunk_z: Nat, +village_height: Nat,
-  +remaining: Nat, +local_x: Nat, +local_z: Nat, blocks: Array<U32>
+def chunk32.columns.x(
+  +seed: Nat, +t: Terms, +village_height: Nat, +origin_x: U32, +origin_z: U32,
+  +village_valid: Bool, +base_x: U32, +base_z: U32, +remaining: Nat,
+  +local_x: U32, +local_z: U32, blocks: Array<U32>
 ) -> Array<U32>:
   match remaining:
     case 0n:
       blocks
     case 1n+p:
-      +global_x = Nat.add(Nat.mul(chunk_x, chunk_size()), local_x)
-      +global_z = Nat.add(Nat.mul(chunk_z, chunk_size()), local_z)
-      +height = column_height(seed, global_x, global_z)
-      updated = chunk.column.fill(seed, global_x, global_z, local_x, local_z, height, village_height, max_y(), 0n, blocks)
-      chunk.columns.x(seed, chunk_x, chunk_z, village_height, p, Nat.add(local_x, 1n), local_z, updated)
+      +x = (base_x + local_x : U32)
+      +z = (base_z + local_z : U32)
+      +column = chunk32.column(t, x, z, origin_x, origin_z, village_valid)
+      updated = chunk32.fill(seed, terms.s89(t), village_height, column, x, z, (local_x + local_z * 16 : U32), max_y(), 0, column.leaves(column), blocks)
+      chunk32.columns.x(seed, t, village_height, origin_x, origin_z, village_valid, base_x, base_z, p, (local_x + 1 : U32), local_z, updated)
 
-def chunk.columns.z(
-  +seed: Nat, +chunk_x: Nat, +chunk_z: Nat, +village_height: Nat,
-  +remaining: Nat, +local_z: Nat, blocks: Array<U32>
+def chunk32.columns.z(
+  +seed: Nat, +t: Terms, +village_height: Nat, +origin_x: U32, +origin_z: U32,
+  +village_valid: Bool, +base_x: U32, +base_z: U32, +remaining: Nat,
+  +local_z: U32, blocks: Array<U32>
 ) -> Array<U32>:
   match remaining:
     case 0n:
       blocks
     case 1n+p:
-      updated = chunk.columns.x(seed, chunk_x, chunk_z, village_height, chunk_size(), 0n, local_z, blocks)
-      chunk.columns.z(seed, chunk_x, chunk_z, village_height, p, Nat.add(local_z, 1n), updated)
+      updated = chunk32.columns.x(seed, t, village_height, origin_x, origin_z, village_valid, base_x, base_z, chunk_size(), 0, local_z, blocks)
+      chunk32.columns.z(seed, t, village_height, origin_x, origin_z, village_valid, base_x, base_z, p, (local_z + 1 : U32), updated)
 
 def chunk(+seed: Nat, +chunk_x: Nat, +chunk_z: Nat) -> Array<U32>:
-  +village_height = column_height(seed, Structures.village_origin_x(seed), Structures.village_origin_z(seed))
-  chunk.columns.z(seed, chunk_x, chunk_z, village_height, chunk_size(), 0n, Array.new(U32, 13n, 0))
+  +origin_x = Structures.village_origin_x(seed)
+  +origin_z = Structures.village_origin_z(seed)
+  +village_height = column_height(seed, origin_x, origin_z)
+  chunk32.columns.z(
+    seed, terms(seed), village_height,
+    U32.from_nat(origin_x), U32.from_nat(origin_z),
+    Structures.village_height_valid(village_height),
+    U32.from_nat(Nat.mul(chunk_x, chunk_size())), U32.from_nat(Nat.mul(chunk_z, chunk_size())),
+    chunk_size(), 0, Array.new(U32, 13n, 0)
+  )

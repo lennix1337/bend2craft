@@ -1529,6 +1529,89 @@ body[data-mode="game"].is-world-ready #first-person-hand-canvas {
   line-height: 1.5;
 }
 
+/* The options screen carries four groups of unrelated settings, so it gets a
+   wider panel and its own scroll body: the action buttons stay reachable without
+   scrolling, which a single overflowing panel cannot do. */
+/* Shown after a renderer failed and handed the player back here. It has to be
+   unmissable but not alarming: the game did recover, on the fallback path. */
+.backend-notice {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid #7a5a22;
+  border-left: 4px solid var(--amber);
+  background: rgb(58 40 12 / 0.72);
+  color: #f0dfae;
+  font: 400 12px/1.5 var(--font-data);
+  text-align: left;
+}
+
+.menu-panel.wide {
+  width: min(720px, calc(100vw - 36px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.options-scroll {
+  display: grid;
+  gap: 4px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 6px;
+  /* Room for the scrollbar so the sliders do not shift when it appears. */
+  scrollbar-gutter: stable;
+}
+
+/* Two groups per row once there is room. A single column leaves a third of the
+   panel empty on a desktop and pushes the key bindings below the fold for no
+   reason; the sections are independent, so a plain grid is enough. */
+@media (min-width: 900px) {
+  .options-scroll {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 28px;
+    align-items: start;
+  }
+
+  .options-section {
+    border-top: 0;
+    padding: 6px 0 10px;
+  }
+
+  /* A rule above every section but the first row reads as a divider between
+     the rows rather than between unrelated groups. */
+  .options-section:nth-child(n + 3) {
+    border-top: 1px solid var(--line);
+  }
+
+  .options-section:nth-child(2) {
+    border-top: 0;
+  }
+}
+
+.options-section {
+  padding: 10px 0 4px;
+  border-top: 1px solid var(--line);
+}
+
+.options-section:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.options-section > .field:last-child {
+  margin-bottom: 8px;
+}
+
+.menu-panel.wide .menu-buttons {
+  flex-direction: row;
+  justify-content: flex-end;
+  gap: 10px;
+  flex: 0 0 auto;
+  padding-top: 12px;
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
 .menu-buttons {
   display: flex;
   flex-direction: column;

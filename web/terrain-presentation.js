@@ -34,6 +34,40 @@ export const WATER_CAUSTIC_THRESHOLD_END = 0.72;
 export const AERIAL_FOG_MIN_DENSITY = 0.42;
 export const AERIAL_FOG_HEIGHT_FALLOFF = 0.028;
 
+// Per-pixel lighting response. The sun term is deliberately brighter than a
+// baked constant: the tonemapper downstream rolls off anything much above this,
+// which is what buys the headroom the bloom and the god rays need.
+//
+// AMBIENT_STRENGTH is scene-referred, not display-referred. `uSkyColor` is the
+// colour the sky is *displayed* as, which for a mid-blue is around 0.2-0.5; the
+// radiance of that sky is several times higher, so the ambient has to be scaled
+// up by roughly that factor or every shadowed surface collapses to near black.
+export const SUN_INTENSITY = 0.95;
+// Ambient can afford to be generous now that the sun is no longer doing the work
+// alone. It used to be balanced against a 2.35 sun, which meant it had to stay
+// small to keep a sunlit surface out of the tonemap's shoulder, and the cost was
+// that a backlit face - a wall with the sun behind it, filling a third of the
+// frame - collapsed to black and lost its material. With the sun term scaled
+// back, the same tonemap budget is available to the sky fill instead.
+export const AMBIENT_STRENGTH = 1.8;
+/** Bounce colour from the ground onto downward-facing surfaces. */
+export const GROUND_BOUNCE = Object.freeze([0.16, 0.15, 0.12]);
+/** Height-field amplitude for the derivative bump, in world units per unit height. */
+export const BUMP_STRENGTH = 0.055;
+/** Amplitude of the per-block detail resample that hides the tile repeat. */
+export const DETAIL_STRENGTH = 0.1;
+/** How many times the tile repeats inside one block face for the detail layer. */
+export const DETAIL_SCALE = 3.0;
+/** Grass and leaf sway, scaled by the adaptive quality tier. */
+export const GRASS_WIND_STRENGTH = 1;
+/** How much fine wave detail the water surface keeps. */
+export const WATER_DETAIL_STRENGTH = 1;
+/** Volumetric cloud raymarch samples at the top quality tier. */
+export const CLOUD_COVERAGE = 0.42;
+export const CLOUD_WIND_SPEED = 1;
+/** How much of the ambient's blue cast is washed out toward neutral. */
+export const AMBIENT_DESATURATION = 0.34;
+
 // Material response is split into three ordered stages so both backends grade a
 // pixel the same way: albedo from the material sample, then lighting from the
 // day/ambient model, then the material lobe (detail, roughness, specular).
@@ -155,6 +189,29 @@ export function materialSpecular(facing, roughness) {
 /** Normalized water depth in 0..1, saturating at the documented maximum. */
 export function waterDepthTint(depth) {
   return clamp01(Number(depth) / WATER_DEPTH_MAX);
+}
+
+/**
+ * Direct sun contribution for a surface: the wrapped N.L term, softened at the
+ * terminator so a blocky world does not read as chipped. `shadow` is the
+ * cascade lookup in 0..1 and `sunUp` is how far above the horizon the sun is.
+ */
+export function sunDiffuse(ndotl, shadow = 1, sunUp = 1) {
+  const facing = Math.max(0, Number(ndotl) ?? 0);
+  const wrapped = Math.max(0, (facing + 0.18) / 1.18);
+  const visibility = smoothstep(-0.14, 0.06, Number(sunUp) ?? 0);
+  return (facing * 0.65 + wrapped * 0.35) * clamp01(shadow) * visibility * SUN_INTENSITY;
+}
+
+/**
+ * Hemispheric ambient for a surface. The sky term dominates up-facing surfaces,
+ * the ground bounce dominates down-facing ones, and both are gated by the baked
+ * sky-light level so an enclosed voxel stays dark.
+ */
+export function ambientResponse(normalY, skyLightLevel, occlusion) {
+  const up = clamp01(Number(normalY) * 0.5 + 0.5);
+  const openness = 0.24 + 0.76 * clamp01(skyLightLevel);
+  return AMBIENT_STRENGTH * up * openness * clamp01(occlusion);
 }
 
 /**

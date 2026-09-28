@@ -18,9 +18,14 @@ Status markers:
 
 - [x] Bend owns melee line-of-sight: a hostile cannot damage a player across a solid cell, and the eye ray runs at eye height so a one-block step is not mistaken for cover.
 - [x] Bend owns the melee attack cone: a hostile must be facing the player, with a wider cone for the brute. A dead mob never contributes damage on a later tick.
+- [x] One mob roster across both layers: pig, zombie, sheep, brute, cow and chicken, each with its own model, hitbox, hurt voice and loot. A missing model used to draw a hostile brute as a pig that charged the player and burned in daylight.
+- [x] Farm animals wander by default and run from the player only after being struck, through a `panic` timer that `attack` sets and the step functions spend.
+- [x] Farm animals spawn in the open during the day; only a hostile waits for nightfall or a blocked sky, and the spawn grid is fine enough that a 48x48 world carries a real population.
 - [x] Per-chunk frustum culling on the WebGPU terrain path, reporting visible chunks, culled chunks, draw calls and submitted vertex bytes.
 - [x] A block edit re-uploads only the edited chunk instead of composing a whole-world vertex array on the per-chunk backend.
 - [x] Padded atlas with a per-tile gutter, and mipmaps enabled only after a Foreign Tile Contamination probe passes against the real GPU mip chain.
+- [x] High-definition procedural materials: 128-texel tiles painted per material (stones, blades, bark fissures, faceted ores, planks, bricks) in a 2048x2048 atlas certified through mip level 6, with the atlas composed in memory instead of self-copying the canvas.
+- [ ] Item icons for placeable blocks drawn from the high-definition atlas instead of the 16px pixel pass.
 - [x] Material response split into albedo, lighting and material stages with parity between the WebGL and WGSL sources, plus water depth tinting carried in the material band.
 - [x] The WebGPU gate reads a real presented frame back out of the swap chain and probes the scene; an unavailable backend is marked skipped with an explicit diagnostic.
 
@@ -43,7 +48,17 @@ Status markers:
 
 ## P0 — world and performance
 
-- [x] Chunk streaming keeps desired/active/pending state separate and supports render distances 2–6.
+- [x] Chunk streaming keeps desired/active/pending state separate and supports render distances 2–8 (default 4).
+- [x] Terrain chunk generation runs through a U32 core with per-column precomputation, byte-identical to the original Nat rules (`tests/world-chunk-golden.test.mjs`); `bench:chunks` dropped from ~475 ms to ~4 ms per chunk.
+- [x] Chunk light is filled column by column with chunk-local edits, pre-binned torch fields and lazy source floods; the chunk worker caches each source's flood.
+- [x] Chunk and mesh workers transfer typed arrays instead of structured-cloning them, and per-chunk mesh jobs no longer ship every resident mesh to the worker.
+- [x] WebGL keeps one interleaved buffer per chunk with frustum culling (view and sun cascade) instead of a whole-world array re-uploaded on every change; edits publish as soon as their chunk is rebuilt.
+- [x] 24-bit depth texture for the HDR scene where available.
+- [x] Distant terrain (Distant Horizons style): quadtree LOD rings of cached tiles from the Bend `Horizon.lod_points` sampler on a dedicated worker, per-chunk stand-ins in the nearest ring, skirts between rings, Off/256/512/1024/2048-block option.
+- [ ] Torch floods (`world/lightflood.bend`) still use list-based BFS with O(n²) visited and wall scans (~50 ms per source); an array-backed flood would make torch placement and first-time chunk light cheap.
+- [ ] Village structure cells still run through the Nat `Structures.block` path (~20 ms for a village chunk versus ~4 ms elsewhere).
+- [ ] Negative coordinates are generated from a remapped region (`GENERATION_CHUNK_OFFSET + |chunk|`), so the terrain has a visible seam along x = 0 and z = 0. Fixing it needs a continuous signed mapping plus a save migration for stored edit coordinates.
+- [ ] LOD tiles are generated from the pure world generator, so player edits outside the streamed window are not reflected in the distant rings.
 - [x] Edited blocks, entities and simulation state are persisted in the seed-scoped save.
 - [ ] Fix the WebGPU atlas mip generator, then enable the chain. WebGPU has no `generateMipmap`, so each level is written by hand. The current implementation renders each level while sampling the same texture, which WebGPU forbids, so the levels stay zero-initialized and the chain misses the box-filter reference by a max delta of 255. The gate detects this and refuses the chain, so WebGPU currently samples the base level with linear minification. The ping-pong version through a scratch texture is in place; the remaining work is making the downsample match `atlasBoxDownsample`. Measured cost of shipping the broken chain: mean per-pixel delta against WebGL rises from 1.43 to 41.77, with 76% of pixels differing by more than 8.
 - [~] Larger `max_y`: the current world remains at `20`; benchmark and decide a larger height without regressing browser frame time.
@@ -83,15 +98,66 @@ Status markers:
 - [ ] Add carrots, potatoes and sugar cane.
 - [ ] Add bonemeal and crop acceleration rules.
 - [ ] Add breeding and animal population rules.
+- [~] Raw porkchop, raw beef and raw chicken are collectible and edible as they drop; add cooking recipes and a placeable cooked-meal tier.
 - [~] Expand villagers into profession work schedules and workstation behavior.
 - [ ] Add iron golems and raids.
 - [ ] Add infinite-water source rules.
 - [ ] Add flint-and-steel and player-initiated fire.
 
+## P2 — redstone
+
+Minecraft's redstone is the most heavily specified system the game has, with years of
+community-documented edge cases. The slice below is the combinational core, the timed
+components and the machines, split by concern so the web layer has a single seam:
+
+- `world/redstone.bend` — dust, torch, lever, block, lamp, repeater/comparator core, burnout
+- `world/redstone_clock.bend` — repeater/comparator counters and the per-tick order
+- `world/redstone_machines.bend` — door, pressure plate, activator rail, piston, observer
+- `world/redstone_grid.bend` — the array-backed dust flood
+- `world/redstone_all.bend` — the one entry point the browser ticker calls
+
+- [x] Redstone dust with vanilla decay, strong/weak power split, vertical connection, and a power map that does not depend on placement order.
+- [x] Redstone torch (with self-exclusion and vanilla burnout), lever, redstone block, redstone lamp.
+- [x] Redstone repeater at all four delays and the comparator in both modes.
+- [x] Door, pressure plate, activator rail, piston and sticky piston, with the world edits they ask for.
+- [x] Observer: the one component with no signal input. Fires for two ticks when the block in front *changes*, adopts its first sight without firing, and does not watch a front cell that saturates back onto itself.
+- [x] A 20Hz ticker, circuit persistence, and one item per placeable block held in a single contract across three files.
+- [x] A linear array-backed dust flood replacing a quadratic list flood, and a window sized to the circuit so a circuit of any size settles.
+- [ ] **Configurability the contracts already have and the player cannot reach.** This is the largest gap in the slice, and it is in the adapter rather than in Bend. `place_repeater` takes a direction and a delay, `place_comparator` a direction and a mode, `place_piston` a face, `place_observer` a face — and `web/redstone.js` passes `0` for every one of them on every placement. So a placed repeater is always one tick facing east, a comparator is always compare mode facing east, and a piston or observer always points east. The contract implements and tests all four repeater delays and both comparator modes; none of them is reachable in game. This also needs the right-click interaction vanilla has, since a repeater's delay is raised by clicking it and a comparator's mode is toggled by clicking it, and `isRedstoneInteractive` currently recognises only the lever.
+- [ ] Dust climbing stairs and slabs diagonally (1.17+). Blocked on the P1 stairs/slabs/fences entry: the diagonal connection needs those blocks to exist, and the flood needs a per-cell answer about what a neighbour is.
+- [ ] Buttons: a fixed pulse rather than a held level, so the circuit gets a real second timing model alongside the lever.
+- [ ] Weighted pressure plates (light and heavy), with output strength by the number and kind of entities standing on them. The current plate is a single on/off model.
+- [ ] Target block: a source whose strength a comparator reads.
+- [ ] Redstone wall torch, which is a distinct block with a face rather than a torch standing on a block.
+- [ ] Quasi-connectivity, the vanilla behaviour where a component is powered through a diagonal or around a block. It changes what a large number of circuits do.
+- [ ] Scheduled tick ordering and block-update priority. Vanilla gives dispensers and hopers an explicit order; this contract settles machines level by level and does not model it.
+- [ ] Piston fidelity: the push limit is 2 cells where vanilla is 12, and there are no immovable blocks, no slime/honey/moving rules and no block-entity preservation. The shorter limit is deliberate for now and documented in `world/redstone_machines.bend`; the immovability rules are the part that changes what a contraption can do.
+- [ ] Detector rail and powered rail; the activator rail is the only rail, and it has no minecart detection (a documented gap, not a faked one).
+- [ ] Lamp burnout. Vanilla's lamp is destroyed after 0.1s of destruction; the burnout here is the torch's.
+- [ ] A lit lamp or redstone torch actually lights the world. The circuit decides, the adapter exposes the read, and nothing consumes it yet: `world/light.bend` classifies light sources by block id and a lamp's id says nothing about its state, so this needs a state-aware source rather than a block id.
+- [ ] Per-block appearance, which is presentation rather than light and is a separate piece of work. The adapter already reads a dust cell's power and whether a lamp or torch is on, and the mesh pipeline takes its vertex colour from `faceColorGrade` and the atlas, so a powered wire currently draws exactly like an unpowered one. Nothing consumes the two reads.
+- [ ] The clock period is one tick longer than vanilla's (`2*latency + 3` against vanilla's 4 for a one-tick repeater). This is the cost of advancing timers once per tick instead of cascading within a tick, and it is pinned in a test with the comparison stated.
+
+## P2 — redstone as machines and items
+
+Redstone in Minecraft is also a set of blocks that do work, and none of these exist. They
+are separate from the signal layer above and each is its own contract:
+
+- [ ] Redstone dust as an *item*: a player carries dust and places a line from one click, with the vanilla line-drag placement. Today the only redstone item is the block form.
+- [ ] Redstone as a *liquid*. A dispenser filled with a bucket of redstone is a redstone source in vanilla, and the fluid is a distinct state from the block. This was excluded from the original slice along with the dust item, and the dust item has now come back in but the liquid has not.
+- [ ] Trial chambers and the vault, which drive redstone from their own block states rather than from a placed circuit.
+- [ ] Dispenser and dropper: place, dispense, and the one-tick-per-item move with hopper assistance.
+- [ ] Hopper: transfer, the 8-slot container, and its place in the transfer priority order.
+- [ ] Note block and the instruments it triggers.
+- [ ] TNT priming from a signal, and the explosion rule.
+- [ ] Sculk sensor and the calibrated sculk sensor, which respond to vibration rather than to a level and are the modern replacement for reading a change.
+- [ ] Copper bulb with a configurable 1–4 tick delay, the component that makes a tunable clock out of one block.
+- [ ] Charged blocks (chiseled bookshelf, decorated pot) that a comparator can read.
+
 ## P2 — large systems
 
-- [ ] Add redstone signals and redstone components.
-- [ ] Add pistons and block movement rules.
+- [~] Add redstone signals and redstone components. See P2 — redstone above for the implemented slice and the remaining scope.
+- [~] Add pistons and block movement rules. Piston, sticky piston and the refusal rules are in; the push limit, immovables and block entities are not.
 - [ ] Add potions and brewing.
 - [ ] Add enchantment selection, storage and effect rules.
 - [ ] Add elytra flight.
@@ -103,7 +169,7 @@ Status markers:
 ## Verification and release gates
 
 - [ ] Add focused regression tests for every new contract seam.
-- [ ] Keep `npm run verify` green after each phase.
-- [ ] Run browser smoke for every UI/world interaction that crosses the WebGL boundary.
+- [x] `npm run verify` is green: Bend checks, proofs, 110 regression tests, static build and `git diff --check`.
+- [ ] Run browser smoke for every UI/world interaction that crosses the WebGL boundary. **Currently failing on `main` as well as on this branch**: `npm run browser:smoke` times out waiting for a page condition with an empty log, with the whole working tree stashed, so the gate is broken in this environment rather than by a change. Nothing about redstone's browser behaviour is verified until that is fixed.
 - [ ] Commit each verified phase with a scoped message.
 - [ ] Push only after the full phase gate passes and read back the published SHA.

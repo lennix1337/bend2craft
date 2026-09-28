@@ -25,6 +25,8 @@ assert.equal(classifyChunkUpdate(["1,1", "2,2"], ["2,2", "1,1"]), "edit");
 function layer(vertexCount, base = 0) {
   const positions = new Float32Array(vertexCount * 3);
   const colors = new Float32Array(vertexCount * 3);
+  const lights = new Float32Array(vertexCount * 2);
+  const normals = new Float32Array(vertexCount * 3);
   const uvs = new Float32Array(vertexCount * 2);
   const materials = new Float32Array(vertexCount);
   const tiles = new Float32Array(vertexCount * 4);
@@ -35,10 +37,13 @@ function layer(vertexCount, base = 0) {
     colors[vertex * 3] = 1;
     colors[vertex * 3 + 1] = 1;
     colors[vertex * 3 + 2] = 1;
+    lights[vertex * 2] = 1;
+    lights[vertex * 2 + 1] = 1;
+    normals[vertex * 3 + 1] = 1;
     materials[vertex] = 10;
     tiles[vertex * 4] = 0;
   }
-  return { positions, colors, uvs, materials, tiles, quadCount: vertexCount / 6 };
+  return { positions, colors, lights, normals, uvs, materials, tiles, quadCount: vertexCount / 6 };
 }
 
 const packed = packTerrainLayer(layer(12, 4));

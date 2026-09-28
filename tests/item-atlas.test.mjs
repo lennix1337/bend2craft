@@ -62,10 +62,13 @@ const itemNames = [
   "iron_chestplate",
   "iron_leggings",
   "iron_boots",
+  "raw_porkchop",
+  "raw_beef",
+  "raw_chicken",
 ];
 
 assert.equal(ITEM_ATLAS_COLUMNS, 5);
-assert.equal(ITEM_ATLAS_ROWS, 9);
+assert.equal(ITEM_ATLAS_ROWS, 11);
 assert.equal(ITEM_TEXTURES.length, itemNames.length);
 assert.equal(TEXTURE_PASS.id, "fallback-pixel-pass-v1");
 assert.equal(TEXTURE_PASS.referenceSheet, null);
@@ -118,16 +121,26 @@ for (const [id, name] of itemNames.entries()) {
   for (const row of texture.pattern) assert.equal(row.length, 16);
 }
 
+// The bed is item 23, so it sits on row 4 of a 5-wide sheet.
 const bedUV = itemTextureUV("bed", { tileSize: ITEM_ATLAS_TILE_SIZE, inset: 0 });
 assert.equal(bedUV[0], 0.6);
-assert.ok(Math.abs(bedUV[1] - (5 / 9)) < Number.EPSILON);
+assert.ok(Math.abs(bedUV[1] - (7 / ITEM_ATLAS_ROWS)) < Number.EPSILON);
 assert.equal(bedUV[2], 0.8);
-assert.ok(Math.abs(bedUV[3] - (5 / 9)) < Number.EPSILON);
+assert.ok(Math.abs(bedUV[3] - (7 / ITEM_ATLAS_ROWS)) < Number.EPSILON);
 assert.equal(bedUV[4], 0.8);
-assert.ok(Math.abs(bedUV[5] - (4 / 9)) < Number.EPSILON);
+assert.ok(Math.abs(bedUV[5] - (6 / ITEM_ATLAS_ROWS)) < Number.EPSILON);
 assert.equal(bedUV[6], 0.6);
-assert.ok(Math.abs(bedUV[7] - (4 / 9)) < Number.EPSILON);
+assert.ok(Math.abs(bedUV[7] - (6 / ITEM_ATLAS_ROWS)) < Number.EPSILON);
 assert.throws(() => itemTextureUV("bed", { inset: ITEM_ATLAS_TILE_SIZE / 2 }), RangeError);
+
+// Every tile has to land inside the atlas, or the icon is drawn outside the
+// sheet and reads as a missing item. The armour icons were the last ones to
+// overflow it before the meat icons were added.
+for (const id of itemNames.keys()) {
+  const tile = itemTextureTile(id);
+  assert.ok(tile.row < ITEM_ATLAS_ROWS, `item ${itemNames[id]} is outside the item atlas`);
+  for (const value of itemTextureUV(id)) assert.ok(value <= 1);
+}
 
 function createContext() {
   const calls = [];
@@ -204,7 +217,7 @@ assert.ok(itemCanvasContext.calls.length > 1);
 
 const atlasContext = createContext();
 drawItemTextureAtlas(atlasContext, { tileSize: 8 });
-assert.deepEqual(atlasContext.calls[0], ["clearRect", 0, 0, 40, 72]);
+assert.deepEqual(atlasContext.calls[0], ["clearRect", 0, 0, ITEM_ATLAS_COLUMNS * 8, ITEM_ATLAS_ROWS * 8]);
 assert.ok(atlasContext.calls.length > ITEM_TEXTURES.length);
 
 const atlasCanvasContext = createContext();

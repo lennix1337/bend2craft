@@ -4,7 +4,45 @@ import ./player.bend as Player
 import ./world_state.bend as WorldState
 
 type Mob is Data:
-  Mob{id: Nat, kind: U32, x: F32, y: F32, z: F32, heading_x: F32, heading_z: F32, health: F32, alive: Bool}
+  Mob{id: Nat, kind: U32, x: F32, y: F32, z: F32, heading_x: F32, heading_z: F32, health: F32, alive: Bool, burning: Bool, panic: F32}
+
+# The mob roster, in one place. 1 pig, 2 zombie, 3 sheep, 4 brute, 5 cow,
+# 6 chicken. A farm animal walks around, runs from the player for a while after
+# the player hits it, and never fights back. A hostile hunts the player and
+# burns in open daylight. Every rule below asks `kind_is_hostile` instead of
+# repeating a kind number, so a new animal cannot inherit the hunter's rules and
+# a new monster cannot inherit the animal's.
+def kind_is_hostile(+kind: U32) -> Bool:
+  Bool.or(U32.is_eq(kind, 2), U32.is_eq(kind, 4))
+
+def kind_is_animal(+kind: U32) -> Bool:
+  Bool.or(
+    Bool.or(U32.is_eq(kind, 1), U32.is_eq(kind, 3)),
+    Bool.or(U32.is_eq(kind, 5), U32.is_eq(kind, 6))
+  )
+
+# How many kinds the roster holds. `spawn` draws from it, so the spawn table and
+# the roster cannot drift apart.
+def kind_count() -> Nat:
+  6n
+
+# Panic is how many seconds of running an animal has left. `attack` starts it and
+# the step functions are the only things that spend it, so an animal walks around
+# until the player strikes it and then bolts, instead of fleeing a player who
+# never touched it.
+def panic_seconds() -> F32:
+  6.0
+
+def next_panic(+panic: F32, +dt: F32) -> F32:
+  Bool.pick(F32, F32.is_gt(panic, dt), F32.sub(panic, dt), 0.0)
+
+# Item 12 is wool, 13 rotten flesh, 48 raw porkchop, 49 raw beef, 50 raw
+# chicken. Loot follows the animal: the sheep shears, the rest leave meat.
+def drop_item(+kind: U32) -> U32:
+  Bool.pick(U32, U32.is_eq(kind, 3), 12,
+    Bool.pick(U32, U32.is_eq(kind, 1), 48,
+      Bool.pick(U32, U32.is_eq(kind, 5), 49,
+        Bool.pick(U32, U32.is_eq(kind, 6), 50, 13))))
 
 type Region is Data:
   Region{blocks: List<&2, U32>, origin_x: Nat, origin_y: Nat, origin_z: Nat, width: Nat, height: Nat, depth: Nat}
@@ -31,13 +69,19 @@ def choose_f32(c: Bool, yes: F32, no: F32) -> F32:
 def make_mob(
   id: Nat, kind: U32, x: F32, y: F32, z: F32, health: F32, alive: Bool
 ) -> Mob:
-  Mob{id, kind, x, y, z, 0.0, F32.neg(1.0), health, alive}
+  Mob{id, kind, x, y, z, 0.0, F32.neg(1.0), health, alive, False{}, 0.0}
 
+# `burning` is the authoritative "this body is on fire right now" flag. The
+# sunlight tick is the only writer that sets it; every other tick that rebuilds a
+# Mob has to hand the current value straight through, so a mob on fire does not
+# flicker every time it takes a step or gets knocked back. `panic` is carried the
+# same way: `attack` is the only writer that sets it, and the steps only spend it.
+# The browser presents both flags; it never infers fire or fear of its own.
 def make_mob_heading(
   id: Nat, kind: U32, x: F32, y: F32, z: F32,
-  heading_x: F32, heading_z: F32, health: F32, alive: Bool
+  heading_x: F32, heading_z: F32, health: F32, alive: Bool, burning: Bool, panic: F32
 ) -> Mob:
-  Mob{id, kind, x, y, z, heading_x, heading_z, health, alive}
+  Mob{id, kind, x, y, z, heading_x, heading_z, health, alive, burning, panic}
 
 def cons_mob(mob: Mob, tail: List<&2, Mob>) -> List<&2, Mob>:
   Con{mob, tail}
@@ -67,13 +111,40 @@ def make_drop(id: Nat, item: U32, x: F32, y: F32, z: F32, amount: U32) -> Drop:
   Drop{id, item, x, y, z, amount, 0.0, False{}}
 
 def drop_for(mob: Mob) -> Drop:
-  Mob{id, +kind, x, y, z, heading_x, heading_z, health, alive} = mob
-  +wool = Bool.or(U32.is_eq(kind, 1), U32.is_eq(kind, 3))
-  +item = Bool.pick(U32, wool, 12, 13)
-  Drop{id, item, x, y, z, 1, 0.0, False{}}
+  Mob{id, +kind, x, y, z, heading_x, heading_z, health, alive, burning, panic} = mob
+  Drop{id, drop_item(kind), x, y, z, 1, 0.0, False{}}
+
+# The generated-world half of sun_exposed: a cell is lit when it sits at or above
+# its terrain column and nothing generated overhead blocks the sky. Spawn reads
+# this same predicate, so a mob can never be placed on ground the sunlight tick
+# would burn it on the very next step.
+def sun_exposed_generated(+seed: Nat, +x: F32, +y: F32, +z: F32) -> Bool:
+  +cell_x = World.cell(x)
+  +cell_y = Player.floor_nat(y)
+  +cell_z = World.cell(z)
+  +terrain_height = World.column_height(seed, cell_x, cell_z)
+  +above_terrain = Nat.is_ge(cell_y, terrain_height)
+  +generated_cover = Bool.and(
+    above_terrain,
+    Player.solid(World.generated_cover_above(seed, cell_x, cell_y, cell_z))
+  )
+  Bool.and(above_terrain, Bool.not(generated_cover))
+
+# The spawn grid. A cell is four blocks on a side, so the 48x48 world offers 144
+# candidate spots rather than 36: a coarser grid made the population a lottery
+# where a handful of draws could all land inside the spawn clearing or on a
+# hillside, and the player met no animals at all.
+def spawn_cell_size() -> Nat:
+  4n
+
+# How many of those cells carry a mob. One in eight puts five to fourteen bodies
+# on the map - most of them farm animals, since a hostile may only appear under a
+# blocked sky or after nightfall.
+def spawn_cell_divisor() -> Nat:
+  8n
 
 def spawn_x(
-  +seed: Nat, +remaining: Nat, +x: Nat, +z: Nat, +next_id: Nat,
+  +seed: Nat, +daylight: F32, +remaining: Nat, +x: Nat, +z: Nat, +next_id: Nat,
   +mobs: List<&2, Mob>
 ) -> List<&2, Mob>:
   match remaining:
@@ -82,12 +153,24 @@ def spawn_x(
     case 1n+p:
       +height = World.column_height(seed, x, z)
       +hash = World.mix(seed, x, z)
-      +selected = Nat.is_eq(Nat.mod(hash, 23n), 0n)
+      +selected = Nat.is_eq(Nat.mod(hash, spawn_cell_divisor()), 0n)
       +feet_open = U32.is_eq(World.block(seed, x, height, z), 0)
       +head_open = U32.is_eq(World.block(seed, x, Nat.add(height, 1n), z), 0)
-      +clear = Bool.and(feet_open, head_open)
-      +kind = U32.add(U32.from_nat(Nat.mod(World.mix(seed, z, x), 4n)), 1)
+      +foot_x = F32.add(U32.to_f32(U32.from_nat(x)), fraction(1, 2))
+      +foot_y = U32.to_f32(U32.from_nat(height))
+      +foot_z = F32.add(U32.to_f32(U32.from_nat(z)), fraction(1, 2))
+      +kind = U32.add(U32.from_nat(Nat.mod(World.mix(seed, z, x), kind_count())), 1)
+      +hostile = kind_is_hostile(kind)
       +tough = U32.is_eq(kind, 4)
+      # A hostile standing in open daylight would burn on the first tick, so it
+      # may only appear under a blocked sky or after nightfall. An animal never
+      # burns, and the open surface is the only place a player meets one, so it
+      # only needs room for its body.
+      +dark = Bool.not(F32.is_gt(daylight, 0.5))
+      +shaded = Bool.not(sun_exposed_generated(seed, foot_x, foot_y, foot_z))
+      +unlit = Bool.or(dark, shaded)
+      +fit = Bool.and(feet_open, head_open)
+      +clear = Bool.and(fit, Bool.or(Bool.not(hostile), unlit))
       +mob = make_mob(
         next_id,
         kind,
@@ -98,38 +181,48 @@ def spawn_x(
         True{}
       )
       +updated = Bool.pick(List<&2, Mob>, Bool.and(selected, clear), cons_mob(mob, mobs), mobs)
-      spawn_x(seed, p, Nat.add(x, 8n), z, Nat.add(next_id, 1n), updated)
+      spawn_x(seed, daylight, p, Nat.add(x, spawn_cell_size()), z, Nat.add(next_id, 1n), updated)
 
 def spawn_z(
-  +seed: Nat, +remaining: Nat, +x: Nat, +z: Nat, +x_count: Nat,
+  +seed: Nat, +daylight: F32, +remaining: Nat, +x: Nat, +z: Nat, +x_count: Nat,
   +next_id: Nat, +mobs: List<&2, Mob>
 ) -> List<&2, Mob>:
   match remaining:
     case 0n:
       mobs
     case 1n+p:
-      +row = spawn_x(seed, x_count, x, z, next_id, mobs)
-      spawn_z(seed, p, x, Nat.add(z, 8n), x_count, Nat.add(next_id, x_count), row)
+      +row = spawn_x(seed, daylight, x_count, x, z, next_id, mobs)
+      spawn_z(seed, daylight, p, x, Nat.add(z, spawn_cell_size()), x_count, Nat.add(next_id, x_count), row)
 
 def spawn(
-  +seed: Nat, +origin_x: Nat, +origin_z: Nat, +width: Nat, +depth: Nat
+  +seed: Nat, +daylight: F32, +origin_x: Nat, +origin_z: Nat,
+  +width: Nat, +depth: Nat
 ) -> List<&2, Mob>:
-  spawn_z(seed, Nat.div(depth, 8n), origin_x, origin_z, Nat.div(width, 8n), 0n, Nil{})
+  spawn_z(
+    seed,
+    daylight,
+    Nat.div(depth, spawn_cell_size()),
+    origin_x,
+    origin_z,
+    Nat.div(width, spawn_cell_size()),
+    0n,
+    Nil{}
+  )
 
 def peaceful_mobs(+mobs: List<&2, Mob>) -> List<&2, Mob>:
   match mobs:
     case Nil{}:
       Nil{}
     case Con{+head, +tail}:
-      Mob{+id, +kind, +x, +y, +z, heading_x, heading_z, +health, +alive} = head
+      Mob{+id, +kind, +x, +y, +z, heading_x, heading_z, +health, +alive, burning, panic} = head
       +rest = peaceful_mobs(tail)
-      Bool.pick(List<&2, Mob>, U32.is_eq(kind, 1), cons_mob(head, rest), rest)
+      Bool.pick(List<&2, Mob>, kind_is_animal(kind), cons_mob(head, rest), rest)
 
 def spawn_for_mode(
-  +seed: Nat, +origin_x: Nat, +origin_z: Nat, +width: Nat, +depth: Nat,
-  peaceful: Bool
+  +seed: Nat, +daylight: F32, +origin_x: Nat, +origin_z: Nat,
+  +width: Nat, +depth: Nat, peaceful: Bool
 ) -> List<&2, Mob>:
-  +mobs = spawn(seed, origin_x, origin_z, width, depth)
+  +mobs = spawn(seed, daylight, origin_x, origin_z, width, depth)
   Bool.pick(List<&2, Mob>, peaceful, peaceful_mobs(mobs), mobs)
 
 def spawn_area_cell(+value: F32, +cell: Nat) -> Bool:
@@ -144,16 +237,18 @@ def remove_spawn_area(
     case Nil{}:
       Nil{}
     case Con{+head, +tail}:
-      Mob{+id, +kind, +x, +y, +z, heading_x, heading_z, +health, +alive} = head
+      Mob{+id, +kind, +x, +y, +z, heading_x, heading_z, +health, +alive, burning, panic} = head
       +rest = remove_spawn_area(tail, safe_x, safe_z)
       +same_area = Bool.and(spawn_area_cell(x, safe_x), spawn_area_cell(z, safe_z))
       Bool.pick(List<&2, Mob>, same_area, rest, cons_mob(head, rest))
 
 def spawn_for_player(
-  +seed: Nat, +origin_x: Nat, +origin_z: Nat, +width: Nat, +depth: Nat,
-  +safe_x: Nat, +safe_z: Nat, peaceful: Bool
+  +seed: Nat, +daylight: F32, +origin_x: Nat, +origin_z: Nat,
+  +width: Nat, +depth: Nat, +safe_x: Nat, +safe_z: Nat, peaceful: Bool
 ) -> List<&2, Mob>:
-  +mobs = remove_spawn_area(spawn(seed, origin_x, origin_z, width, depth), safe_x, safe_z)
+  +mobs = remove_spawn_area(
+    spawn(seed, daylight, origin_x, origin_z, width, depth), safe_x, safe_z
+  )
   Bool.pick(List<&2, Mob>, peaceful, peaceful_mobs(mobs), mobs)
 
 def max_f32(+a: F32, +b: F32) -> F32:
@@ -249,24 +344,24 @@ def step_grounded(
   mob: Mob, player_x: F32, player_z: F32, +dt: F32, +time: F32, +offset: Nat,
   +region: Region
 ) -> Mob:
-  Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive} = mob
+  Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive, +burning, +panic} = mob
   Region{+blocks, +origin_x, +origin_y, +origin_z, +width, +height, +depth} = region
   +offset_f = U32.to_f32(U32.from_nat(offset))
-  +hostile = Bool.or(U32.is_eq(kind, 2), U32.is_eq(kind, 4))
-  +skittish = U32.is_eq(kind, 3)
+  +hostile = kind_is_hostile(kind)
+  +panicked = Bool.and(alive, F32.is_gt(panic, 0.0))
   +phase = F32.add(F32.mul(time, fraction(6, 10)), F32.mul(U32.to_f32(U32.from_nat(id)), fraction(24, 10)))
   +to_player_x = F32.sub(player_x, x)
   +to_player_z = F32.sub(player_z, z)
   +dir_x = Bool.pick(F32, hostile, to_player_x,
-    Bool.pick(F32, skittish, F32.neg(to_player_x), F32.sin(phase)))
+    Bool.pick(F32, panicked, F32.neg(to_player_x), F32.sin(phase)))
   +dir_z = Bool.pick(F32, hostile, to_player_z,
-    Bool.pick(F32, skittish, F32.neg(to_player_z), F32.cos(phase)))
-  +distance = Bool.pick(F32, Bool.or(hostile, skittish),
+    Bool.pick(F32, panicked, F32.neg(to_player_z), F32.cos(phase)))
+  +distance = Bool.pick(F32, Bool.or(hostile, panicked),
     F32.sqrt(F32.add(F32.mul(to_player_x, to_player_x), F32.mul(to_player_z, to_player_z))), 1.0)
   +safe_distance = Bool.pick(F32, F32.is_eq(distance, 0.0), 1.0, distance)
   +rate = Bool.pick(F32, U32.is_eq(kind, 4), fraction(1, 2),
     Bool.pick(F32, U32.is_eq(kind, 2), fraction(8, 10),
-      Bool.pick(F32, skittish, fraction(12, 10), fraction(4, 10))))
+      Bool.pick(F32, panicked, fraction(12, 10), fraction(4, 10))))
   +stride = F32.mul(rate, dt)
   +try_x = F32.add(x, F32.mul(F32.div(dir_x, safe_distance), stride))
   +moved_x = step_x(blocks, origin_x, origin_y, origin_z, width, height, depth, offset_f, alive, x, y, z, try_x)
@@ -287,7 +382,8 @@ def step_grounded(
     Bool.pick(F32, F32.is_gt(ground, F32.neg(999.0)), ground, fall))
   +next_heading_x = Bool.pick(F32, alive, F32.div(dir_x, safe_distance), heading_x)
   +next_heading_z = Bool.pick(F32, alive, F32.div(dir_z, safe_distance), heading_z)
-  make_mob_heading(id, kind, next_x, next_y, next_z, next_heading_x, next_heading_z, health, alive)
+  +panic_left = Bool.pick(F32, alive, next_panic(panic, dt), panic)
+  make_mob_heading(id, kind, next_x, next_y, next_z, next_heading_x, next_heading_z, health, alive, burning, panic_left)
 
 def step_world(
   +mobs: List<&2, Mob>, +player_x: F32, +player_z: F32,
@@ -307,30 +403,30 @@ def step_world(
 def step_mob_budgeted(
   +mob: Mob, player_x: F32, player_z: F32, +dt: F32, +active_radius: F32
 ) -> Mob:
-  Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive} = mob
+  Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive, +burning, +panic} = mob
   +dx = F32.sub(player_x, x)
   +dz = F32.sub(player_z, z)
   +distance = F32.sqrt(F32.add(F32.mul(dx, dx), F32.mul(dz, dz)))
   +near = F32.is_lt(distance, active_radius)
   +far_dt = F32.div(dt, 5.0)
   +effective_dt = Bool.pick(F32, near, dt, far_dt)
-  +hostile = Bool.or(U32.is_eq(kind, 2), U32.is_eq(kind, 4))
-  +skittish = U32.is_eq(kind, 3)
+  +hostile = kind_is_hostile(kind)
   +chaser = Bool.and(hostile, alive)
-  +fleer = Bool.and(skittish, alive)
+  +panicked = Bool.and(F32.is_gt(panic, 0.0), alive)
   +safe_distance = Bool.pick(F32, F32.is_eq(distance, 0.0), 1.0, distance)
   +speed = F32.mul(fraction(8, 10), effective_dt)
   +chase_x = F32.add(x, F32.mul(F32.div(dx, safe_distance), speed))
   +chase_z = F32.add(z, F32.mul(F32.div(dz, safe_distance), speed))
   +flee_x = F32.sub(x, F32.mul(F32.div(dx, safe_distance), speed))
   +flee_z = F32.sub(z, F32.mul(F32.div(dz, safe_distance), speed))
-  +next_x = Bool.pick(F32, chaser, chase_x, Bool.pick(F32, fleer, flee_x, x))
-  +next_z = Bool.pick(F32, chaser, chase_z, Bool.pick(F32, fleer, flee_z, z))
-  +face_x = Bool.pick(F32, fleer, F32.neg(F32.div(dx, safe_distance)), F32.div(dx, safe_distance))
-  +face_z = Bool.pick(F32, fleer, F32.neg(F32.div(dz, safe_distance)), F32.div(dz, safe_distance))
-  +next_heading_x = Bool.pick(F32, Bool.or(chaser, fleer), face_x, heading_x)
-  +next_heading_z = Bool.pick(F32, Bool.or(chaser, fleer), face_z, heading_z)
-  make_mob_heading(id, kind, next_x, y, next_z, next_heading_x, next_heading_z, health, alive)
+  +next_x = Bool.pick(F32, chaser, chase_x, Bool.pick(F32, panicked, flee_x, x))
+  +next_z = Bool.pick(F32, chaser, chase_z, Bool.pick(F32, panicked, flee_z, z))
+  +face_x = Bool.pick(F32, panicked, F32.neg(F32.div(dx, safe_distance)), F32.div(dx, safe_distance))
+  +face_z = Bool.pick(F32, panicked, F32.neg(F32.div(dz, safe_distance)), F32.div(dz, safe_distance))
+  +next_heading_x = Bool.pick(F32, Bool.or(chaser, panicked), face_x, heading_x)
+  +next_heading_z = Bool.pick(F32, Bool.or(chaser, panicked), face_z, heading_z)
+  +panic_left = Bool.pick(F32, alive, next_panic(panic, effective_dt), panic)
+  make_mob_heading(id, kind, next_x, y, next_z, next_heading_x, next_heading_z, health, alive, burning, panic_left)
 
 def step_budgeted(
   +mobs: List<&2, Mob>, +player_x: F32, +player_z: F32,
@@ -494,7 +590,7 @@ def threat_damage.cell(
   +vertical_close = F32.is_lt(F32.abs(to_y), fraction(3, 2))
   +close = Bool.and(F32.is_lt(distance, fraction(3, 2)), vertical_close)
   +brute = Bool.and(U32.is_eq(kind, 4), alive)
-  +hostile = Bool.and(U32.is_eq(kind, 2), alive)
+  +hostile = Bool.and(kind_is_hostile(kind), alive)
   +here = Bool.pick(F32, brute, 4.0, Bool.pick(F32, hostile, 2.0, 0.0))
   +contact = Bool.and(close, F32.is_gt(here, 0.0))
   +facing = facing_player(heading_x, heading_z, to_x, to_z, kind)
@@ -525,7 +621,7 @@ def threat_damage(
     case Nil{}:
       0.0
     case Con{+head, tail}:
-      Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive} = head
+      Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive, burning, panic} = head
       match regions:
         case Nil{}:
           0.0
@@ -543,7 +639,7 @@ def attack.go(
     case Nil{}:
       CombatResult{Nil{}, drops, False{}}
     case Con{+head, tail}:
-      Mob{+id, +kind, +x, +y, +z, heading_x, heading_z, +health, +alive} = head
+      Mob{+id, +kind, +x, +y, +z, heading_x, heading_z, +health, +alive, +burning, +panic} = head
       +from_dx = F32.sub(x, from_x)
       +from_dy = F32.sub(y, from_y)
       +from_dz = F32.sub(z, from_z)
@@ -565,10 +661,14 @@ def attack.go(
       +knock_z = F32.add(z, F32.mul(F32.div(away_z, safe_push), fraction(9, 10)))
       +next_heading_x = Bool.pick(F32, target, F32.div(away_x, safe_push), heading_x)
       +next_heading_z = Bool.pick(F32, target, F32.div(away_z, safe_push), heading_z)
+      # Being struck is what makes an animal run. A hostile has nowhere to run
+      # to, so the hit buys it panic instead of a head start.
+      +startled = Bool.and(target, kind_is_animal(kind))
+      +next_panic = Bool.pick(F32, startled, panic_seconds(), panic)
       +updated = make_mob_heading(
         id, kind, Bool.pick(F32, target, knock_x, x), y,
         Bool.pick(F32, target, knock_z, z), next_heading_x, next_heading_z,
-        next_health, next_alive
+        next_health, next_alive, burning, next_panic
       )
       +rest = attack.go(tail, target_id, damage, from_x, from_y, from_z, max_range, next_drops)
       CombatResult{cons_mob(updated, combat_mobs(rest)), combat_drops(rest), Bool.or(target, combat_hit(rest))}
@@ -581,38 +681,85 @@ def attack(
   attack.go(mobs, target_id, damage, from_x, from_y, from_z, max_range, drops)
 
 def hostile_kind(+kind: U32, +alive: Bool) -> Bool:
-  Bool.and(alive, Bool.or(U32.is_eq(kind, 2), U32.is_eq(kind, 4)))
+  Bool.and(alive, kind_is_hostile(kind))
 
-def edit_opaque_above(
-  +edits: List<&2, WorldState.Edit>, +x: Nat, +z: Nat, +from_y: Nat
-) -> Bool:
+type BodyCells is Data:
+  BodyCells{shaded: Bool, placed_water: Bool}
+
+# A single pass over the persistent edits answers both questions the sunlight
+# tick asks about a body: whether an edit shades the column it stands in, and
+# whether one of its two body cells holds water. One traversal keeps the per-mob
+# cost of a growing edit list unchanged by the water rule.
+def body_cells.go(
+  +edits: List<&2, WorldState.Edit>, +cell_x: Nat, +cell_y: Nat, +cell_z: Nat,
+  +shaded: Bool, +placed_water: Bool
+) -> BodyCells:
   match edits:
     case Nil{}:
-      False{}
+      BodyCells{shaded, placed_water}
     case Con{+head, tail}:
       WorldState.Edit{+edit_x, +edit_y, +edit_z, +block} = head
-      +same_column = Bool.and(Nat.is_eq(edit_x, x), Nat.is_eq(edit_z, z))
-      +above = Nat.is_ge(edit_y, from_y)
-      +rest = edit_opaque_above(tail, x, z, from_y)
-      Bool.or(Bool.and(Bool.and(same_column, above), Player.solid(block)), rest)
+      +same_column = Bool.and(Nat.is_eq(edit_x, cell_x), Nat.is_eq(edit_z, cell_z))
+      +above = Bool.and(same_column, Nat.is_ge(edit_y, cell_y))
+      +next_shaded = Bool.or(shaded, Bool.and(above, Player.solid(block)))
+      # Feet and head count as one body, so a mob that has waded into the
+      # shallows is out of the fire before it is fully submerged.
+      +body = Bool.and(
+        same_column,
+        Bool.or(Nat.is_eq(edit_y, cell_y), Nat.is_eq(edit_y, Nat.add(cell_y, 1n)))
+      )
+      +next_water = Bool.or(placed_water, Bool.and(body, Player.is_water(block)))
+      body_cells.go(tail, cell_x, cell_y, cell_z, next_shaded, next_water)
+
+def body_cells(
+  +edits: List<&2, WorldState.Edit>, +cell_x: Nat, +cell_y: Nat, +cell_z: Nat
+) -> BodyCells:
+  body_cells.go(edits, cell_x, cell_y, cell_z, False{}, False{})
+
+# Water is not direct sun. A body standing in it is neither lit nor burning, so
+# the sea puts a fire out and keeps a mob from catching one, and water the player
+# poured with a bucket reads the same way. This is the generated half, the same
+# sea query the world generator answers with, so the tick still needs no
+# materialized block.
+def water_contact_generated(
+  +seed: Nat, +cell_x: Nat, +cell_y: Nat, +cell_z: Nat
+) -> Bool:
+  Bool.or(
+    World.water_at(seed, cell_x, cell_y, cell_z),
+    World.water_at(seed, cell_x, Nat.add(cell_y, 1n), cell_z)
+  )
 
 # Use the generated terrain height for the bulk sky query; only persistent
 # edits need a per-column scan, keeping the simulation tick independent of
-# world-generation cost for every mob.
+# world-generation cost for every mob. The generated half is shared with spawn.
+def sun_exposed.cells(
+  +cells: BodyCells, +seed: Nat, +cell_x: Nat, +cell_y: Nat, +cell_z: Nat
+) -> Bool:
+  BodyCells{+shaded, +placed_water} = cells
+  +water = Bool.or(placed_water, water_contact_generated(seed, cell_x, cell_y, cell_z))
+  Bool.not(Bool.or(shaded, water))
+
+def sun_exposed.lit(
+  +lit: Bool, +edits: List<&2, WorldState.Edit>, +seed: Nat,
+  +cell_x: Nat, +cell_y: Nat, +cell_z: Nat
+) -> Bool:
+  match lit:
+    case False{}:
+      False{}
+    case True{}:
+      sun_exposed.cells(body_cells(edits, cell_x, cell_y, cell_z), seed, cell_x, cell_y, cell_z)
+
 def sun_exposed(
   +edits: List<&2, WorldState.Edit>, +seed: Nat, +x: F32, +y: F32, +z: F32
 ) -> Bool:
-  +cell_x = Player.floor_nat(x)
-  +cell_y = Player.floor_nat(y)
-  +cell_z = Player.floor_nat(z)
-  +terrain_height = World.column_height(seed, cell_x, cell_z)
-  +above_terrain = Nat.is_ge(cell_y, terrain_height)
-  +generated_cover = Bool.and(
-    above_terrain,
-    Player.solid(World.generated_cover_above(seed, cell_x, cell_y, cell_z))
+  sun_exposed.lit(
+    sun_exposed_generated(seed, x, y, z),
+    edits,
+    seed,
+    World.cell(x),
+    Player.floor_nat(y),
+    World.cell(z),
   )
-  +edited_cover = edit_opaque_above(edits, cell_x, cell_z, cell_y)
-  Bool.and(above_terrain, Bool.not(Bool.or(generated_cover, edited_cover)))
 
 def sun_burning.hostile(
   +hostile: Bool, +edits: List<&2, WorldState.Edit>, +seed: Nat,
@@ -642,16 +789,20 @@ def sunlight_damage.go(
     case Nil{}:
       CombatResult{Nil{}, drops, False{}}
     case Con{+head, tail}:
-      Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive} = head
+      Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive, _, +panic} = head
       +day = F32.is_gt(daylight, 0.5)
-      +burning = sun_burning(day, kind, alive, edits, seed, x, y, z)
-      +next_health = choose_f32(burning, F32.sub(health, F32.mul(dt, 1.0)), health)
-      +next_alive = Bool.pick(Bool, burning, F32.is_gt(next_health, 0.0), alive)
-      +killed = Bool.and(burning, Bool.not(next_alive))
+      +exposed = sun_burning(day, kind, alive, edits, seed, x, y, z)
+      +next_health = choose_f32(exposed, F32.sub(health, F32.mul(dt, 1.0)), health)
+      +next_alive = Bool.pick(Bool, exposed, F32.is_gt(next_health, 0.0), alive)
+      # A body the sun just finished off is not on fire any more, so the flag is
+      # published per mob rather than left as the bare exposure test. That is the
+      # only place it is set, and it is what the browser draws flames from.
+      +burning = Bool.and(exposed, next_alive)
+      +killed = Bool.and(exposed, Bool.not(next_alive))
       +next_drops = Bool.pick(List<&2, Drop>, killed, cons_drop(drop_for(head), drops), drops)
-      +updated = make_mob_heading(id, kind, x, y, z, heading_x, heading_z, next_health, next_alive)
+      +updated = make_mob_heading(id, kind, x, y, z, heading_x, heading_z, next_health, next_alive, burning, panic)
       +rest = sunlight_damage.go(tail, edits, seed, daylight, dt, next_drops)
-      CombatResult{cons_mob(updated, combat_mobs(rest)), combat_drops(rest), Bool.or(burning, combat_hit(rest))}
+      CombatResult{cons_mob(updated, combat_mobs(rest)), combat_drops(rest), Bool.or(exposed, combat_hit(rest))}
 
 def sunlight_damage(
   +mobs: List<&2, Mob>, +edits: List<&2, WorldState.Edit>, +seed: Nat,
@@ -737,7 +888,7 @@ def despawn(
     case Nil{}:
       Nil{}
     case Con{+head, tail}:
-      Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive} = head
+      Mob{+id, +kind, +x, +y, +z, +heading_x, +heading_z, +health, +alive, burning, panic} = head
       +rest = despawn(tail, player_x, player_z, radius)
       +gone = far_away(x, z, player_x, player_z, radius)
       Bool.pick(List<&2, Mob>, gone, rest, cons_mob(head, rest))
@@ -747,5 +898,5 @@ def count_alive(mobs: List<&2, Mob>, +total: Nat) -> Nat:
     case Nil{}:
       total
     case Con{+head, tail}:
-      Mob{id, kind, x, y, z, heading_x, heading_z, health, +alive} = head
+      Mob{id, kind, x, y, z, heading_x, heading_z, health, +alive, burning, panic} = head
       count_alive(tail, Bool.pick(Nat, alive, Nat.add(total, 1n), total))

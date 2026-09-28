@@ -105,6 +105,15 @@ assert.equal(blockForItem("glass"), 25);
 assert.equal(blockForItem("chest"), 26);
 assert.equal(foodValue("bread"), 5);
 assert.equal(foodValue("apple"), 4);
+// A farm animal has to be worth striking: its meat is a real, edible item.
+assert.equal(foodValue("raw_porkchop"), 3);
+assert.equal(foodValue("raw_beef"), 3);
+assert.equal(foodValue("raw_chicken"), 2);
+for (const name of ["raw_porkchop", "raw_beef", "raw_chicken"]) {
+  assert.equal(ITEM_INFO[name].collectible, true);
+  assert.equal(ITEM_INFO[name].placeable, false);
+  assert.equal(blockForItem(name), null);
+}
 assert.equal(toolMaxDurability("stone_pickaxe"), 131);
 assert.ok(miningDuration("wooden_pickaxe", 1) > 0);
 assert.ok(miningDuration("diamond_pickaxe", 23) > miningDuration("wooden_pickaxe", 1));

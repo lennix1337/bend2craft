@@ -1,6 +1,7 @@
 import { buildGreedyQuads } from "./greedy-mesh.js";
 import { mergeChunkQuads } from "./mesh-merge.js";
 import { buildTerrainVertexArrays } from "./terrain-vertex-builder.js";
+import { concatFloat32Arrays } from "./vertex-buffer-compose.js";
 
 export { mergeChunkQuads } from "./mesh-merge.js";
 
@@ -23,17 +24,6 @@ function markNeighborChunks(dirty, key) {
   }
 }
 
-function concatFloat32Arrays(values) {
-  const total = values.reduce((sum, value) => sum + value.length, 0);
-  const result = new Float32Array(total);
-  let offset = 0;
-  for (const value of values) {
-    result.set(value, offset);
-    offset += value.length;
-  }
-  return result;
-}
-
 function composeVertexData(meshes) {
   const opaque = [];
   const water = [];
@@ -47,11 +37,11 @@ function composeVertexData(meshes) {
     waterQuadCount += vertexData.water.quadCount;
   }
   const composeLayer = (layers, quadCount) => ({
-    positions: concatFloat32Arrays(layers.map((layer) => layer.positions)),
-    colors: concatFloat32Arrays(layers.map((layer) => layer.colors)),
-    uvs: concatFloat32Arrays(layers.map((layer) => layer.uvs)),
-    materials: concatFloat32Arrays(layers.map((layer) => layer.materials)),
-    tiles: concatFloat32Arrays(layers.map((layer) => layer.tiles)),
+    positions: concatFloat32Arrays(...layers.map((layer) => layer.positions)),
+    colors: concatFloat32Arrays(...layers.map((layer) => layer.colors)),
+    uvs: concatFloat32Arrays(...layers.map((layer) => layer.uvs)),
+    materials: concatFloat32Arrays(...layers.map((layer) => layer.materials)),
+    tiles: concatFloat32Arrays(...layers.map((layer) => layer.tiles)),
     quadCount,
   });
   return {
@@ -266,7 +256,12 @@ export function createAsyncChunkMeshCache(world, requestBuild, onReady = null, o
       const chunk = world.getChunkData(chunkX, chunkZ);
       if (chunk !== null) chunks.push({ key, ...chunk });
     }
-    const existingMeshes = [...meshes.values()].filter((mesh) => active.has(mesh.key));
+    // Only the merged (non per-chunk) mode composes the other chunks' meshes in
+    // the worker. In per-chunk mode shipping them would structured-clone every
+    // resident mesh on every job for nothing.
+    const existingMeshes = perChunkOnly
+      ? []
+      : [...meshes.values()].filter((mesh) => active.has(mesh.key));
     const id = nextJobId += 1;
     const merge = !preferFastRebuild;
     preferFastRebuild = false;
@@ -408,7 +403,9 @@ export function createAsyncChunkMeshCache(world, requestBuild, onReady = null, o
     for (const mesh of meshes.values()) {
       if (!active.has(mesh.key)) continue;
       blockCount += mesh.blockCount;
-      quads.push(...mesh.quads);
+      // Per-chunk consumers read `chunks`; flattening every quad each publish
+      // would cost O(resident quads) for an array nothing reads.
+      if (!perChunkOnly) quads.push(...mesh.quads);
       chunks.push({
         key: mesh.key,
         chunkX: mesh.chunkX,

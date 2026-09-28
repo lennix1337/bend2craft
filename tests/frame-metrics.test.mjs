@@ -44,6 +44,17 @@ const text = formatDebugText({
 });
 assert.match(text, /FPS/);
 assert.match(formatDebugText({ ...metrics, ...percentiles }), /p95/);
+// The overlay has to say whether the frame rate is bounded and by what, or a rate
+// below the cap is indistinguishable from a rate the cap produced.
+assert.match(text, /uncapped/, "an unstated cap must read as uncapped, not as a missing value");
+const capped = formatDebugText({ ...metrics, fpsLimit: 60, frameBudgetMs: 1000 / 60 });
+assert.match(capped, /cap 60 \(16\.7 ms\)/, "an active cap must be reported with its budget");
+// A cap with no usable budget must not print a nonsense period.
+assert.match(
+  formatDebugText({ ...metrics, fpsLimit: 60, frameBudgetMs: 0 }),
+  /cap 60/,
+  "a cap with no measured budget must still name the cap",
+);
 assert.match(text, /XYZ 1\.25 8\.00 -2\.50/);
 assert.match(text, /chunks 25 active · 2 pending · 1 pinned/);
 assert.match(text, /mesh 1,200 blocks · 300 terrain quads · 40 water quads · 12 dynamic quads/);

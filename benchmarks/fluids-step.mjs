@@ -1,19 +1,6 @@
 import Fluids from "../world/fluids.bend";
 import Simulation from "../world/simulation.bend";
-
-function sampleList(values) {
-  let list = { $: "Nil" };
-  for (let index = values.length - 1; index >= 0; index -= 1) {
-    list = { $: "Con", head: values[index], tail: list };
-  }
-  return list;
-}
-
-function listLength(list) {
-  let count = 0;
-  for (let node = list; node?.$ === "Con"; node = node.tail) count += 1;
-  return count;
-}
+import { bendList, listLength } from "../web/bend-list.js";
 
 function measure(fn, repeats = 10) {
   fn();
@@ -22,7 +9,7 @@ function measure(fn, repeats = 10) {
   return (performance.now() - start) / repeats;
 }
 
-const samples = sampleList([
+const samples = bendList([
   Fluids.sample(2n, 2n, 2n, 1),
   Fluids.sample(1n, 3n, 2n, 0),
   Fluids.sample(3n, 3n, 2n, 0),

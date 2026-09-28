@@ -28,6 +28,7 @@ if errorlevel 1 goto build_failed
 if not exist "dist\index.html" goto missing_bundle
 if not exist "dist\chunk-worker.js" goto missing_bundle
 if not exist "dist\mesh-worker.js" goto missing_bundle
+if not exist "dist\lod-worker.js" goto missing_bundle
 
 echo Starting Bend2Craft at http://localhost:%PORT%/?play=1^&seed=1337 ...
 echo Keep this window open while you play. Press Ctrl+C to stop.

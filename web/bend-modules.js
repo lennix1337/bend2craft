@@ -42,6 +42,11 @@ import rawPath from "../world/village_path.bend";
 import rawVillagers from "../world/villagers.bend";
 import rawWorld from "../world/world.bend";
 import rawWorldState from "../world/world_state.bend";
+import rawRedstone from "../world/redstone.bend";
+import rawRedstoneAll from "../world/redstone_all.bend";
+import rawRedstoneClock from "../world/redstone_clock.bend";
+import rawRedstoneGrid from "../world/redstone_grid.bend";
+import rawRedstoneMachines from "../world/redstone_machines.bend";
 
 // Per def: `{ <parameter index>: <owning file> }` for the parameters whose type
 // the callee imported, plus `out: true` when the declared result is itself a
@@ -53,8 +58,8 @@ import rawWorldState from "../world/world_state.bend";
 // field would then be rejected by the very module that produced it.
 export const FOREIGN = {
   chests: {
-    lookup_slots: { out: true },
     make_entry: { 3: "chest" },
+    lookup_slots: { out: true },
     set: { 4: "chest" },
   },
   crops: {
@@ -62,9 +67,9 @@ export const FOREIGN = {
     tick_with_farmland: { 2: "farmland" },
   },
   entities: {
-    edit_opaque_above: { 0: "world_state" },
-    sun_burning: { 3: "world_state" },
+    body_cells: { 0: "world_state" },
     sun_exposed: { 0: "world_state" },
+    sun_burning: { 3: "world_state" },
     sunlight_damage: { 1: "world_state" },
   },
   furnaces: {
@@ -73,38 +78,91 @@ export const FOREIGN = {
     set: { 4: "furnace" },
   },
   inventory: {
-    mine_interaction_at_finish_collected: { 0: "world_state" },
-    mine_interaction_at_finish_hand: { 0: "world_state" },
-    mine_interaction_at_finish_mode: { 0: "world_state" },
-    mine_interaction_at_finish_tool: { 0: "world_state" },
     mine_interaction_at_finish_used: { 0: "world_state" },
+    mine_interaction_at_finish_hand: { 0: "world_state" },
+    mine_interaction_at_finish_tool: { 0: "world_state" },
+    mine_interaction_at_finish_mode: { 0: "world_state" },
+    mine_interaction_at_finish_collected: { 0: "world_state" },
   },
   light: {
-    fields_from_cells: { 0: "lightflood" },
+    opaque32: { 0: "world" },
     window_walls: { 6: "lightflood", out: true },
+    window_grid: { 2: "world" },
+    fields_from_cells: { 0: "lightflood" },
+  },
+  redstone_all: {
+    circuit_core: { out: true },
+    circuit_timers: { out: true },
+    circuit_machines: { out: true },
+    stepped_edits: { out: true },
+    tick: { 1: "redstone", 2: "redstone", 3: "redstone_grid" },
+  },
+  redstone_clock: {
+    signal_at: { 0: "redstone", 1: "redstone" },
+    back_signal: { 0: "redstone", 1: "redstone" },
+    side_signal: { 0: "redstone", 1: "redstone" },
+    advance_repeaters: { 1: "redstone", 2: "redstone" },
+    advance_comparators: { 1: "redstone", 2: "redstone" },
+    front_emission: { out: true },
+    repeater_outputs: { 1: "redstone", out: true },
+    comparator_outputs: { 1: "redstone", out: true },
+    outputs: { out: true },
+    tick_core: { out: true },
+    tick_wires: { out: true },
+    tick_with: { 0: "redstone", 2: "redstone", 3: "redstone_grid" },
+    tick: { 0: "redstone", 2: "redstone_grid" },
+  },
+  redstone_grid: {
+    flood_of: { 0: "redstone" },
+    flood_of_state: { 0: "redstone" },
+    mark_dust: { 0: "redstone" },
+    seed: { 0: "redstone", 1: "redstone" },
+    drained: { out: true },
+    flood_power: { 0: "redstone", 1: "redstone", out: true },
+    resolve_grid: { 0: "redstone", 1: "redstone", out: true },
+    tick: { 0: "redstone", 1: "redstone", out: true },
+  },
+  redstone_machines: {
+    advance_doors: { 1: "redstone" },
+    advance_plates: { 1: "redstone", 2: "redstone" },
+    plate_outputs: { 1: "redstone", out: true },
+    advance_rails: { 1: "redstone" },
+    rail_outputs: { 1: "redstone", out: true },
+    can_extend: { 0: "redstone" },
+    extend_edits: { 0: "redstone" },
+    retract_edits: { 0: "redstone" },
+    piston_step: { 2: "redstone" },
+    step_piston: { 2: "redstone" },
+    watch_block: { 0: "redstone" },
+    observer_step: { 1: "redstone" },
+    advance_observers: { 1: "redstone" },
+    observer_outputs: { 1: "redstone", out: true },
+    outputs: { out: true },
+    advance_pistons: { 1: "redstone", 2: "redstone" },
+    step: { 1: "redstone", 2: "redstone" },
   },
   simulation: {
     sim_crops: { out: true },
     sim_farmland: { out: true },
-    tick_fire: { out: true },
-    tick_fluids: { out: true },
-    tick_with_fluids: { 2: "farmland", 3: "fluids", 4: "fluids" },
-    tick_with_fluids_and_fire: { 2: "farmland", 3: "fluids", 4: "fluids", 5: "fire", 6: "fire" },
-    tick_with_water: { 2: "farmland" },
     with_crops: { 1: "crops" },
     with_farmland: { 1: "farmland" },
+    tick_with_water: { 2: "farmland" },
+    tick_with_fluids: { 2: "farmland", 3: "fluids", 4: "fluids" },
+    tick_with_fluids_and_fire: { 2: "farmland", 3: "fluids", 4: "fluids", 5: "fire", 6: "fire" },
+    tick_fluids: { out: true },
+    tick_fire: { out: true },
   },
   villagers: {
-    close_door_result: { 0: "world_state", 5: "world_state" },
-    cons_door_edit: { 0: "world_state", 1: "world_state", out: true },
-    door_edits: { out: true },
-    open_door: { 0: "world_state", out: true },
-    open_doors: { 2: "world_state", out: true },
-    open_for: { 2: "world_state", out: true },
     path_grid: { 1: "world_state" },
-    sleep: { 2: "world_state" },
-    update_doors: { 2: "world_state", out: true },
+    open_door: { 0: "world_state", out: true },
+    open_for: { 2: "world_state", out: true },
+    open_doors: { 2: "world_state", out: true },
+    door_edits: { out: true },
+    cons_door_edit: { 0: "world_state", 1: "world_state", out: true },
+    close_door_result: { 0: "world_state", 5: "world_state" },
     update_doors_result: { 2: "world_state" },
+    update_doors: { 2: "world_state", out: true },
+    sleep: { 2: "world_state" },
   },
 };
 
@@ -228,6 +286,11 @@ export const bend = {
   villagers: wrap("villagers", rawVillagers),
   world: wrap("world", rawWorld),
   world_state: wrap("world_state", rawWorldState),
+  redstone: wrap("redstone", rawRedstone),
+  redstone_all: wrap("redstone_all", rawRedstoneAll),
+  redstone_clock: wrap("redstone_clock", rawRedstoneClock),
+  redstone_grid: wrap("redstone_grid", rawRedstoneGrid),
+  redstone_machines: wrap("redstone_machines", rawRedstoneMachines),
 };
 
 export const Chest = bend.chest;
@@ -254,6 +317,11 @@ export const Path = bend.village_path;
 export const Villagers = bend.villagers;
 export const World = bend.world;
 export const WorldState = bend.world_state;
+export const Redstone = bend.redstone;
+export const RedstoneAll = bend.redstone_all;
+export const RedstoneClock = bend.redstone_clock;
+export const RedstoneGrid = bend.redstone_grid;
+export const RedstoneMachines = bend.redstone_machines;
 
 // The unwrapped modules, for the test that pins the loader's own contract.
 export const raw = {

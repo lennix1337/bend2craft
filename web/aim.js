@@ -1,5 +1,6 @@
 // Aimed combat helpers. Slab ray test against an axis-aligned body box.
 // Dependency-free and testable without a browser.
+import { mobHeight } from "./mob-kinds.js";
 
 export function bodyBox(x, y, z, height, halfWidth = 0.4) {
   return {
@@ -12,9 +13,10 @@ export function bodyBox(x, y, z, height, halfWidth = 0.4) {
   };
 }
 
+// Height comes from the roster rather than from a "is this the tall one" test,
+// so a brute is shootable in the head and a chicken is hittable at all.
 export function mobBox(mob) {
-  const height = mob.kind === 2 ? 1.9 : 1.2;
-  return bodyBox(mob.x, mob.y, mob.z, height);
+  return bodyBox(mob.x, mob.y, mob.z, mobHeight(mob.kind));
 }
 
 // Returns the ray distance to the box, or null on miss/out of range.

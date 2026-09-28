@@ -45,6 +45,22 @@ export const BLOCK_INFO = Object.freeze({
   25: Object.freeze({ name: "glass", color: "#b5d9e8" }),
   26: Object.freeze({ name: "chest", color: "#9d6a3e" }),
   27: Object.freeze({ name: "crafting table", color: "#9d6a3e" }),
+  // Redstone, from world/redstone.bend's block contract. A powered dust cell
+  // renders brighter, so the wire's colour is read from its power level at draw
+  // time; the entry here is the unpowered base tone.
+  28: Object.freeze({ name: "redstone wire", color: "#8c2f2f" }),
+  29: Object.freeze({ name: "redstone torch", color: "#d94a3a" }),
+  30: Object.freeze({ name: "lever", color: "#9aa3a8" }),
+  31: Object.freeze({ name: "redstone block", color: "#c0392b" }),
+  32: Object.freeze({ name: "redstone lamp", color: "#b0764a" }),
+  33: Object.freeze({ name: "redstone repeater", color: "#8d8f92" }),
+  34: Object.freeze({ name: "redstone comparator", color: "#9a9c9f" }),
+  35: Object.freeze({ name: "pressure plate", color: "#8a8f94" }),
+  36: Object.freeze({ name: "activator rail", color: "#a5763a" }),
+  37: Object.freeze({ name: "piston", color: "#9a8258" }),
+  38: Object.freeze({ name: "piston head", color: "#8a7450" }),
+  39: Object.freeze({ name: "sticky piston", color: "#7f9a52" }),
+  40: Object.freeze({ name: "observer", color: "#6b6f76" }),
 });
 
 export const ITEM_IDS = Object.freeze({
@@ -96,6 +112,24 @@ export const ITEM_IDS = Object.freeze({
   iron_chestplate: 45,
   iron_leggings: 46,
   iron_boots: 47,
+  raw_porkchop: 48,
+  raw_beef: 49,
+  raw_chicken: 50,
+  // Redstone items, continuing the id sequence in world/inventory.bend's block
+  // contract. Piston head (38) has no item: it is placed and broken by the piston
+  // itself, never carried, exactly as in vanilla.
+  redstone: 51,
+  redstone_torch: 52,
+  lever: 53,
+  redstone_block: 54,
+  redstone_lamp: 55,
+  redstone_repeater: 56,
+  redstone_comparator: 57,
+  pressure_plate: 58,
+  activator_rail: 59,
+  piston: 60,
+  sticky_piston: 61,
+  observer: 62,
 });
 const ITEM_NAMES = Object.freeze(Object.fromEntries(
   Object.entries(ITEM_IDS).map(([name, id]) => [id, name]),
@@ -127,6 +161,20 @@ export const BLOCK_TO_ITEM = Object.freeze({
   25: "glass",
   26: "chest",
   27: "crafting_table",
+  // Redstone blocks. Block 38 is a piston head, placed only by a piston, so it
+  // drops nothing and has no entry here.
+  28: "redstone",
+  29: "redstone_torch",
+  30: "lever",
+  31: "redstone_block",
+  32: "redstone_lamp",
+  33: "redstone_repeater",
+  34: "redstone_comparator",
+  35: "pressure_plate",
+  36: "activator_rail",
+  37: "piston",
+  39: "sticky_piston",
+  40: "observer",
 });
 
 export const ITEM_TO_BLOCK = Object.freeze({
@@ -146,6 +194,18 @@ export const ITEM_TO_BLOCK = Object.freeze({
   chest: 26,
   cobblestone: 22,
   obsidian: 23,
+  redstone: 28,
+  redstone_torch: 29,
+  lever: 30,
+  redstone_block: 31,
+  redstone_lamp: 32,
+  redstone_repeater: 33,
+  redstone_comparator: 34,
+  pressure_plate: 35,
+  activator_rail: 36,
+  piston: 37,
+  sticky_piston: 39,
+  observer: 40,
 });
 
 export const ITEM_INFO = Object.freeze({
@@ -181,6 +241,20 @@ export const ITEM_INFO = Object.freeze({
   lava_bucket: Object.freeze({ name: "lava bucket", color: "#e56b2f", block: null, placeable: false, collectible: true }),
   cobblestone: Object.freeze({ name: "cobblestone", color: BLOCK_INFO[22].color, block: 22, placeable: true, collectible: true }),
   obsidian: Object.freeze({ name: "obsidian", color: BLOCK_INFO[23].color, block: 23, placeable: true, collectible: true }),
+  // The redstone items, all placeable and collectible, coloured from the block
+  // contract so a block and the item that places it never disagree.
+  redstone: Object.freeze({ name: "redstone dust", color: BLOCK_INFO[28].color, block: 28, placeable: true, collectible: true }),
+  redstone_torch: Object.freeze({ name: "redstone torch", color: BLOCK_INFO[29].color, block: 29, placeable: true, collectible: true }),
+  lever: Object.freeze({ name: "lever", color: BLOCK_INFO[30].color, block: 30, placeable: true, collectible: true }),
+  redstone_block: Object.freeze({ name: "redstone block", color: BLOCK_INFO[31].color, block: 31, placeable: true, collectible: true }),
+  redstone_lamp: Object.freeze({ name: "redstone lamp", color: BLOCK_INFO[32].color, block: 32, placeable: true, collectible: true }),
+  redstone_repeater: Object.freeze({ name: "redstone repeater", color: BLOCK_INFO[33].color, block: 33, placeable: true, collectible: true }),
+  redstone_comparator: Object.freeze({ name: "redstone comparator", color: BLOCK_INFO[34].color, block: 34, placeable: true, collectible: true }),
+  pressure_plate: Object.freeze({ name: "pressure plate", color: BLOCK_INFO[35].color, block: 35, placeable: true, collectible: true }),
+  activator_rail: Object.freeze({ name: "activator rail", color: BLOCK_INFO[36].color, block: 36, placeable: true, collectible: true }),
+  piston: Object.freeze({ name: "piston", color: BLOCK_INFO[37].color, block: 37, placeable: true, collectible: true }),
+  sticky_piston: Object.freeze({ name: "sticky piston", color: BLOCK_INFO[39].color, block: 39, placeable: true, collectible: true }),
+  observer: Object.freeze({ name: "observer", color: BLOCK_INFO[40].color, block: 40, placeable: true, collectible: true }),
   wooden_sword: Object.freeze({ name: "wooden sword", color: "#b77b48", block: null, placeable: false, collectible: true }),
   stone_sword: Object.freeze({ name: "stone sword", color: "#92999f", block: null, placeable: false, collectible: true }),
   iron_sword: Object.freeze({ name: "iron sword", color: "#d5d9dc", block: null, placeable: false, collectible: true }),
@@ -196,6 +270,11 @@ export const ITEM_INFO = Object.freeze({
   iron_chestplate: Object.freeze({ name: "iron chestplate", color: "#c5cbcd", block: null, placeable: false, collectible: true }),
   iron_leggings: Object.freeze({ name: "iron leggings", color: "#aeb7ba", block: null, placeable: false, collectible: true }),
   iron_boots: Object.freeze({ name: "iron boots", color: "#92999f", block: null, placeable: false, collectible: true }),
+  // What a farm animal leaves behind. Raw, like the wheat and the apple: the
+  // cooking recipes for a cooked meal are not part of this slice.
+  raw_porkchop: Object.freeze({ name: "raw porkchop", color: "#e08a80", block: null, placeable: false, collectible: true }),
+  raw_beef: Object.freeze({ name: "raw beef", color: "#b4443c", block: null, placeable: false, collectible: true }),
+  raw_chicken: Object.freeze({ name: "raw chicken", color: "#e0cba6", block: null, placeable: false, collectible: true }),
 });
 
 function valuesFromList(list) {

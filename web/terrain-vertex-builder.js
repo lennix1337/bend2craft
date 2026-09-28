@@ -1,6 +1,6 @@
-import { quadCorners } from "./greedy-mesh.js";
+import { faceNormal, quadCorners } from "./greedy-mesh.js";
 import { atlasUV, blockFaceTileAt } from "./texture-atlas.js";
-import { TERRAIN_FACE_SHADES, litFaceColor } from "./material-lighting.js";
+import { faceColorGrade } from "./material-lighting.js";
 import { WATER_DEPTH_MAX } from "./terrain-presentation.js";
 import {
   isFireMaterial,
@@ -10,12 +10,21 @@ import {
   waterMaterial,
 } from "./surface-materials.js";
 
-function blockColor(block, faceIndex, x, z, light, daylight) {
-  const variation = (((x * 17 + z * 31) % 5) + 5) % 5 * 0.012;
-  const top = block === 3 && faceIndex === 0;
-  const shade = TERRAIN_FACE_SHADES[faceIndex] + (top ? variation : variation * 0.5);
-  return litFaceColor(faceIndex, daylight, light, shade);
-}
+// The vertex layout the presentation shaders read:
+//
+//   aColor   vec3  per-face colour grade only, no light folded in
+//   aLight   vec2  (ambient occlusion, baked block light 0..1)
+//   aNormal  vec3  outward face normal
+//   aUV      vec2  tile-local UV in blocks
+//   aTileRect vec4  atlas sub-rectangle
+//   aMaterial float surface material band, water carries its depth inside it
+//
+// Lighting used to be baked into `aColor` together with the day/night term,
+// which meant the fragment shader could not light a surface from a real sun
+// direction. Splitting occlusion and block light into `aLight` lets the shader
+// apply the sun, its shadow and a hemispheric ambient independently, and makes
+// the mesh independent of the time of day so it no longer has to be rebuilt as
+// the sun moves.
 
 function quadMaterial(quad) {
   const material = surfaceMaterial(quad.block);
@@ -24,9 +33,10 @@ function quadMaterial(quad) {
   return waterMaterial(Number(quad.waterDepthCells ?? 0) / WATER_DEPTH_MAX);
 }
 
-function appendQuad(layer, quad, daylight) {
-  const color = blockColor(quad.block, quad.faceIndex, quad.x, quad.z, quad.light, daylight);
+function appendQuad(layer, quad) {
+  const color = faceColorGrade(quad.faceIndex, quad.x, quad.z);
   const corners = quadCorners(quad);
+  const normal = faceNormal(quad.faceIndex);
   const tile = quad.tile ?? blockFaceTileAt(quad.block, quad.faceIndex, quad.x, quad.z);
   const uv = atlasUV(tile);
   const tileRect = quad.faceIndex >= 2
@@ -34,11 +44,14 @@ function appendQuad(layer, quad, daylight) {
     : [uv[0], uv[1], uv[4], uv[5]];
   const localUv = [[0, 0], [quad.width, 0], [quad.width, quad.height], [0, quad.height]];
   const material = quadMaterial(quad);
+  const lightLevel = Math.max(0, Math.min(15, Number(quad.light ?? 15))) / 15;
   for (const cornerIndex of [0, 1, 2, 0, 2, 3]) {
     const corner = corners[cornerIndex];
     const ao = quad.ao?.[cornerIndex] ?? 1;
     layer.positions.push(corner[0], corner[1], corner[2]);
-    layer.colors.push(color[0] * ao, color[1] * ao, color[2] * ao);
+    layer.colors.push(color[0], color[1], color[2]);
+    layer.lights.push(ao, lightLevel);
+    layer.normals.push(normal[0], normal[1], normal[2]);
     layer.uvs.push(localUv[cornerIndex][0], localUv[cornerIndex][1]);
     layer.tiles.push(...tileRect);
     layer.materials.push(material);
@@ -50,6 +63,8 @@ function typedLayer(layer) {
   return {
     positions: new Float32Array(layer.positions),
     colors: new Float32Array(layer.colors),
+    lights: new Float32Array(layer.lights),
+    normals: new Float32Array(layer.normals),
     uvs: new Float32Array(layer.uvs),
     materials: new Float32Array(layer.materials),
     tiles: new Float32Array(layer.tiles),
@@ -57,15 +72,29 @@ function typedLayer(layer) {
   };
 }
 
-export function buildTerrainVertexArrays(quads, daylight = 1) {
+export function buildTerrainVertexArrays(quads) {
   if (!Array.isArray(quads)) throw new TypeError("terrain vertex builder requires quads");
-  const opaque = { positions: [], colors: [], uvs: [], materials: [], tiles: [], quadCount: 0 };
-  const water = { positions: [], colors: [], uvs: [], materials: [], tiles: [], quadCount: 0 };
+  const opaque = emptyLayer();
+  const water = emptyLayer();
   for (const quad of quads) {
     const material = quadMaterial(quad);
     const target = isWaterMaterial(material) || isLavaMaterial(material) || isFireMaterial(material)
       ? water
       : opaque;
-    appendQuad(target, quad, daylight);
-  }  return { opaque: typedLayer(opaque), water: typedLayer(water) };
+    appendQuad(target, quad);
+  }
+  return { opaque: typedLayer(opaque), water: typedLayer(water) };
+}
+
+function emptyLayer() {
+  return {
+    positions: [],
+    colors: [],
+    lights: [],
+    normals: [],
+    uvs: [],
+    materials: [],
+    tiles: [],
+    quadCount: 0,
+  };
 }

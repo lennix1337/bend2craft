@@ -12,6 +12,17 @@ const FACE_DIRECTIONS = [
   [0, 0, -1],
 ];
 
+/**
+ * Outward face normal per FACE_DIRECTIONS index. The presentation shaders light
+ * every surface from a real sun direction, so the mesh has to carry the normal
+ * instead of inferring a fake face shade from the vertex colour.
+ */
+export const FACE_NORMALS = Object.freeze(FACE_DIRECTIONS.map((direction) => Object.freeze([...direction])));
+
+export function faceNormal(faceIndex) {
+  return FACE_NORMALS[faceIndex] ?? FACE_NORMALS[0];
+}
+
 function cellKey(u, v) {
   return `${u},${v}`;
 }
@@ -280,7 +291,9 @@ export function quadCorners(quad) {
   const { faceIndex, fixed, u, v, width, height } = quad;
   // Recessed top surfaces read as soil/water instead of full cubes.
   const topInset = quad.block === 20 ? 1 / 16 : isFluid(quad.block) ? 2 / 16 : 0;
-  const faceInset = quad.block === 4 ? LEAF_FACE_INSET : 0;
+  // Distant (LOD) canopy quads span many blocks and must meet their
+  // neighbours edge to edge, so only real leaf cells are inset.
+  const faceInset = quad.block === 4 && quad.lod !== true ? LEAF_FACE_INSET : 0;
   const minU = u + faceInset;
   const maxU = u + width - faceInset;
   const minV = v + faceInset;

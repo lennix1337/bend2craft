@@ -12,61 +12,22 @@ import {
   selectVisibleChunks,
 } from "../web/chunk-frustum.js";
 import { TERRAIN_VERTEX_STRIDE_BYTES } from "../web/webgpu-chunk-buffers.js";
+import { identity4, lookAt, multiply4, perspective } from "../web/gl-matrix.js";
 
-function identity() {
-  return new Float32Array([
-    1, 0, 0, 0,
-    0, 1, 0, 0,
-    0, 0, 1, 0,
-    0, 0, 0, 1,
-  ]);
-}
+// The camera matrices come from the canonical module the renderer itself
+// uploads, not from a copy kept in step by hand. A local reimplementation would
+// keep asserting a convention the shipped code is free to drift away from, so
+// the culling decisions below would stay green while the real camera regressed.
 
-// Column-major perspective with a 90 degree horizontal field of view, a 1:1
-// aspect and a 0.1..100 depth range. Rows are written so element (row, column)
-// lands at index `column * 4 + row`, matching web/game.js.
-function perspective(fovY, aspect, near, far) {
-  const f = 1 / Math.tan(fovY / 2);
-  const range = 1 / (near - far);
-  return new Float32Array([
-    f / aspect, 0, 0, 0,
-    0, f, 0, 0,
-    0, 0, (far + near) * range, -1,
-    0, 0, 2 * far * near * range, 0,
-  ]);
-}
-
-function lookAt(eye, center, up = [0, 1, 0]) {
-  const normalize = (v) => {
-    const length = Math.hypot(v[0], v[1], v[2]) || 1;
-    return [v[0] / length, v[1] / length, v[2] / length];
-  };
-  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-  const z = normalize([eye[0] - center[0], eye[1] - center[1], eye[2] - center[2]]);
-  const x = normalize(cross(up, z));
-  const y = cross(z, x);
-  return new Float32Array([
-    x[0], y[0], z[0], 0,
-    x[1], y[1], z[1], 0,
-    x[2], y[2], z[2], 0,
-    -dot(x, eye), -dot(y, eye), -dot(z, eye), 1,
-  ]);
-}
-
-function multiply4(a, b) {
-  const out = new Float32Array(16);
-  for (let column = 0; column < 4; column += 1) {
-    for (let row = 0; row < 4; row += 1) {
-      out[column * 4 + row] =
-        a[row] * b[column * 4] +
-        a[4 + row] * b[column * 4 + 1] +
-        a[8 + row] * b[column * 4 + 2] +
-        a[12 + row] * b[column * 4 + 3];
-    }
-  }
-  return out;
-}
+// The frustum planes are extracted in column-major order, so a transposed
+// projection would silently swap the near/far pair and cull the world. Pin the
+// layout the renderer depends on: element (row, column) at `column * 4 + row`.
+const identity = identity4;
+const probe = perspective(Math.PI / 2, 1, 0.1, 200);
+assert.equal(probe[0], 1, "perspective must write f/aspect at column 0, row 0");
+assert.equal(probe[5], 1, "perspective must write f at column 1, row 1");
+assert.equal(probe[11], -1, "perspective must write -1 at column 2, row 3");
+assert.equal(multiply4(identity4(), identity4())[15], 1, "identity must multiply to identity");
 
 function box(minX, minY, minZ, maxX, maxY, maxZ) {
   const bounds = emptyBounds();
@@ -118,10 +79,12 @@ for (const plane of degenerate) {
   for (const component of plane) assert.ok(Number.isFinite(component));
 }
 
-// A camera at the origin looking down -Z with a 90 degree field of view.
+// A camera at the origin looking down -Z with a 90 degree field of view. `up`
+// is passed explicitly because the renderer's two call sites both do, and a
+// hidden default here would let the test drift away from that contract.
 const viewProjection = multiply4(
   perspective(Math.PI / 2, 1, 0.1, 200),
-  lookAt([0, 0, 0], [0, 0, -1]),
+  lookAt([0, 0, 0], [0, 0, -1], [0, 1, 0]),
 );
 const frustum = extractClipPlanes(viewProjection);
 assert.equal(frustum.length, CLIP_PLANE_COUNT);
@@ -199,7 +162,8 @@ assert.equal(selection.metrics.culledChunks, 2);
 assert.equal(selection.metrics.drawCalls, 2, "each non-empty layer costs one draw call");
 assert.equal(selection.metrics.submittedVertices, 660);
 assert.equal(selection.metrics.submittedVertexBytes, 660 * TERRAIN_VERTEX_STRIDE_BYTES);
-assert.equal(TERRAIN_VERTEX_STRIDE_BYTES, 52);
+// 18 floats per vertex: position, colour, light, normal, uv, material, tileRect.
+assert.equal(TERRAIN_VERTEX_STRIDE_BYTES, 72);
 
 // Without a frustum every resident chunk is submitted, which is the contract
 // the culling benchmark compares against.

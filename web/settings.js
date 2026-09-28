@@ -1,11 +1,43 @@
 // Menu options and world creation settings.
 // Pure and dependency-free; persistence is injected by the caller so the
 // rules stay testable without a browser. Only options the game implements
-// are exposed: field of view, mouse sensitivity, render distance and the
-// coordinates readout.
+// are exposed: field of view, mouse sensitivity, render distance, distant
+// terrain, the coordinates readout, the renderer backend and the graphics
+// quality tier.
 import { normalizeRendererMode, RENDERER_MODES } from "./webgpu-capabilities.js";
+import { VISUAL_QUALITY_TIERS } from "./visual-quality.js";
+import { DEFAULT_FPS_LIMIT, normalizeFpsLimit } from "./frame-pacer.js";
 
 export { RENDERER_MODES };
+
+/** Tier names, cheapest first, with `auto` in front to leave adaptation on. */
+export const GRAPHICS_QUALITY_CHOICES = Object.freeze([
+  "auto",
+  ...VISUAL_QUALITY_TIERS.map((tier) => tier.name),
+]);
+export const DEFAULT_GRAPHICS_QUALITY = "auto";
+export const MIN_VOLUME = 0;
+export const MAX_VOLUME = 1;
+/** The mixer's own default was 0.18, which is far too quiet to be a menu default. */
+export const DEFAULT_VOLUME_MASTER = 0.7;
+export const DEFAULT_VOLUME_MUSIC = 0.7;
+export const DEFAULT_VOLUME_EFFECTS = 0.9;
+
+function clampVolume(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(MAX_VOLUME, Math.max(MIN_VOLUME, parsed));
+}
+
+/**
+ * A stored value is either a tier name or `auto`. Anything else falls back to
+ * `auto` rather than to a specific tier: a corrupted preference must not leave
+ * the game pinned to a quality the player never asked for, which would also
+ * disable the frame-time safety net.
+ */
+export function normalizeGraphicsQuality(value) {
+  return GRAPHICS_QUALITY_CHOICES.includes(value) ? value : DEFAULT_GRAPHICS_QUALITY;
+}
 
 export function runtimeRendererMode(value) {
   const mode = normalizeRendererMode(value);
@@ -18,8 +50,28 @@ export const MAX_FOV = 110;
 export const MIN_SENSITIVITY = 0.5;
 export const MAX_SENSITIVITY = 3;
 export const MIN_RENDER_DISTANCE = 2;
-export const MAX_RENDER_DISTANCE = 6;
-export const DEFAULT_RENDER_DISTANCE = 2;
+// Chunk generation runs through the U32 terrain core and the renderers keep one
+// buffer per chunk, so a wider window no longer costs a whole-world rebuild.
+export const MAX_RENDER_DISTANCE = 8;
+export const DEFAULT_RENDER_DISTANCE = 4;
+// Distant terrain (LOD rings past the streamed chunks), in blocks. 0 turns it off.
+export const LOD_DISTANCE_CHOICES = Object.freeze([0, 256, 512, 1024, 2048]);
+export const DEFAULT_LOD_DISTANCE = 512;
+
+export function normalizeLodDistance(value) {
+  const parsed = Number(value);
+  return LOD_DISTANCE_CHOICES.includes(parsed) ? parsed : DEFAULT_LOD_DISTANCE;
+}
+// The frame rate cap, its choices and its default come from the pacer, which is
+// the module that has to honour them. Re-exporting keeps one source of truth: a
+// second copy of this list in the settings layer is how the menu ends up offering
+// a limit the runtime does not implement.
+export {
+  DEFAULT_FPS_LIMIT,
+  FPS_LIMIT_CHOICES,
+  framePeriodMs,
+  normalizeFpsLimit,
+} from "./frame-pacer.js";
 export const DEFAULT_RENDERER = RENDERER_MODES.WEBGL;
 export const DEFAULT_CONTROLS = Object.freeze({
   sneak: "ShiftLeft",
@@ -54,7 +106,13 @@ export function createDefaultOptions() {
     sensitivity: 1,
     showCoords: true,
     renderDistance: DEFAULT_RENDER_DISTANCE,
+    lodDistance: DEFAULT_LOD_DISTANCE,
     renderer: DEFAULT_RENDERER,
+    graphicsQuality: DEFAULT_GRAPHICS_QUALITY,
+    fpsLimit: DEFAULT_FPS_LIMIT,
+    volumeMaster: DEFAULT_VOLUME_MASTER,
+    volumeMusic: DEFAULT_VOLUME_MUSIC,
+    volumeEffects: DEFAULT_VOLUME_EFFECTS,
     controls: { ...DEFAULT_CONTROLS },
   };
 }
@@ -86,7 +144,13 @@ export function sanitizeOptions(raw = {}) {
     sensitivity: clampNumber(raw.sensitivity, MIN_SENSITIVITY, MAX_SENSITIVITY, fallback.sensitivity),
     showCoords: raw.showCoords === undefined ? fallback.showCoords : Boolean(raw.showCoords),
     renderDistance: clampInteger(raw.renderDistance, MIN_RENDER_DISTANCE, MAX_RENDER_DISTANCE, fallback.renderDistance),
+    lodDistance: raw.lodDistance === undefined ? fallback.lodDistance : normalizeLodDistance(raw.lodDistance),
     renderer: runtimeRendererMode(raw.renderer),
+    graphicsQuality: normalizeGraphicsQuality(raw.graphicsQuality),
+    fpsLimit: normalizeFpsLimit(raw.fpsLimit),
+    volumeMaster: clampVolume(raw.volumeMaster, fallback.volumeMaster),
+    volumeMusic: clampVolume(raw.volumeMusic, fallback.volumeMusic),
+    volumeEffects: clampVolume(raw.volumeEffects, fallback.volumeEffects),
     controls,
   };
 }
@@ -108,6 +172,16 @@ export function saveOptions(store, options) {
   } catch {
     return false;
   }
+}
+
+/** The three stored volumes in the shape the mixer expects. */
+export function audioVolumesFromOptions(options) {
+  const source = options ?? {};
+  return {
+    master: clampVolume(source.volumeMaster, DEFAULT_VOLUME_MASTER),
+    music: clampVolume(source.volumeMusic, DEFAULT_VOLUME_MUSIC),
+    effects: clampVolume(source.volumeEffects, DEFAULT_VOLUME_EFFECTS),
+  };
 }
 
 export function createWorldConfig({ name = "", seedText = "", mode = DEFAULT_WORLD_MODE } = {}) {

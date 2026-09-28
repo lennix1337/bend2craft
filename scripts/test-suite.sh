@@ -3,19 +3,33 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TESTS=(
+  tests/bend-list.test.mjs
   tests/world-bridge.test.mjs
   tests/bend-bridge.test.mjs
   tests/world-state-bend.test.mjs
+  tests/world-chunk-golden.test.mjs
+  tests/world-coordinates.test.mjs
   tests/chunk-world.test.mjs
   tests/worker-scheduler.test.mjs
+  tests/chunk-worker-core.test.mjs
   tests/structures-bend.test.mjs
   tests/village-path-bend.test.mjs
   tests/villagers-bend.test.mjs
   tests/horizon-bend.test.mjs
   tests/horizon-grid.test.mjs
+  tests/horizon-lod-bend.test.mjs
+  tests/lod-terrain.test.mjs
   tests/simulation-bend.test.mjs
   tests/fluids-bend.test.mjs
   tests/fire-bend.test.mjs
+  tests/redstone-bend.test.mjs
+  tests/redstone-grid-bend.test.mjs
+  tests/redstone-clock-bend.test.mjs
+  tests/redstone-machines-bend.test.mjs
+  tests/redstone-observer-bend.test.mjs
+  tests/redstone-all-bend.test.mjs
+  tests/redstone-blocks.test.mjs
+  tests/redstone-adapter.test.mjs
   tests/simulation-ticker.test.mjs
   tests/crops-bend.test.mjs
   tests/farmland-bend.test.mjs
@@ -33,10 +47,17 @@ TESTS=(
   tests/villager-terrain.test.mjs
   tests/mesh-worker.test.mjs
   tests/terrain-vertex-builder.test.mjs
+  tests/material-textures.test.mjs
+  tests/visual-quality.test.mjs
+  tests/frame-pacer.test.mjs
+  tests/gl-render-target.test.mjs
+  tests/sun-shadow.test.mjs
+  tests/sun-shadow-wiring.test.mjs
   tests/vertex-buffer-compose.test.mjs
   tests/chunk-frustum.test.mjs
   tests/webgpu-capabilities.test.mjs
   tests/webgpu-chunk-buffers.test.mjs
+  tests/webgl-chunk-buffers.test.mjs
   tests/webgpu-chunk-updates.test.mjs
   tests/webgpu-frame-readback.test.mjs
   tests/webgpu-terrain-presentation.test.mjs
@@ -48,6 +69,8 @@ TESTS=(
   tests/mining-controller.test.mjs
   tests/mining-progress.test.mjs
   tests/entity-shadow.test.mjs
+  tests/vfx.test.mjs
+  tests/vfx-wiring.test.mjs
   tests/first-person-hand.test.mjs
   tests/material-lighting.test.mjs
   tests/sky-palette.test.mjs
@@ -63,6 +86,7 @@ TESTS=(
   tests/light-bend.test.mjs
   tests/light-dirty-bend.test.mjs
   tests/light-flood-bend.test.mjs
+  tests/light-flood-grid.test.mjs
   tests/inventory-bend.test.mjs
   tests/chest-bend.test.mjs
   tests/chests-bend.test.mjs
@@ -85,14 +109,18 @@ TESTS=(
   tests/menu-navigation.test.mjs
   tests/modal-focus.test.mjs
   tests/settings.test.mjs
+  tests/options-panel.test.mjs
+  tests/backend-fallback.test.mjs
   tests/ui-shell.test.mjs
   tests/startup-contract.test.mjs
   tests/boot-resilience.test.mjs
 )
 
-declare -A LISTED_TESTS=()
+# A newline-delimited set keeps this membership check working on the bash 3.2
+# that ships with macOS, which has no associative arrays.
+LISTED_TESTS=$'\n'
 for test_file in "${TESTS[@]}"; do
-  LISTED_TESTS["$test_file"]=1
+  LISTED_TESTS+="$test_file"$'\n'
   if [[ ! -f "$ROOT/$test_file" ]]; then
     printf 'Listed test does not exist: %s\n' "$test_file" >&2
     exit 1
@@ -101,10 +129,13 @@ done
 
 while IFS= read -r discovered; do
   [[ -z "$discovered" ]] && continue
-  if [[ -z "${LISTED_TESTS[$discovered]+x}" ]]; then
-    printf 'Test file is not registered in scripts/test-suite.sh: %s\n' "$discovered" >&2
-    exit 1
-  fi
+  case "$LISTED_TESTS" in
+    *$'\n'"$discovered"$'\n'*) ;;
+    *)
+      printf 'Test file is not registered in scripts/test-suite.sh: %s\n' "$discovered" >&2
+      exit 1
+      ;;
+  esac
 done < <(cd "$ROOT" && printf '%s\n' tests/*.test.mjs | sort)
 
 printf 'Running %d tests\n' "${#TESTS[@]}"

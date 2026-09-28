@@ -34,6 +34,13 @@ function normalizeMobs(list) {
       alive: health > 0 && mob.alive !== false,
       heading_x: mob.heading_x ?? 0,
       heading_z: mob.heading_z ?? -1,
+      // A save written before the fire flag existed has no such field. Reading
+      // it as "not burning" is the only safe default: the alternative loads an
+      // old world with every mob already alight. The same goes for panic, which
+      // is the animal's remaining flight time: zero means it walks around, which
+      // is how it was saved.
+      burning: mob.burning === true,
+      panic: Number.isFinite(Number(mob.panic)) ? Math.max(0, Number(mob.panic)) : 0,
     };
   }
   return { $: "Con", head: normalized, tail: normalizeMobs(list.tail) };

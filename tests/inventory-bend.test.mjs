@@ -84,6 +84,16 @@ assert.equal(Number(Inventory.food_value(26)), 2);
 assert.equal(Number(Inventory.food_value(41)), 5);
 assert.equal(Number(Inventory.food_value(42)), 4);
 assert.equal(Number(Inventory.food_value(14)), 0);
+// Raw meat is what a farm animal leaves behind, so it has to be collectible and
+// edible or the animal is a decoration.
+assert.equal(Number(Inventory.food_value(48)), 3);
+assert.equal(Number(Inventory.food_value(49)), 3);
+assert.equal(Number(Inventory.food_value(50)), 2);
+for (const item of [48, 49, 50]) {
+  assert.equal(Inventory.pickup_item(item), true, `item ${item} must be collectible`);
+  assert.equal(Inventory.is_placeable(item), false, `item ${item} is not a block`);
+  assert.equal(Inventory.is_block_item(item), false, `item ${item} is not a block`);
+}
 assert.equal(Inventory.mine_drop(11, 1, 1n).valid, true);
 assert.equal(Number(Inventory.mine_drop(11, 1, 1n).item), 1);
 assert.equal(Inventory.mine_drop(0, 1, 1n).valid, false);

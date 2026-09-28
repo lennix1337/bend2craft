@@ -1,4 +1,5 @@
-import Fire from "../world/fire.bend";
+// FIRE_DIR points at another copy of world/ to compare two versions.
+const { default: Fire } = await import(`${process.env.FIRE_DIR ?? "../world"}/fire.bend`);
 
 function sampleList(values) {
   let list = { $: "Nil" };
@@ -25,4 +26,21 @@ console.log(JSON.stringify({
     const next = Fire.tick(state, samples);
     Fire.changes(state, next);
   }),
+}));
+
+// A pool of water: the simulation samples every fluid cell's neighbourhood
+// (hundreds of samples, one lava cell), and fire checks them every tick.
+const pool = [];
+for (let x = 0; x < 12; x += 1) {
+  for (let z = 0; z < 12; z += 1) {
+    pool.push(Fire.sample(BigInt(100 + x), 8n, BigInt(100 + z), 7));
+    pool.push(Fire.sample(BigInt(100 + x), 7n, BigInt(100 + z), 3));
+    pool.push(Fire.sample(BigInt(100 + x), 9n, BigInt(100 + z), 0));
+  }
+}
+pool.push(Fire.sample(99n, 8n, 99n, 21));
+const poolSamples = sampleList(pool);
+console.log(JSON.stringify({
+  samples: pool.length,
+  poolIgniteMs: measure(() => Fire.ignite_lava(Fire.empty(), poolSamples), 3),
 }));

@@ -30,4 +30,17 @@ for (let node = Dirty.cells_column(8n, 8n, 8n); node?.$ === "Con"; node = node.t
 assert.equal(columnCells.length, 20);
 assert.deepEqual(columnCells[0], [8, 19, 8]);
 assert.deepEqual(columnCells.at(-1), [8, 0, 8]);
+// Air and water are both clear and dark to the light rules: a swap between
+// them can only change the swapped cell's own light.
+assert.equal(Dirty.light_neutral(0, 7), true);
+assert.equal(Dirty.light_neutral(7, 0), true);
+assert.equal(Dirty.light_neutral(7, 7), true);
+assert.equal(Dirty.light_neutral(0, 1), false, "stone blocks light");
+assert.equal(Dirty.light_neutral(0, 12), false, "a torch lights its surroundings");
+assert.equal(Dirty.light_neutral(7, 21), false, "lava glows");
+const self = [];
+for (let node = Dirty.cells_self(8n, 3n, 9n); node?.$ === "Con"; node = node.tail) {
+  self.push([Number(node.head.x), Number(node.head.y), Number(node.head.z)]);
+}
+assert.deepEqual(self, [[8, 3, 9]]);
 console.log("bend light dirty chunks ok");

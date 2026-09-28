@@ -6,8 +6,19 @@ rem Build the current bundle before serving it. The build toolchain runs in WSL.
 cd /d "%~dp0"
 if not defined PORT set "PORT=8080"
 set "OPEN_BROWSER=1"
-if /I "%~1"=="--no-open" set "OPEN_BROWSER=0"
-if not "%~1"=="" if /I not "%~1"=="--no-open" goto usage
+set "LAN_FLAG="
+:parse_args
+if "%~1"=="" goto args_done
+if /I "%~1"=="--no-open" (
+  set "OPEN_BROWSER=0"
+) else if /I "%~1"=="--lan" (
+  set "LAN_FLAG=--lan"
+) else (
+  goto usage
+)
+shift
+goto parse_args
+:args_done
 
 where node >nul 2>nul
 if errorlevel 1 goto no_node
@@ -33,18 +44,19 @@ if not exist "dist\lod-worker.js" goto missing_bundle
 echo Starting Bend2Craft at http://localhost:%PORT%/?play=1^&seed=1337 ...
 echo Keep this window open while you play. Press Ctrl+C to stop.
 if "%OPEN_BROWSER%"=="1" (
-  node scripts\play-server.mjs --open
+  node scripts\play-server.mjs --open %LAN_FLAG%
 ) else (
-  node scripts\play-server.mjs
+  node scripts\play-server.mjs %LAN_FLAG%
 )
 set "EXIT_CODE=%ERRORLEVEL%"
 if not "%EXIT_CODE%"=="0" goto server_failed
 goto finished
 
 :usage
-echo Usage: %~nx0 [--no-open]
+echo Usage: %~nx0 [--no-open] [--lan]
 echo   Default: build the current bundle and open the browser after listening.
 echo   --no-open: build and serve without opening a browser window.
+echo   --lan: let players on your network join the multiplayer world.
 pause
 exit /b 2
 

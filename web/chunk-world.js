@@ -91,6 +91,11 @@ export function createChunkedWorld({
   affectedLightChunks = null,
   affectedLightCells = null,
   affectedLightColumnCells = null,
+  // A change the light rules cannot see past its own cell (air and water):
+  // `lightNeutral(previous, next)` says which, and `affectedLightSelfCells`
+  // is that one-cell stencil (world/light-dirty.bend).
+  affectedLightSelfCells = null,
+  lightNeutral = null,
   invalidateLightFields = null,
   // Maps a coordinate in a light patch back to the signed world coordinate
   // (the light rules run on stored coordinates).
@@ -99,6 +104,9 @@ export function createChunkedWorld({
   generateBlock,
   initialEdits = null,
   applyEdit = null,
+  // Optional batch form of applyEdit: (edits, changes) => edits with every
+  // change applied in order, in one pass (WorldState.set_many).
+  applyEdits = null,
 }) {
   if (!validInteger(chunkSize) || chunkSize < 1) {
     throw new RangeError("chunkSize must be a positive integer");
@@ -118,6 +126,9 @@ export function createChunkedWorld({
 
   const chunks = new Map();
   const pendingRequests = new Set();
+  // Shared-world cells that arrived while their chunk was in flight: the reply
+  // was generated from an older log, so they are written over it on arrival.
+  const lateCells = new Map();
   const pinnedKeys = new Set();
   let loadVersion = 0;
   let edits = initialEdits;
@@ -274,6 +285,11 @@ export function createChunkedWorld({
       light: materializeChunk(generatedLight, cellCount),
     });
     pendingRequests.delete(key);
+    const late = lateCells.get(key);
+    if (late !== undefined) {
+      lateCells.delete(key);
+      writeBlocks([...late.values()], true);
+    }
     return true;
   }
 
@@ -285,19 +301,27 @@ export function createChunkedWorld({
     return chunk.data[indexOf(localX, localY, localZ)];
   }
 
+  function isLoaded(x, z) {
+    if (!validInteger(x) || !validInteger(z)) return false;
+    const [chunkX, chunkZ] = chunkCoordinates(x, z);
+    return chunks.has(chunkKey(chunkX, chunkZ));
+  }
+
   function isActive(x, z) {
     if (!validInteger(x) || !validInteger(z)) return false;
     const [chunkX, chunkZ] = chunkCoordinates(x, z);
     return activeKeys.has(chunkKey(chunkX, chunkZ));
   }
 
-  function applyBlock(x, y, z, value) {
+  function applyBlock(x, y, z, value, logged = false) {
     const { chunkX, chunkZ, localX, localY, localZ } = localCoordinates(x, y, z);
     const chunk = getChunk(chunkX, chunkZ);
     const index = indexOf(localX, localY, localZ);
     const previousBlock = chunk.data[index];
     const key = chunkKey(chunkX, chunkZ);
-    if (typeof applyEdit === "function") {
+    if (logged) {
+      // The caller folds the whole batch into the log at once.
+    } else if (typeof applyEdit === "function") {
       edits = applyEdit(edits, x, y, z, value);
     } else {
       let chunkEdits = legacyEdits.get(key);
@@ -351,9 +375,13 @@ export function createChunkedWorld({
       return;
     }
     const cellCount = chunkSize * chunkSize * maxY;
-    const dirtyCellSampler = opacityChanged && typeof affectedLightColumnCells === "function"
-      ? affectedLightColumnCells
-      : affectedLightCells;
+    const neutral = typeof lightNeutral === "function" && typeof affectedLightSelfCells === "function"
+      && changes.every((change) => lightNeutral(Number(change.previousBlock), Number(change.value)));
+    const dirtyCellSampler = neutral
+      ? affectedLightSelfCells
+      : opacityChanged && typeof affectedLightColumnCells === "function"
+        ? affectedLightColumnCells
+        : affectedLightCells;
     if (typeof generateLightCells === "function" && typeof dirtyCellSampler === "function") {
       lastLightDirtyCells = mergeLightCells(changes, dirtyCellSampler);
       applyLightPatch(generateLightCells(lastLightDirtyCells, edits), chunks, chunkSize, maxY, indexOf, lightCellCoordinate);
@@ -399,14 +427,24 @@ export function createChunkedWorld({
     }
   }
 
-  function setBlocks(batch) {
+  function validBatch(batch) {
     if (!Array.isArray(batch) || batch.length === 0) return false;
-    for (const change of batch) {
-      if (!inside(change?.x, change?.y, change?.z)
-        || !Number.isInteger(change?.value) || change.value < 0 || change.value > 255) return false;
-    }
-    const changes = batch.map((change) => applyBlock(change.x, change.y, change.z, change.value));
+    return batch.every((change) => inside(change?.x, change?.y, change?.z)
+      && Number.isInteger(change?.value) && change.value >= 0 && change.value <= 255);
+  }
+
+  // Writes the cells and relights them. `logged` means the log already holds
+  // the batch (a merged remote log), so only the chunk data changes.
+  function writeBlocks(batch, logged) {
+    const batched = !logged && typeof applyEdits === "function" && batch.length > 1;
+    const changes = batch.map((change) => applyBlock(change.x, change.y, change.z, change.value, logged || batched));
+    if (batched) edits = applyEdits(edits, batch);
     refreshLight(changes);
+  }
+
+  function setBlocks(batch) {
+    if (!validBatch(batch)) return false;
+    writeBlocks(batch, false);
     return true;
   }
 
@@ -467,8 +505,41 @@ export function createChunkedWorld({
     edits = nextEdits;
     loadVersion += 1;
     pendingRequests.clear();
+    lateCells.clear();
     chunks.clear();
     activeKeys = new Set();
+    return true;
+  }
+
+  // Adopts an edit log that already contains a batch from elsewhere (the
+  // multiplayer server). `changes` are the batch's cells inside loaded chunks,
+  // written and relit here; `unloaded` are its other cells. Those of chunks in
+  // flight are written over the reply when it lands (it was generated from an
+  // older log), so a chunk edited every tick still loads; later requests read
+  // the merged log.
+  function mergeEdits(nextEdits, changes = [], unloaded = []) {
+    if (!Array.isArray(changes) || !Array.isArray(unloaded)) {
+      throw new TypeError("mergeEdits changes and unloaded must be arrays");
+    }
+    if (changes.length > 0 && !validBatch(changes)) return false;
+    // The light patch reads the log, so the merged log is in place first.
+    edits = nextEdits;
+    if (changes.length > 0) writeBlocks(changes, true);
+    for (const cell of unloaded) {
+      if (!validBatch([cell])) continue;
+      const [chunkX, chunkZ] = chunkCoordinates(cell.x, cell.z);
+      const key = chunkKey(chunkX, chunkZ);
+      if (!pendingRequests.has(key)) continue;
+      let late = lateCells.get(key);
+      if (late === undefined) {
+        late = new Map();
+        lateCells.set(key, late);
+      }
+      // The last value of a cell wins.
+      const cellKey = `${cell.x},${cell.y},${cell.z}`;
+      late.delete(cellKey);
+      late.set(cellKey, { x: cell.x, y: cell.y, z: cell.z, value: cell.value });
+    }
     return true;
   }
 
@@ -478,6 +549,7 @@ export function createChunkedWorld({
     edits = nextEdits;
     loadVersion += 1;
     pendingRequests.clear();
+    lateCells.clear();
     return true;
   }
 
@@ -487,6 +559,7 @@ export function createChunkedWorld({
     inside,
     chunkCoordinates,
     isActive,
+    isLoaded,
     blockAt,
     lightAt,
     setBlock,
@@ -496,6 +569,7 @@ export function createChunkedWorld({
     getLightDirtyCells: () => lastLightDirtyCells,
     replaceEdits,
     patchEdits,
+    mergeEdits,
     hydrateChunk,
     pinChunk,
     unpinChunk,

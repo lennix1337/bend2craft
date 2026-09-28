@@ -35,6 +35,9 @@ import rawHorizon from "../world/horizon.bend";
 import rawInventory from "../world/inventory.bend";
 import rawLight from "../world/light.bend";
 import rawLightDirty from "../world/light-dirty.bend";
+import rawMultiplayer from "../world/multiplayer.bend";
+import rawMultiplayerMobs from "../world/multiplayer_mobs.bend";
+import rawMultiplayerMoves from "../world/multiplayer_moves.bend";
 import rawPlayer from "../world/player.bend";
 import rawSimulation from "../world/simulation.bend";
 import rawStructures from "../world/structures.bend";
@@ -89,6 +92,42 @@ export const FOREIGN = {
     window_walls: { 6: "lightflood", out: true },
     window_grid: { 2: "world" },
     fields_from_cells: { 0: "lightflood" },
+  },
+  multiplayer: {
+    restore: { 1: "world_state", 2: "chests", 3: "furnaces" },
+    room_edits: { out: true },
+    room_chests: { out: true },
+    room_furnaces: { out: true },
+    submission_accepted: { out: true },
+    submission_rejected: { out: true },
+    valid_edit: { 0: "world_state" },
+    batch_fits: { 0: "world_state" },
+    valid_batch_size: { 0: "world_state" },
+    keep_if: { 1: "world_state", 2: "world_state", out: true },
+    slots_empty: { 0: "chest" },
+    chest_allows: { 0: "chests", 1: "world_state" },
+    chest_step: { 1: "world_state", 2: "chests" },
+    step_chests: { out: true },
+    furnace_step: { 1: "world_state", 2: "furnaces" },
+    furnace_step_furnaces: { out: true },
+    split: { 0: "world_state", 1: "world_state", 2: "chests", 3: "furnaces" },
+    submit: { 1: "world_state" },
+    chest_slots: { out: true },
+    furnace_result: { 1: "world_state", 2: "chests", 3: "furnaces", 8: "furnace" },
+    furnace_transfer: { 1: "world_state", 2: "chests", 3: "furnaces", 7: "furnace" },
+    furnace_at: { out: true },
+    furnace_state: { out: true },
+    revert: { 0: "world_state", 1: "world_state", out: true },
+    merge: { 0: "world_state", 1: "world_state", out: true },
+  },
+  multiplayer_mobs: {
+    mob_x: { 0: "entities" },
+    mob_z: { 0: "entities" },
+    step_world: { 0: "entities", 5: "entities", out: true },
+    despawn: { 0: "entities", out: true },
+    attack: { 0: "entities", 7: "entities", out: true },
+    pickup: { 0: "entities" },
+    pickup_drops: { out: true },
   },
   redstone_all: {
     circuit_core: { out: true },
@@ -158,8 +197,9 @@ export const FOREIGN = {
     open_for: { 2: "world_state", out: true },
     open_doors: { 2: "world_state", out: true },
     door_edits: { out: true },
-    cons_door_edit: { 0: "world_state", 1: "world_state", out: true },
-    close_door_result: { 0: "world_state", 5: "world_state" },
+    open_door_cells: { 0: "world_state", 1: "world_state", out: true },
+    close_door: { 1: "world_state", out: true },
+    close_doors: { 0: "world_state", 5: "world_state" },
     update_doors_result: { 2: "world_state" },
     update_doors: { 2: "world_state", out: true },
     sleep: { 2: "world_state" },
@@ -279,6 +319,9 @@ export const bend = {
   "light-dirty": wrap("light-dirty", rawLightDirty),
   "light-flood": wrap("light-flood", rawFlood),
   lightflood: wrap("lightflood", rawFlood2),
+  multiplayer: wrap("multiplayer", rawMultiplayer),
+  multiplayer_mobs: wrap("multiplayer_mobs", rawMultiplayerMobs),
+  multiplayer_moves: wrap("multiplayer_moves", rawMultiplayerMoves),
   player: wrap("player", rawPlayer),
   simulation: wrap("simulation", rawSimulation),
   structures: wrap("structures", rawStructures),
@@ -310,6 +353,9 @@ export const Horizon = bend.horizon;
 export const Inventory = bend.inventory;
 export const Light = bend.light;
 export const Dirty = bend["light-dirty"];
+export const Multiplayer = bend.multiplayer;
+export const MultiplayerMobs = bend.multiplayer_mobs;
+export const MultiplayerMoves = bend.multiplayer_moves;
 export const Player = bend.player;
 export const Simulation = bend.simulation;
 export const Structures = bend.structures;

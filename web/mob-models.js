@@ -21,6 +21,7 @@ export const TILE_VILLAGER_SKIN = ENTITY_TEXTURE_TILES.villagerSkin;
 export const TILE_VILLAGER_ROBE_GREEN = ENTITY_TEXTURE_TILES.villagerRobeGreen;
 export const TILE_VILLAGER_ROBE_BROWN = ENTITY_TEXTURE_TILES.villagerRobeBrown;
 export const TILE_ENTITY_EYE = ENTITY_TEXTURE_TILES.eye;
+export const TILE_PLAYER_SLEEVE = ENTITY_TEXTURE_TILES.playerSleeve;
 export const TILE_WOOD = 5;
 
 const EYE_TINT = [0.06, 0.06, 0.07];
@@ -487,4 +488,58 @@ export function dropBoxes(drop, time) {
     [...tint],
     { yaw: time * 2 + swingPhase(drop.id) },
   )];
+}
+
+// Remote players wear the same sleeve and skin tiles as the first-person hand
+// (web/first-person-hand.js), untinted, so another player looks like the arm
+// you see in your own view. Names above their heads tell players apart.
+const PLAYER_TINT = [1, 1, 1];
+const PLAYER_HAIR = [0.42, 0.28, 0.18];
+
+/**
+ * Boxes for a remote player view { id, x, y, z, yaw, pitch, speed }: feet at
+ * y, facing yaw in the camera convention (sin yaw, -cos yaw). Limbs swing with
+ * the walking speed and the head follows the pitch.
+ */
+export function playerBoxes(view, time) {
+  const stride = Math.min(1, (Number(view.speed) || 0) / 4.3);
+  const phase = swingPhase(view.id);
+  const legSwing = Math.sin(time * 9 + phase) * 0.6 * stride;
+  const armSwing = Math.sin(time * 9 + phase + Math.PI) * 0.5 * stride;
+  const eyeOpen = blinkFactor(view.id, time);
+  const pitch = Math.max(-1.2, Math.min(1.2, Number(view.pitch) || 0));
+  const { x, y, z } = view;
+  const headPivot = [x, y + 1.46, z];
+  const parts = [];
+  for (const side of [-1, 1]) {
+    parts.push(box(
+      [x + side * 0.12, y + 0.375, z],
+      [0.2, 0.75, 0.2],
+      TILE_ZOMBIE_PANTS,
+      PLAYER_TINT,
+      { pitch: side < 0 ? legSwing : -legSwing, pivot: [x + side * 0.12, y + 0.75, z] },
+    ));
+  }
+  parts.push(box([x, y + 1.1, z], [0.5, 0.72, 0.28], TILE_PLAYER_SLEEVE, PLAYER_TINT));
+  for (const side of [-1, 1]) {
+    parts.push(box(
+      [x + side * 0.34, y + 1.12, z],
+      [0.18, 0.66, 0.18],
+      TILE_PLAYER_SLEEVE,
+      PLAYER_TINT,
+      { pitch: side < 0 ? armSwing : -armSwing, pivot: [x + side * 0.34, y + 1.4, z] },
+    ));
+  }
+  parts.push(box([x, y + 1.68, z], [0.46, 0.46, 0.44], TILE_VILLAGER_SKIN, PLAYER_TINT, { pitch, pivot: headPivot }));
+  parts.push(box([x, y + 1.885, z + 0.02], [0.48, 0.06, 0.46], TILE_VILLAGER_SKIN, PLAYER_HAIR, { pitch, pivot: headPivot }));
+  for (const side of [-1, 1]) {
+    parts.push(box(
+      [x + side * 0.1, y + 1.72, z - 0.225],
+      [0.07, 0.07 * eyeOpen, 0.02],
+      TILE_ENTITY_EYE,
+      EYE_TINT,
+      { pitch, pivot: headPivot },
+    ));
+  }
+  return orbit(parts, x, z, Number(view.yaw) || 0);
 }

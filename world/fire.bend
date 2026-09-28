@@ -28,14 +28,27 @@ def state_cells(state: State) -> List<&2, Cell>:
   State{cells} = state
   cells
 
-def sample_block(samples: List<&2, Sample>, +x: Nat, +y: Nat, +z: Nat) -> U32:
-  match samples:
-    case Nil{}:
+def sample_matches(sample: Sample, +x: Nat, +y: Nat, +z: Nat) -> Bool:
+  Sample{+sx, +sy, +sz, block} = sample
+  Bool.and(Bool.and(Nat.is_eq(sx, x), Nat.is_eq(sy, y)), Nat.is_eq(sz, z))
+
+def sample_value(sample: Sample) -> U32:
+  Sample{sx, sy, sz, +block} = sample
+  block
+
+# The first sample of (x, y, z), in one tail-recursive pass that stops there;
+# an unsampled cell reads as stone.
+def sample_block.go(samples: List<&2, Sample>, stop: Bool, +value: U32, +x: Nat, +y: Nat, +z: Nat) -> U32:
+  match samples stop:
+    case _ True{}:
+      value
+    case Nil{} False{}:
       1
-    case Con{+head, +tail}:
-      Sample{+sx, +sy, +sz, +block} = head
-      +same = Bool.and(Bool.and(Nat.is_eq(sx, x), Nat.is_eq(sy, y)), Nat.is_eq(sz, z))
-      Bool.pick(U32, same, block, sample_block(tail, x, y, z))
+    case Con{+head, tail} False{}:
+      sample_block.go(tail, sample_matches(head, x, y, z), sample_value(head), x, y, z)
+
+def sample_block(samples: List<&2, Sample>, +x: Nat, +y: Nat, +z: Nat) -> U32:
+  sample_block.go(samples, False{}, 1, x, y, z)
 
 def flammable(+block: U32) -> Bool:
   Bool.or(U32.is_eq(block, 4), U32.is_eq(block, 5))
@@ -90,6 +103,15 @@ def ignite_lava_at(
       Bool.pick(State, front, ignite(state, x, Nat.add(y, 1n), Nat.add(z, 1n)),
         Bool.pick(State, back, ignite(state, x, Nat.add(y, 1n), Nat.sub(z, 1n)), state))))
 
+# Only lava cells look at their neighbours (a strict Bool.pick would run the
+# eight-sample check for every sample).
+def ignite_lava_entry(lava: Bool, +state: State, +all: List<&2, Sample>, +x: Nat, +y: Nat, +z: Nat) -> State:
+  match lava:
+    case True{}:
+      ignite_lava_at(state, all, x, y, z)
+    case False{}:
+      state
+
 def ignite_lava_entries(
   +remaining: List<&2, Sample>, +all: List<&2, Sample>, +state: State
 ) -> State:
@@ -98,8 +120,7 @@ def ignite_lava_entries(
       state
     case Con{+head, +tail}:
       Sample{+x, +y, +z, +block} = head
-      +next = Bool.pick(State, U32.is_eq(block, 21), ignite_lava_at(state, all, x, y, z), state)
-      ignite_lava_entries(tail, all, next)
+      ignite_lava_entries(tail, all, ignite_lava_entry(U32.is_eq(block, 21), state, all, x, y, z))
 
 def ignite_lava(+state: State, +samples: List<&2, Sample>) -> State:
   ignite_lava_entries(samples, samples, state)

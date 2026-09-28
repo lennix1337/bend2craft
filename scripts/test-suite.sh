@@ -7,9 +7,19 @@ TESTS=(
   tests/world-bridge.test.mjs
   tests/bend-bridge.test.mjs
   tests/world-state-bend.test.mjs
+  tests/multiplayer-bend.test.mjs
+  tests/multiplayer-mobs-bend.test.mjs
+  tests/multiplayer-room.test.mjs
+  tests/multiplayer-transport.test.mjs
+  tests/multiplayer-client.test.mjs
+  tests/multiplayer-mob-world.test.mjs
+  tests/multiplayer-server-world.test.mjs
+  tests/multiplayer-moves.test.mjs
   tests/world-chunk-golden.test.mjs
   tests/world-coordinates.test.mjs
   tests/chunk-world.test.mjs
+  tests/chunk-world-remote-edits.test.mjs
+  tests/chunk-world-light-stencil.test.mjs
   tests/worker-scheduler.test.mjs
   tests/chunk-worker-core.test.mjs
   tests/structures-bend.test.mjs
@@ -20,6 +30,7 @@ TESTS=(
   tests/horizon-lod-bend.test.mjs
   tests/lod-terrain.test.mjs
   tests/simulation-bend.test.mjs
+  tests/world-simulation.test.mjs
   tests/fluids-bend.test.mjs
   tests/fire-bend.test.mjs
   tests/redstone-bend.test.mjs

@@ -214,6 +214,100 @@ serves with browser caching disabled, and opens the browser only after the port
 is listening. `npm run build` followed by `node scripts/play-server.mjs --open`
 does the same thing by hand.
 
+## Multiplayer
+
+Several players can share one world. The server holds the world's seed and its
+ordered edit log; the authority is `world/multiplayer.bend`, which validates each
+submitted batch (in-world cell, known block, bounded batch size), folds the
+accepted edits into the log in one `WorldState.set_many` pass, and advances a sequence
+number. Poses are validated there too (finite, inside the world band, pitch
+clamped). Every accepted batch is sent to every player, the sender included, and
+each client replays the batches in sequence order with `Multiplayer.merge`, so
+all players converge on the room's world. A rejected edit comes back to its
+sender with the authoritative value of that cell.
+
+Chests and furnaces belong to the room too, keyed by the same stored
+coordinates. An accepted edit that places a chest (26) or furnace (11) opens an
+empty one, and one that replaces it removes it; a chest that still holds items
+cannot be broken (the edit is refused and the chest comes back). Deposits,
+withdrawals, loading fuel and input and taking the output are Bend room
+transitions (`Multiplayer.deposit`, `withdraw`, `furnace_op`), and the server
+smelts with `Multiplayer.tick` every 200 ms. Every change goes to every player
+as the container's full state; a refused deposit gives the item back, and
+items handed over after the inventory filled up drop at the player's feet. The
+world clock is the server's as well: every player sees the same time of day,
+and sleeping starts the morning for everyone.
+
+Mobs, dropped items, villagers, fluids, fire, crops and farmland run on the
+server too (`server/server-world.js`). The server caches the chunks around
+players and mobs with Bend's bulk `WorldState.chunk`, patches them with every
+accepted edit, and every 200 ms runs the Bend entity, villager and simulation
+rules for every player: mobs chase or flee the nearest player
+(`MultiplayerMobs.step_world`), burn in daylight, hurt the players they reach,
+spawn at night around every player and despawn only far from all of them;
+villagers walk and open doors; water and lava flow, fire spreads and burns
+out, and crops grow. Its block changes reach the edit log as server batches.
+Hits (damage clamped to the strongest weapon, reach measured from the server's
+pose of the attacker), pickups (two players cannot take the same drop), thrown
+items and world interactions (buckets, fire, hoes, seeds and harvests, within
+reach of the player's pose) are requests the server answers. Player movement is
+checked against `world/multiplayer_moves.bend` (speed and rise budgets, no
+walking into blocks); a refused pose is not relayed and the player is sent
+back. `PEACEFUL=1` (or `vars.PEACEFUL` in `wrangler.jsonc`) hosts a world
+without monsters. [docs/MULTIPLAYER.md](docs/MULTIPLAYER.md) maps every rule to
+its Bend contract and server module.
+
+- `server/multiplayer-room.js`, `server/room/`: the transport-agnostic room
+  (players, routing, fan-out, snapshots) around the compiled Bend authority.
+- `server/server-world.js`: the server-simulated world (terrain cache, mobs,
+  villagers, fluids, fire, crops, movement checks).
+- `server/websocket.mjs`, `server/node-host.mjs`: a dependency-free WebSocket
+  endpoint on `/multiplayer` for `scripts/play-server.mjs`, saving the world to
+  `worlds/multiplayer.json` (git-ignored).
+- `web/multiplayer.js`, `web/multiplayer-protocol.js`: the browser session,
+  remote-player interpolation and the wire format (edits travel as
+  `[x, y, z, block]` in stored Bend coordinates).
+- `cloudflare/worker.js`, `wrangler.jsonc`: the same room in a Durable Object
+  with SQLite storage, with the game served as Worker static assets.
+
+Play on your network:
+
+```bash
+./Play-Bend2Craft.command --lan   # macOS; Jogar-Bend2Craft.bat --lan on Windows
+# or: npm run build && node scripts/play-server.mjs --lan
+```
+
+The server prints the address friends open, `http://<your-ip>:8080/?play=1&mp=1`.
+From the menu, "Join Multiplayer..." on the world list joins the server the page
+came from, or any `host:port`, `http(s)://` or `ws(s)://` address. `SEED` picks
+the seed of a new multiplayer world and `MULTIPLAYER_WORLD` the file it is saved
+to; an existing file keeps its own seed. `npm run dev` hosts an in-memory room.
+
+Play over the internet without a deployment: keep the server running and
+expose it with a Cloudflare quick tunnel, then share the printed
+`https://….trycloudflare.com/?play=1&mp=1` link (WebSockets pass through):
+
+```bash
+cloudflared tunnel --url http://localhost:8080
+```
+
+Deploy to Cloudflare (Workers Free plan; Durable Objects with SQLite storage):
+
+```bash
+npm run build
+npx wrangler login
+npx wrangler deploy
+```
+
+Then open `https://<worker>.workers.dev/?play=1&mp=1`. The deployment hosts one
+shared world; `vars.SEED` in `wrangler.jsonc` sets the seed of a new one.
+
+Scope so far: blocks, player presence and movement, chests, furnaces, the time
+of day, mobs, drops, villagers, fluids, fire and crops are shared and
+server-owned. Inventory, equipment and position are saved per profile and per
+server in each browser. On Cloudflare, furnace progress and simulation state
+are written to storage at most every 30 seconds.
+
 ## Commands
 
 Run these commands at the repository root, from WSL on Windows and from a normal
@@ -231,6 +325,8 @@ npm run smoke:dev    # bounded readiness smoke; always cleans up its server
 npm run browser:smoke # Playwright browser smoke; requires a local browser binary
 npm run browser:lighting-smoke # verify sky light after mining a surface block
 npm run browser:streaming-smoke # measure radius-six chunk hydration and mesh readiness
+npm run browser:multiplayer-smoke # two browsers sharing one dev-server world
+npm run bench:multiplayer # room batch, merge, welcome and movement-check costs
 npm run build        # clean dist/ and create the current static bundle
 ```
 

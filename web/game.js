@@ -1,19 +1,34 @@
-import World from "../world/world.bend";
-import WorldState from "../world/world_state.bend";
-import Light from "../world/light.bend";
-import LightDirty from "../world/light-dirty.bend";
-import Entities from "../world/entities.bend";
-import Villagers from "../world/villagers.bend";
-import Furnace from "../world/furnace.bend";
-import Furnaces from "../world/furnaces.bend";
-import ChestDomain from "../world/chest.bend";
-import Chests from "../world/chests.bend";
-import Equipment from "../world/equipment.bend";
-import Simulation from "../world/simulation.bend";
-import Experience from "../world/experience.bend";
-import Fluids from "../world/fluids.bend";
-import Fire from "../world/fire.bend";
-import Multiplayer from "../world/multiplayer.bend";
+import {
+  World,
+  WorldState,
+  Light,
+  Dirty as LightDirty,
+  Entities,
+  Villagers,
+  Furnace,
+  Furnaces,
+  Chest as ChestDomain,
+  Chests,
+  Equipment,
+  Simulation,
+  Experience,
+  Fluids,
+  Fire,
+  Multiplayer,
+  RedstoneAll,
+} from "./bend-modules.js";
+import {
+  createRedstone,
+  circuitOf,
+  tickRedstone,
+  placeRedstoneComponent,
+  breakRedstoneAt,
+  toggleLever,
+  lampLitAt,
+  torchLitAt,
+  pistonExtendedAt,
+  wirePowerAt,
+} from "./redstone.js";
 import {
   HOTBAR_SIZE,
   MAX_STACK,
@@ -731,7 +746,23 @@ try {
     (CHUNK_RENDER_RADIUS + 1) * CHUNK_SIZE * 1.5 - 24,
     LOD_DISTANCE * 1.1,
   );
+  // The negative-coordinate mapping belongs to web/world-coordinates.js, which
+  // owns it for the main thread and every worker. `NEGATIVE_ORIGIN` is a
+  // multiple of every period in the terrain formulas, so the terrain below zero
+  // continues the terrain above it, and the same constant lives in Bend as
+  // `World.negative_origin()` with a test pinning the two together.
   const storageCoordinate = (value) => storageCoordinateFor(value, CHUNK_SIZE);
+  // A Bend Nat cannot be negative and the 2.0.32 JS lane refuses a negative host
+  // value outright rather than truncating it, so a cell below the origin is
+  // stored at NEGATIVE_ORIGIN + x and read back the same way. These three are
+  // the only spellings of a cell that crosses into the domain; a call site that
+  // builds its own Nat addresses a cell nothing else names. y is never shifted,
+  // because the domain has no rows below zero.
+  const cellNat = (value) => BigInt(Math.trunc(storageCoordinate(Number(value))));
+  const cellRow = (value) => BigInt(Math.trunc(Number(value)));
+  const cellPosition = (x, y, z) => [cellNat(x), cellRow(y), cellNat(z)];
+  // A chunk coordinate is a Nat for the same reason a cell is.
+  const chunkNat = (chunk) => BigInt(generationChunkCoordinate(Math.trunc(Number(chunk)), CHUNK_SIZE));
   if (rendererKind === "webgpu") {
     try {
       // The WebGPU path has no WebGL context to certify against, so the
@@ -936,9 +967,9 @@ try {
     },
     applyEdit: (edits, x, y, z, value) => WorldState.set(
       edits,
-      BigInt(storageCoordinate(x)),
-      BigInt(y),
-      BigInt(storageCoordinate(z)),
+      cellNat(x),
+      cellRow(y),
+      cellNat(z),
       value,
     ),
     // Fluid, fire and crop steps change many cells at once: one pass over the log.
@@ -1007,6 +1038,11 @@ try {
   });
   worldSimulation.pinStored();
 
+  // The redstone circuit, restored from the save or started empty. The contract
+  // in world/redstone_all.bend owns every rule; the adapter only ticks it and
+  // applies the world edits it returns.
+  const redstoneState = createRedstone(savedGame?.redstone);
+  const redstoneIds = redstoneState.ids;
   let blockCount = 0;
 
   if (rendererKind === "webgl") {
@@ -1697,6 +1733,14 @@ try {
   let drops = [];
   let xpState = savedGame?.xp?.$ === "XP" ? savedGame.xp : Experience.empty();
   let simulationTerrainDirty = false;
+  // A redstone tick that moved a block leaves the mesh showing the old cell, and
+  // a lamp or a torch that changed state leaves the old colour in the vertex
+  // buffer. Both are cleared when the circuit is drawn again.
+  // Redstone runs at 20Hz, its own clock. The rest of the simulation runs at
+  // 5Hz because crops and fluids do not need to be smoother than that, but a
+  // two-tick repeater at 5Hz reads as a stutter rather than a delay.
+  const REDSTONE_TICK_SECONDS = 0.05;
+  let redstoneAccumulator = 0;
   let playerStreamingDirty = false;
   let playerSpawnReady = Boolean(savedGame?.player && typeof savedGame.player === "object");
   let entityBucketStats = { mobBuckets: 0, activeMobBuckets: 0, dropBuckets: 0, activeDropBuckets: 0 };
@@ -1804,6 +1848,20 @@ try {
     return false;
   }
 
+  // The redstone blocks, read off the one contract in world/redstone.bend rather
+  // than repeated here, so the renderer, the interaction and the simulation can
+  // never disagree about which ids are redstone's.
+  function isRedstoneBlock(block) {
+    return block >= redstoneIds.wire && block <= redstoneIds.stickyPiston;
+  }
+
+  // The blocks a player interacts with rather than places: a lever is flipped,
+  // not placed, and a torch is a redstone torch. Everything else in the redstone
+  // range is placed and broken like any other block.
+  function isRedstoneInteractive(block) {
+    return block === redstoneIds.lever;
+  }
+
   function tickFluids() {
     return worldSimulation.tick().length > 0;
   }
@@ -1822,6 +1880,60 @@ try {
       () => setInventoryMessage("The server did not answer."),
     );
     return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Redstone
+  //
+  // Redstone runs on its own faster clock than the rest of the simulation,
+  // because a two-tick repeater has to be able to answer inside a tenth of a
+  // second for a circuit to feel like a clock rather than a stutter. Every rule
+  // is the contract's; this gathers the few world samples the machines need,
+  // ticks once, and applies the world edits the piston asked for.
+  // ---------------------------------------------------------------------------
+
+  // A redstone block that should be lit right now, for the renderer.
+  function redstoneLit(block, x, y, z) {
+    if (block === redstoneIds.lamp) return lampLitAt(redstoneState, x, y, z);
+    if (block === redstoneIds.torch) return torchLitAt(redstoneState, x, y, z);
+    if (block === redstoneIds.head) {
+      // A piston head is drawn as the piston that owns it, so it reads its
+      // state from the base rather than carrying one of its own.
+      return pistonExtendedAt(redstoneState, x, y, z);
+    }
+    return false;
+  }
+
+  // The power a dust cell is holding, for the renderer.
+  function redstonePower(x, y, z) {
+    return wirePowerAt(redstoneState, x, y, z);
+  }
+
+  // A block id a redstone component can be broken out of. Block 38 is a piston
+  // head: the piston put it there, so breaking it drops the piston, not a head.
+  function redstoneBlockAt(x, y, z) {
+    const block = blockAt(x, y, z);
+    return isRedstoneBlock(block) ? block : 0;
+  }
+
+  function tickRedstoneOnce() {
+    const edits = tickRedstone(redstoneState, blockAt, inside);
+    const batch = [];
+    for (const edit of edits) {
+      if (!inside(edit.x, edit.y, edit.z) || !world.isActive(edit.x, edit.z)) continue;
+      const current = blockAt(edit.x, edit.y, edit.z);
+      // A piston never moves a fluid or fire into place, and never clears a
+      // block it did not put there: the contract decided, the world still gets
+      // the last word on cells that moved out from under it.
+      if (edit.value === 0 && !isRedstoneBlock(current)) continue;
+      if (edit.value !== 0 && (isFluidBlock(current) || current === 24)) continue;
+      batch.push(edit);
+    }
+    if (batch.length > 0) {
+      setBlocks(batch);
+      for (const change of batch) terrainMeshCache.invalidateBlock(change.x, change.z);
+    }
+    return batch.length > 0;
   }
 
   function seedWaterAt(x, y, z, level = 8) {
@@ -2940,24 +3052,15 @@ try {
 
   function activeFurnaceState() {
     if (activeFurnace === null) return null;
-    const lookup = Furnaces.at(
-      furnaceWorldState,
-      BigInt(activeFurnace[0]),
-      BigInt(activeFurnace[1]),
-      BigInt(activeFurnace[2]),
-    );
+    const [x, y, z] = cellPosition(...activeFurnace);
+    const lookup = Furnaces.at(furnaceWorldState, x, y, z);
     return lookup.$ === "FurnaceFound" ? lookup.furnace : null;
   }
 
   function setActiveFurnaceState(state) {
     if (activeFurnace === null) return false;
-    furnaceWorldState = Furnaces.set(
-      furnaceWorldState,
-      BigInt(activeFurnace[0]),
-      BigInt(activeFurnace[1]),
-      BigInt(activeFurnace[2]),
-      state,
-    );
+    const [x, y, z] = cellPosition(...activeFurnace);
+    furnaceWorldState = Furnaces.set(furnaceWorldState, x, y, z, state);
     return true;
   }
 
@@ -3169,11 +3272,7 @@ try {
   }
 
   function chestPosition(x, y, z) {
-    return [
-      BigInt(Math.trunc(x)) + BigInt(DOMAIN_COORDINATE_OFFSET),
-      BigInt(Math.trunc(y)),
-      BigInt(Math.trunc(z)) + BigInt(DOMAIN_COORDINATE_OFFSET),
-    ];
+    return cellPosition(x, y, z);
   }
 
   // Server chests are keyed by stored (Bend) coordinates; the local chest state
@@ -3441,12 +3540,13 @@ try {
     let nextFurnaces = furnaceWorldState;
     let nextChests = chestWorldState;
     if (block === 11) {
-      const added = Furnaces.add(furnaceWorldState, BigInt(x), BigInt(y), BigInt(z));
+      const [fx, fy, fz] = cellPosition(x, y, z);
+      const added = Furnaces.add(furnaceWorldState, fx, fy, fz);
       if (!added.ok) return false;
       nextFurnaces = added.world;
     }
     if (block === 26) {
-      const [cx, cy, cz] = chestPosition(x, y, z);
+      const [cx, cy, cz] = cellPosition(x, y, z);
       const added = Chests.add(chestWorldState, cx, cy, cz);
       if (!added.ok) return false;
       nextChests = added.world;
@@ -3468,6 +3568,17 @@ try {
     chestWorldState = nextChests;
     if (block === 11) worldSimulation.pin(Math.floor(x / CHUNK_SIZE), Math.floor(z / CHUNK_SIZE));
     setBlock(x, y, z, Number(placement.edit.block));
+    // A redstone block placed is a redstone component placed. The contract owns
+    // what it does; this only tells it the cell now holds one.
+    if (isRedstoneBlock(Number(placement.edit.block))) {
+      redstoneState.circuit = placeRedstoneComponent(
+        circuitOf(redstoneState),
+        Number(placement.edit.block),
+        x,
+        y,
+        z,
+      );
+    }
     audio.play("place");
     // A placed block puffs its own colour off the top face, tighter and slower
     // than a mined one: the block is still standing, so the debris has less far
@@ -3621,10 +3732,21 @@ try {
     // screen looked identical to one mined under the crosshair.
     emitBlockDebris(vfx, x + 0.5, y + 0.5, z + 0.5, hexToRgb(itemColor({ block: removedBlock })), 12, 0.9);
     worldSimulation.blockChanged(x, y, z, removedBlock, Number(mining.edit.block));
+    // A redstone block broken is a redstone component broken. The contract drops
+    // it and the cell's cached power in one step, so a wire that loses its source
+    // reads dark on the very next tick rather than staying lit. A piston head is
+    // the one case that is not its own component: it retracts the piston that
+    // pushed it, which the adapter knows how to find.
+    if (removedBlock === redstoneIds.head) {
+      breakRedstoneAt(redstoneState, x, y, z);
+    } else if (isRedstoneBlock(removedBlock)) {
+      redstoneState.circuit = RedstoneAll.remove_at(circuitOf(redstoneState), BigInt(x), BigInt(y), BigInt(z));
+    }
     invalidateVillagerPath(x, y, z);
     terrainMeshCache.invalidateBlock(x, z);
     if (removedBlock === 11) {
-      const removed = Furnaces.remove(furnaceWorldState, BigInt(x), BigInt(y), BigInt(z));
+      const [fx, fy, fz] = cellPosition(x, y, z);
+      const removed = Furnaces.remove(furnaceWorldState, fx, fy, fz);
       furnaceWorldState = removed.world;
       if (!hasFurnaceInChunk(Math.floor(x / CHUNK_SIZE), Math.floor(z / CHUNK_SIZE))) {
         worldSimulation.releaseChunk(Math.floor(x / CHUNK_SIZE), Math.floor(z / CHUNK_SIZE));
@@ -3710,6 +3832,15 @@ try {
     }
     if (button === 2 && (blockAt(x, y, z) === 14 || blockAt(x, y, z) === 15)) {
       toggleDoorAt(x, y, z);
+      return;
+    }
+    // A lever is the one redstone block a player operates rather than places, so
+    // right-clicking it flips the contract's state instead of placing anything. The
+    // flip is an input edge, not a world change: the circuit does the rest on its
+    // own clock.
+    if (button === 2 && isRedstoneInteractive(blockAt(x, y, z))) {
+      toggleLever(redstoneState, x, y, z);
+      audio.play("place");
       return;
     }
     if (button === 2 && blockAt(x, y, z) === 11) {
@@ -3977,6 +4108,7 @@ try {
         farmland: worldSimulation.farmland,
         fluids: worldSimulation.fluids,
         fire: worldSimulation.fire,
+        redstone: circuitOf(redstoneState),
         simulation: worldSimulation.simulation,
         entities: packEntityState(mobDomainState, dropDomainState),
         xp: xpState,
@@ -5127,6 +5259,29 @@ try {
     pinChunk: (x, z) => world.pinChunk(x, z),
     unpinChunk: (x, z) => world.unpinChunk(x, z),
     save: saveGame,
+    // The redstone surface a browser smoke drives: place a component, operate a
+    // lever, step the circuit, and read what the contract decided. Every answer
+    // comes from the contract in world/redstone_all.bend.
+    redstoneIds: () => ({ ...redstoneIds }),
+    redstoneBlockAt: (x, y, z) => redstoneBlockAt(x, y, z),
+    redstoneWirePowerAt: (x, y, z) => redstonePower(x, y, z),
+    redstoneLampLitAt: (x, y, z) => redstoneLit(redstoneIds.lamp, x, y, z),
+    redstoneTorchLitAt: (x, y, z) => redstoneLit(redstoneIds.torch, x, y, z),
+    redstonePistonExtendedAt: (x, y, z) => redstoneLit(redstoneIds.head, x, y, z),
+    redstoneToggleLeverAt: (x, y, z) => {
+      toggleLever(redstoneState, x, y, z);
+      return true;
+    },
+    redstonePlaceAt: (block, x, y, z) => {
+      redstoneState.circuit = placeRedstoneComponent(circuitOf(redstoneState), block, x, y, z);
+      setBlock(x, y, z, block);
+      terrainMeshCache.invalidateBlock(x, z);
+      return blockAt(x, y, z) === block;
+    },
+    redstoneStep: (ticks = 1) => {
+      for (let tick = 0; tick < Number(ticks); tick += 1) tickRedstoneOnce();
+      return true;
+    },
     attack: attackNearestMob,
     primaryActionForTest: (button) => primaryAction(Number(button)),
     drop: (stack = false) => dropInventoryItem(selectedSlot, stack),
@@ -5373,6 +5528,20 @@ try {
     // for, which is what stops a 30 FPS cap from reading as a renderer in trouble.
     visualQuality.setTargetFrameMs(framePacer.targetFrameMs);
     if (!paused) {
+      // Redstone ticks on its own 20Hz clock, counted from real elapsed time so a
+      // slow frame does not silently speed the circuit up or stall it. The whole
+      // circuit is stepped at most a few times per frame; a frame that lands no
+      // tick costs one accumulator add.
+      redstoneAccumulator += dt;
+      let redstoneSteps = 0;
+      while (redstoneAccumulator >= REDSTONE_TICK_SECONDS && redstoneSteps < 4) {
+        redstoneAccumulator -= REDSTONE_TICK_SECONDS;
+        redstoneSteps += 1;
+        tickRedstoneOnce();
+      }
+      // A frame that fell far behind drops the backlog rather than trying to catch
+      // up, which would make a slow machine run the circuit even slower.
+      if (redstoneAccumulator > REDSTONE_TICK_SECONDS * 4) redstoneAccumulator = 0;
       updateMining(now);
       const sampleSeconds = Math.max((now - visualSample.time) / 1000, 0.001);
       visualSpeed = Math.min(6, Math.hypot(player.x - visualSample.x, player.z - visualSample.z) / sampleSeconds);

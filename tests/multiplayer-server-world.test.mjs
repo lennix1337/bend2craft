@@ -1,11 +1,8 @@
 import assert from "node:assert/strict";
-import Multiplayer from "../world/multiplayer.bend";
-import Structures from "../world/structures.bend";
-import World from "../world/world.bend";
-import WorldState from "../world/world_state.bend";
 import { createMultiplayerRoom } from "../server/multiplayer-room.js";
 import { createServerWorld } from "../server/server-world.js";
 import { PROTOCOL_VERSION, decodeClientMessage, decodeServerMessage } from "../web/multiplayer-protocol.js";
+import { Multiplayer, Structures, World, WorldState } from "../web/bend-modules.js";
 
 const SEED = 1337n;
 const room = createMultiplayerRoom({ authority: Multiplayer, seed: SEED, createServerWorld, peaceful: true, now: () => 0 });

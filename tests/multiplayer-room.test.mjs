@@ -1,7 +1,4 @@
 import assert from "node:assert/strict";
-import Multiplayer from "../world/multiplayer.bend";
-import WorldState from "../world/world_state.bend";
-import World from "../world/world.bend";
 import { createMultiplayerRoom } from "../server/multiplayer-room.js";
 import {
   MAX_PLAYERS,
@@ -13,6 +10,7 @@ import {
   sanitizeName,
   wireEditsToBend,
 } from "../web/multiplayer-protocol.js";
+import { Multiplayer, WorldState, World } from "../web/bend-modules.js";
 
 const SEED = 1337n;
 // An edit log holds one entry per cell; its order carries no meaning.

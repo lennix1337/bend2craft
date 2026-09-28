@@ -24,6 +24,8 @@ Start here:
 
 - Bend world contract: `world/world.bend`
 - Bend laws and proofs: `world/LAWS.bend`, `world/PROOF.bend`
+- Bend module boundary: `web/bend-modules.js` (wraps every `world/*.bend`
+  module; the only place that knows how the JS lane names a datatype)
 - Current inventory adapter/migration target: `web/inventory.js`
 - Chunk cache/streaming adapter: `web/chunk-world.js`
 - Pure player/world state: `web/game-state.js`
@@ -58,6 +60,13 @@ For browser behavior, run `npm run browser:smoke` when a local Playwright browse
 - Keep world generation pure and typed in Bend.
 - Keep chunk generation and bulk block materialization in Bend. The browser must call a bulk Bend chunk export, then only cache, stream and render the returned data; never loop over `World.block` once per cell for normal chunk loading. Benchmark chunk bootstrap when changing this boundary.
 - Keep browser adapters dependency-free and tested, but keep authoritative inventory/crafting rules in Bend 2 as they migrate.
+- Reach a `world/*.bend` module only through `web/bend-modules.js`. It is the
+  single place that knows how the JS lane spells a datatype, so a second path
+  around it reintroduces the bug it exists to prevent.
+- A Bend `Nat` cannot be negative and the 2.0.32 JS lane refuses one, so a cell
+  or chunk below the origin is spelled by `cellNat`/`chunkNat` on the way in and
+  read back the same way. Never spell a cell twice: a double fold addresses a
+  cell nothing else names. `tests/inventory.test.mjs` pins the offset.
 - Keep all repository-authored source comments, UI copy, tests, plans and documentation in English.
 - Add a failing test before changing behavior, then run the focused test, implement the smallest fix, and run the full checks.
 - For a bug fix, keep the regression at the failing contract seam and add a browser smoke assertion when the symptom crosses into WebGL or input handling.

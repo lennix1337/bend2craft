@@ -2,8 +2,7 @@
 // (world/multiplayer_moves.bend): speed and rise budgets, no walking into
 // solid blocks, respawns onto the world spawn. This module only samples the
 // server's terrain cache and keeps each player's budget between poses.
-import Moves from "../world/multiplayer_moves.bend";
-import World from "../world/world.bend";
+import { MultiplayerMoves as Moves, World } from "../web/bend-modules.js";
 
 const LEGS = 0.5;
 const HEAD = 1.5;

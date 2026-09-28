@@ -3,10 +3,10 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
-import Multiplayer from "../world/multiplayer.bend";
 import { attachMultiplayer } from "../server/node-host.mjs";
 import { acceptKey, encodeFrame } from "../server/websocket.mjs";
 import { PROTOCOL_VERSION } from "../web/multiplayer-protocol.js";
+import { Multiplayer } from "../web/bend-modules.js";
 
 // RFC 6455 section 1.3 example.
 assert.equal(acceptKey("dGhlIHNhbXBsZSBub25jZQ=="), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");

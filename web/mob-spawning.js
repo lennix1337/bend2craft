@@ -1,7 +1,7 @@
 // Where night monsters appear around a player. Single player spawns around
 // its one player; the multiplayer server calls the same function for each
 // player, so both follow one rule. The terrain queries are Bend's.
-import World from "../world/world.bend";
+import { World } from "./bend-modules.js";
 import { isHostileKind } from "./mob-kinds.js";
 
 export const NIGHT_SPAWN = Object.freeze({

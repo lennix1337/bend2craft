@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import Multiplayer from "../world/multiplayer.bend";
-import WorldState from "../world/world_state.bend";
-import World from "../world/world.bend";
+import { Multiplayer, WorldState, World } from "../web/bend-modules.js";
 
 const SEED = 1337n;
 const list = (items) => items.reduceRight((tail, head) => ({ $: "Con", head, tail }), { $: "Nil" });

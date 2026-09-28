@@ -1,7 +1,6 @@
-import WorldState from "../world/world_state.bend";
-import Light from "../world/light.bend";
-import Villagers from "../world/villagers.bend";
+import { WorldState, Light, Villagers } from "./bend-modules.js";
 import { createSourceFieldCache, packChunkCells } from "./chunk-worker-core.js";
+import { generationChunkCoordinate as generationChunkCoordinateFor } from "./world-coordinates.js";
 
 // One flood per light source for the lifetime of the worker. A flood only
 // depends on the seed and the source, while every chunk inside its reach asks
@@ -30,8 +29,14 @@ self.onmessage = (event) => {
 
   const { id, version, seed, chunkX, chunkZ, edits, cellCount } = message;
   try {
-    const generationChunkX = message.generationChunkX ?? (chunkX < 0 ? -chunkX : chunkX);
-    const generationChunkZ = message.generationChunkZ ?? (chunkZ < 0 ? -chunkZ : chunkZ);
+    // A Bend Nat cannot be negative and the 2.0.32 JS lane refuses one outright,
+    // so a chunk below the origin is generated under a positive coordinate. The
+    // fallback covers a caller that omits generationChunkX/Z and must use the
+    // same mapping the main thread uses, or the worker would generate a
+    // different chunk than the main thread asked for. Negating was never a
+    // mapping: it produced another negative and the same refusal.
+    const generationChunkX = message.generationChunkX ?? generationChunkCoordinate(chunkX);
+    const generationChunkZ = message.generationChunkZ ?? generationChunkCoordinate(chunkZ);
     const bendSeed = BigInt(seed);
     const bendChunkX = BigInt(generationChunkX);
     const bendChunkZ = BigInt(generationChunkZ);

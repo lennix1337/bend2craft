@@ -2,8 +2,7 @@
 // second for the player nearest the village, with the village path grid
 // recomputed after edits near the village, and the doors villagers open and
 // close submitted as ordinary edits.
-import Structures from "../world/structures.bend";
-import Villagers from "../world/villagers.bend";
+import { Structures, Villagers } from "../web/bend-modules.js";
 
 const STEP_SECONDS = 1;
 const SIMULATION_RADIUS = 16;

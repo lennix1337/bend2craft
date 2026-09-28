@@ -813,13 +813,24 @@ def sunlight_damage(
 def make_drop_target(id: Nat, item: U32, amount: U32) -> DropTarget:
   DropFound{id, item, amount}
 
+# A drop sits at a fractional x and z while the ground is keyed by cell, so
+# the two are compared through the cell they are both in rather than as equal
+# F32 values. The comparison stays in F32: this world uses a negative domain
+# offset, and F32.to_nat folds every negative coordinate onto 0.
+def same_ground_column(+gx: F32, +gz: F32, +x: F32, +z: F32) -> Bool:
+  Bool.and(
+  F32.is_eq(F32.floor(gx), F32.floor(x)), F32.is_eq(F32.floor(gz), F32.floor(z))
+  )
+
 def ground_y(grounds: List<&2, Ground>, +x: F32, +z: F32) -> F32:
   match grounds:
     case Nil{}:
       F32.neg(100.0)
     case Con{+head, +tail}:
       Ground{+gx, +gz, +gy} = head
-      Bool.pick(F32, Bool.and(F32.is_eq(gx, x), F32.is_eq(gz, z)), gy, ground_y(tail, x, z))
+      Bool.pick(
+      F32, same_ground_column(gx, gz, x, z), gy, ground_y(tail, x, z)
+      )
 
 def step_drop(drop: Drop, +dt: F32, +grounds: List<&2, Ground>) -> Drop:
   Drop{+id, +item, +x, +y, +z, +amount, +velocity_y, +settled} = drop

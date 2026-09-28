@@ -7,12 +7,7 @@
 // owns the simulation state and turns Bend's results into block changes; the
 // host decides how a change reaches the world (`world.setBlocks`) and what it
 // costs the player (inventory stays with the caller).
-import Crops from "../world/crops.bend";
-import Farmland from "../world/farmland.bend";
-import Fire from "../world/fire.bend";
-import Fluids from "../world/fluids.bend";
-import Simulation from "../world/simulation.bend";
-import Structures from "../world/structures.bend";
+import { Crops, Farmland, Fire, Fluids, Simulation, Structures, bareTag } from "./bend-modules.js";
 
 export const WATER = 7;
 export const LAVA = 21;
@@ -42,7 +37,7 @@ function bendList(items) {
 // Saves from before the fluid `source` and `block` fields existed carry flows
 // without them; they are filled with the defaults the rules assume.
 export function normalizeFluidState(value) {
-  if (value?.$ !== "State") return Fluids.empty();
+  if (bareTag(value?.$) !== "State") return Fluids.empty();
   const flows = [];
   for (let node = value.flows; node?.$ === "Con"; node = node.tail) {
     const flow = node.head;
@@ -61,21 +56,24 @@ export function normalizeFluidState(value) {
 
 /** The simulation state a save carries, or a fresh one. */
 export function restoreSimulationState(saved) {
+  // The nested states arrive carrying their owner's qualifier (`crops.State`),
+  // so the two checks have to read the bare tag; the outer one is this module's
+  // own type and comes back bare.
   let simulation = saved?.simulation?.$ === "Simulation"
-    && saved.simulation.crops?.$ === "State"
-    && saved.simulation.farmland?.$ === "State"
+    && bareTag(saved.simulation.crops?.$) === "State"
+    && bareTag(saved.simulation.farmland?.$) === "State"
     ? saved.simulation
     : Simulation.empty();
-  const crops = saved?.crops?.$ === "State" ? saved.crops : Simulation.sim_crops(simulation);
-  const farmland = saved?.farmland?.$ === "State" ? saved.farmland : Simulation.sim_farmland(simulation);
+  const crops = bareTag(saved?.crops?.$) === "State" ? saved.crops : Simulation.sim_crops(simulation);
+  const farmland = bareTag(saved?.farmland?.$) === "State" ? saved.farmland : Simulation.sim_farmland(simulation);
   simulation = Simulation.with_crops(simulation, crops);
   simulation = Simulation.with_farmland(simulation, farmland);
   return {
     simulation,
     crops,
     farmland,
-    fluids: saved?.fluids?.$ === "State" ? Fluids.limit(normalizeFluidState(saved.fluids)) : Fluids.empty(),
-    fire: saved?.fire?.$ === "State" ? saved.fire : Fire.empty(),
+    fluids: bareTag(saved?.fluids?.$) === "State" ? Fluids.limit(normalizeFluidState(saved.fluids)) : Fluids.empty(),
+    fire: bareTag(saved?.fire?.$) === "State" ? saved.fire : Fire.empty(),
   };
 }
 

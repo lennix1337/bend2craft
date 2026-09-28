@@ -7,9 +7,7 @@
 // player, Entities.step_drops, night spawns around each player, and
 // MultiplayerMobs.despawn. Attacks and pickups are checked against the pose the
 // server holds for the player.
-import Entities from "../world/entities.bend";
-import MultiplayerMobs from "../world/multiplayer_mobs.bend";
-import World from "../world/world.bend";
+import { Entities, MultiplayerMobs, World } from "../web/bend-modules.js";
 import { NIGHT_DAYLIGHT, daylightForTime } from "../web/daylight.js";
 import { createColumnHeightCache, isDropSolid } from "../web/drop-ground-cache.js";
 import { DOMAIN_COORDINATE_OFFSET, mobRegion } from "../web/game-state.js";

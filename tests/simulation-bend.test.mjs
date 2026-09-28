@@ -1,8 +1,5 @@
 import assert from "node:assert/strict";
-import Simulation from "../world/simulation.bend";
-import Crops from "../world/crops.bend";
-import Farmland from "../world/farmland.bend";
-import Fluids from "../world/fluids.bend";
+import { Simulation, Crops, Farmland, Fluids } from "../web/bend-modules.js";
 
 function listLength(list) {
   let count = 0;

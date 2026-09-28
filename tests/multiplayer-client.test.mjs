@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
 import * as http from "node:http";
-import Multiplayer from "../world/multiplayer.bend";
-import World from "../world/world.bend";
 import { attachMultiplayer } from "../server/node-host.mjs";
 import { createServerWorld } from "../server/server-world.js";
 import { INTERPOLATION_DELAY_MS, connectMultiplayer, createEntityMirror, createRemotePlayers, lerpAngle } from "../web/multiplayer.js";
 import { MOB_BODY, TILE_PLAYER_SLEEVE, playerBoxes } from "../web/mob-models.js";
+import { Multiplayer, World } from "../web/bend-modules.js";
 
 // Angles blend along the short arc.
 assert.ok(Math.abs(lerpAngle(3.0, -3.0, 0.5) - (3.0 + (2 * Math.PI - 6) / 2)) < 1e-9);

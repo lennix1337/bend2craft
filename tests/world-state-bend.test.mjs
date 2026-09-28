@@ -58,7 +58,18 @@ for (let round = 0; round < 30; round += 1) {
   for (let node = once; node.$ === "Con"; node = node.tail) count += 1;
   assert.equal(count, cells(sequential).size, "one entry per cell");
 }
-assert.equal(State.set_many(long, { $: "Nil" }), long);
+// An empty batch leaves the log as it was, checked cell by cell and by length
+// rather than by reference: the JS lane rebuilds a returned list instead of
+// handing the same object back (v2.0.28 did, v2.0.32 does not), and a 60,000
+// entry cons list is far too deep for assert's recursive comparison.
+const count = (edits) => {
+  let total = 0;
+  for (let node = edits; node.$ === "Con"; node = node.tail) total += 1;
+  return total;
+};
+const untouched = State.set_many(long, { $: "Nil" });
+assert.equal(count(untouched), LONG, "an empty batch adds no entry");
+assert.deepEqual([...cells(untouched)].sort(), [...cells(long)].sort(), "an empty batch changes no cell");
 const bulk = State.set_many(long, list([State.make_edit(5n, 1n, 3n, 22), State.make_edit(1000n, 9n, 1000n, 25)]));
 assert.equal(Number(State.block(bulk, 1337n, 5n, 1n, 3n)), 22);
 assert.equal(Number(State.block(bulk, 1337n, 1000n, 9n, 1000n)), 25);

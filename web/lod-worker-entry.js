@@ -1,4 +1,4 @@
-import Horizon from "../world/horizon.bend";
+import { Horizon } from "./bend-modules.js";
 import { buildLodTileMesh, lodSamplePoints, lodSectionTransferables } from "./lod-terrain.js";
 import { storageCoordinate } from "./world-coordinates.js";
 

@@ -1,8 +1,21 @@
-import InventoryDomain from "../world/inventory.bend";
+import { Inventory as InventoryDomain } from "./bend-modules.js";
 
 export const MAX_STACK = Number(InventoryDomain.max_stack());
 export const HOTBAR_SIZE = 9;
 export const INVENTORY_SIZE = Number(InventoryDomain.slot_count());
+
+// A Bend Nat cannot be negative and the 2.0.32 JS lane refuses a negative one
+// outright, so a cell below zero is spelled shifted into the positive half of
+// the range. The domain addresses the same shifted cell on every read and
+// write, so this is a spelling and not a second world. y is never shifted: the
+// domain has no rows below zero. The value matches DOMAIN_CELL_OFFSET in
+// web/game.js, and tests/inventory.test.mjs pins the two together.
+export const DOMAIN_CELL_OFFSET = 1_000_000;
+
+export function cellNat(value) {
+  const whole = Math.trunc(Number(value));
+  return BigInt(whole) + (whole < 0 ? BigInt(DOMAIN_CELL_OFFSET) : 0n);
+}
 
 export const BLOCK_INFO = Object.freeze({
   0: Object.freeze({ name: "air", color: "#8bbfdc" }),
@@ -32,6 +45,22 @@ export const BLOCK_INFO = Object.freeze({
   25: Object.freeze({ name: "glass", color: "#b5d9e8" }),
   26: Object.freeze({ name: "chest", color: "#9d6a3e" }),
   27: Object.freeze({ name: "crafting table", color: "#9d6a3e" }),
+  // Redstone, from world/redstone.bend's block contract. A powered dust cell
+  // renders brighter, so the wire's colour is read from its power level at draw
+  // time; the entry here is the unpowered base tone.
+  28: Object.freeze({ name: "redstone wire", color: "#8c2f2f" }),
+  29: Object.freeze({ name: "redstone torch", color: "#d94a3a" }),
+  30: Object.freeze({ name: "lever", color: "#9aa3a8" }),
+  31: Object.freeze({ name: "redstone block", color: "#c0392b" }),
+  32: Object.freeze({ name: "redstone lamp", color: "#b0764a" }),
+  33: Object.freeze({ name: "redstone repeater", color: "#8d8f92" }),
+  34: Object.freeze({ name: "redstone comparator", color: "#9a9c9f" }),
+  35: Object.freeze({ name: "pressure plate", color: "#8a8f94" }),
+  36: Object.freeze({ name: "activator rail", color: "#a5763a" }),
+  37: Object.freeze({ name: "piston", color: "#9a8258" }),
+  38: Object.freeze({ name: "piston head", color: "#8a7450" }),
+  39: Object.freeze({ name: "sticky piston", color: "#7f9a52" }),
+  40: Object.freeze({ name: "observer", color: "#6b6f76" }),
 });
 
 export const ITEM_IDS = Object.freeze({
@@ -86,6 +115,21 @@ export const ITEM_IDS = Object.freeze({
   raw_porkchop: 48,
   raw_beef: 49,
   raw_chicken: 50,
+  // Redstone items, continuing the id sequence in world/inventory.bend's block
+  // contract. Piston head (38) has no item: it is placed and broken by the piston
+  // itself, never carried, exactly as in vanilla.
+  redstone: 51,
+  redstone_torch: 52,
+  lever: 53,
+  redstone_block: 54,
+  redstone_lamp: 55,
+  redstone_repeater: 56,
+  redstone_comparator: 57,
+  pressure_plate: 58,
+  activator_rail: 59,
+  piston: 60,
+  sticky_piston: 61,
+  observer: 62,
 });
 const ITEM_NAMES = Object.freeze(Object.fromEntries(
   Object.entries(ITEM_IDS).map(([name, id]) => [id, name]),
@@ -117,6 +161,20 @@ export const BLOCK_TO_ITEM = Object.freeze({
   25: "glass",
   26: "chest",
   27: "crafting_table",
+  // Redstone blocks. Block 38 is a piston head, placed only by a piston, so it
+  // drops nothing and has no entry here.
+  28: "redstone",
+  29: "redstone_torch",
+  30: "lever",
+  31: "redstone_block",
+  32: "redstone_lamp",
+  33: "redstone_repeater",
+  34: "redstone_comparator",
+  35: "pressure_plate",
+  36: "activator_rail",
+  37: "piston",
+  39: "sticky_piston",
+  40: "observer",
 });
 
 export const ITEM_TO_BLOCK = Object.freeze({
@@ -136,6 +194,18 @@ export const ITEM_TO_BLOCK = Object.freeze({
   chest: 26,
   cobblestone: 22,
   obsidian: 23,
+  redstone: 28,
+  redstone_torch: 29,
+  lever: 30,
+  redstone_block: 31,
+  redstone_lamp: 32,
+  redstone_repeater: 33,
+  redstone_comparator: 34,
+  pressure_plate: 35,
+  activator_rail: 36,
+  piston: 37,
+  sticky_piston: 39,
+  observer: 40,
 });
 
 export const ITEM_INFO = Object.freeze({
@@ -171,6 +241,20 @@ export const ITEM_INFO = Object.freeze({
   lava_bucket: Object.freeze({ name: "lava bucket", color: "#e56b2f", block: null, placeable: false, collectible: true }),
   cobblestone: Object.freeze({ name: "cobblestone", color: BLOCK_INFO[22].color, block: 22, placeable: true, collectible: true }),
   obsidian: Object.freeze({ name: "obsidian", color: BLOCK_INFO[23].color, block: 23, placeable: true, collectible: true }),
+  // The redstone items, all placeable and collectible, coloured from the block
+  // contract so a block and the item that places it never disagree.
+  redstone: Object.freeze({ name: "redstone dust", color: BLOCK_INFO[28].color, block: 28, placeable: true, collectible: true }),
+  redstone_torch: Object.freeze({ name: "redstone torch", color: BLOCK_INFO[29].color, block: 29, placeable: true, collectible: true }),
+  lever: Object.freeze({ name: "lever", color: BLOCK_INFO[30].color, block: 30, placeable: true, collectible: true }),
+  redstone_block: Object.freeze({ name: "redstone block", color: BLOCK_INFO[31].color, block: 31, placeable: true, collectible: true }),
+  redstone_lamp: Object.freeze({ name: "redstone lamp", color: BLOCK_INFO[32].color, block: 32, placeable: true, collectible: true }),
+  redstone_repeater: Object.freeze({ name: "redstone repeater", color: BLOCK_INFO[33].color, block: 33, placeable: true, collectible: true }),
+  redstone_comparator: Object.freeze({ name: "redstone comparator", color: BLOCK_INFO[34].color, block: 34, placeable: true, collectible: true }),
+  pressure_plate: Object.freeze({ name: "pressure plate", color: BLOCK_INFO[35].color, block: 35, placeable: true, collectible: true }),
+  activator_rail: Object.freeze({ name: "activator rail", color: BLOCK_INFO[36].color, block: 36, placeable: true, collectible: true }),
+  piston: Object.freeze({ name: "piston", color: BLOCK_INFO[37].color, block: 37, placeable: true, collectible: true }),
+  sticky_piston: Object.freeze({ name: "sticky piston", color: BLOCK_INFO[39].color, block: 39, placeable: true, collectible: true }),
+  observer: Object.freeze({ name: "observer", color: BLOCK_INFO[40].color, block: 40, placeable: true, collectible: true }),
   wooden_sword: Object.freeze({ name: "wooden sword", color: "#b77b48", block: null, placeable: false, collectible: true }),
   stone_sword: Object.freeze({ name: "stone sword", color: "#92999f", block: null, placeable: false, collectible: true }),
   iron_sword: Object.freeze({ name: "iron sword", color: "#d5d9dc", block: null, placeable: false, collectible: true }),
@@ -461,9 +545,9 @@ export function placeInteraction(inventory, slot, item, block, x, y, z, targetEm
     BigInt(slot),
     numericItem(item),
     Number(block),
-    BigInt(x),
-    BigInt(y),
-    BigInt(z),
+    cellNat(x),
+    BigInt(Math.trunc(Number(y))),
+    cellNat(z),
     Boolean(targetEmpty),
     Boolean(inside),
     Boolean(overlapsPlayer),

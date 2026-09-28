@@ -5,6 +5,9 @@ import ./structures.bend as Structures
 # 8 coal ore, 9 iron ore, 10 diamond ore, 11 furnace, 12 torch, 13 bed,
 # 14 closed door, 15 open door, 16-19 wheat growth stages, 20 farmland, 21 lava,
 # 22 cobblestone, 23 obsidian, 25 glass, 26 chest, 27 crafting table.
+# The redstone blocks continue that contract from 28; see world/redstone.bend,
+# which owns their ids and the single ordered list `block_ids` that keeps the
+# browser's BLOCK_INFO in step.
 
 def default_seed() -> Nat:
   1337n

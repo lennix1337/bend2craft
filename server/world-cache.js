@@ -3,8 +3,7 @@
 // patched with every accepted edit. Mobs, fluids, fire, crops and villagers
 // all read the world through it, so the server never loops over World.block
 // per cell.
-import World from "../world/world.bend";
-import WorldState from "../world/world_state.bend";
+import { World, WorldState } from "../web/bend-modules.js";
 import { chunkIndex } from "../web/chunk-world.js";
 import { generationChunkCoordinate, worldCoordinate } from "../web/world-coordinates.js";
 

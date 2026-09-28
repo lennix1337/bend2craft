@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import Farmland from "../world/farmland.bend";
-import Crops from "../world/crops.bend";
+import { Farmland, Crops } from "../web/bend-modules.js";
 
 let state = Farmland.empty();
 const added = Farmland.add(state, 4n, 8n, 4n);

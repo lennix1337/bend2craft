@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
-import Moves from "../world/multiplayer_moves.bend";
-import Multiplayer from "../world/multiplayer.bend";
-import World from "../world/world.bend";
 import { createMultiplayerRoom } from "../server/multiplayer-room.js";
 import { createServerWorld } from "../server/server-world.js";
 import { PROTOCOL_VERSION, decodeServerMessage } from "../web/multiplayer-protocol.js";
+import { Multiplayer, MultiplayerMoves as Moves, World } from "../web/bend-modules.js";
 
 const AIR = 0;
 const STONE = 1;

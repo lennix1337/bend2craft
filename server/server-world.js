@@ -6,7 +6,7 @@
 // contract. This module never writes the log itself: block changes it makes
 // are queued as wire edits, the room submits them to Bend like a player's
 // batch, and the accepted edits come back through `applyEdits`.
-import Multiplayer from "../world/multiplayer.bend";
+import { Multiplayer } from "../web/bend-modules.js";
 import { decodeSave, encodeSave } from "../web/save-state.js";
 import { createWorldSimulation, isFluidBlock, restoreSimulationState } from "../web/world-simulation.js";
 import { storageCoordinate, worldCoordinate } from "../web/world-coordinates.js";

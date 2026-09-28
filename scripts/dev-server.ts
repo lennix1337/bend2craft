@@ -1,7 +1,7 @@
 import { mkdir, rm } from "node:fs/promises";
 import * as path from "node:path";
 import bendPlugin from "../vendor/bend/bend2/main.ts";
-import Multiplayer from "../world/multiplayer.bend";
+import { Multiplayer } from "../web/bend-modules.js";
 import { TICK_MS, createMultiplayerRoom } from "../server/multiplayer-room.js";
 import { createServerWorld } from "../server/server-world.js";
 import { MAX_MESSAGE_BYTES, MULTIPLAYER_PATH } from "../web/multiplayer-protocol.js";

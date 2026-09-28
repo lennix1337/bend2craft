@@ -1,7 +1,5 @@
-import Multiplayer from "../world/multiplayer.bend";
-import Moves from "../world/multiplayer_moves.bend";
-import WorldState from "../world/world_state.bend";
 import { bendEditsToWire, wireEditsToBend } from "../web/multiplayer-protocol.js";
+import { Multiplayer, MultiplayerMoves as Moves, WorldState } from "../web/bend-modules.js";
 
 // Reproducible multiplayer authority benchmark on the JavaScript target (the
 // target the Node server, the Durable Object and the browser all run). It

@@ -1,13 +1,10 @@
 import assert from "node:assert/strict";
-import Entities from "../world/entities.bend";
-import Multiplayer from "../world/multiplayer.bend";
-import World from "../world/world.bend";
-import WorldState from "../world/world_state.bend";
 import { createMobWorld } from "../server/mob-world.js";
 import { createWorldCache } from "../server/world-cache.js";
 import { createServerWorld } from "../server/server-world.js";
 import { createMultiplayerRoom } from "../server/multiplayer-room.js";
 import { PROTOCOL_VERSION, decodeClientMessage, decodeServerMessage } from "../web/multiplayer-protocol.js";
+import { Entities, Multiplayer, World, WorldState } from "../web/bend-modules.js";
 
 const SEED = 1337n;
 const list = (items) => items.reduceRight((tail, head) => ({ $: "Con", head, tail }), { $: "Nil" });

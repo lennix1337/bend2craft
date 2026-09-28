@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import Entities from "../world/entities.bend";
-import MultiplayerMobs from "../world/multiplayer_mobs.bend";
 import { DOMAIN_COORDINATE_OFFSET, mobRegion } from "../web/game-state.js";
+import { Entities, MultiplayerMobs } from "../web/bend-modules.js";
 
 const list = (items) => items.reduceRight((tail, head) => ({ $: "Con", head, tail }), { $: "Nil" });
 const array = (node) => {

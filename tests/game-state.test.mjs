@@ -158,9 +158,12 @@ for (let i = 0; i < 30; i += 1) {
   movePlayer(poolWorld, floater, new Set(["Space"]), 0.016, [3, 3], 1);
 }
 assert.ok(floater.y > 1.1, `Space must swim up, y=${floater.y}`);
+// The head needs its tag: since 2.0.27 the loader checks the constructor name
+// of a host value, and `Flow` is one of `fluids.bend`'s own types, so it is
+// spelled bare here.
 const flows = {
   $: "Con",
-  head: { x: 2n, y: 1n, z: 3n, level: 8, source: false, block: 7 },
+  head: { $: "Flow", x: 2n, y: 1n, z: 3n, level: 8, source: false, block: 7 },
   tail: { $: "Nil" },
 };
 const [pushX, pushZ] = waterCurrentPush(flows, 3.5, 1.1, 3.0);

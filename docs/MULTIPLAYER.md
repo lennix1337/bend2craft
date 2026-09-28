@@ -154,12 +154,81 @@ ran the lava neighbourhood check for every sample; the light one from an early
 exit in `edit_override` and `sky_visible`. Air-to-water changes now relight only
 their own cell (`LightDirty.light_neutral`).
 
+## Roadmap
+
+What is done and what is left, in the order it is worth doing. Keep this list
+current: tick an item in the commit that finishes it.
+
+### Done
+
+- [x] Shared block edits and player presence through a Bend-owned room;
+  Node LAN host, Bun dev room and Cloudflare Durable Object (phase 1).
+- [x] Chests, furnaces and one day clock for everyone (phase 2).
+- [x] Server-owned mobs and drops; hits and pickups are server requests
+  (phase 3).
+- [x] Server-simulated villagers, fluids, fire, crops and farmland; world
+  interactions checked against the player's pose (phase 4).
+- [x] Movement checks in Bend (`world/multiplayer_moves.bend`) with `correct`
+  back to the last accepted pose (phase 4).
+- [x] Hot paths: `set_many`, tail-recursive log walks, fire lava sampling,
+  light early exits, one-cell relight for air/water swaps (phase 4).
+- [x] Committed two-browser smoke (`npm run browser:multiplayer-smoke`) and
+  this document (phase 4).
+
+### Next
+
+Authority gaps (a modified client can still cheat here):
+
+- [ ] Check player block edits for reach in Bend, as interactions already are:
+  today any in-world cell with a known block is accepted from anywhere.
+- [ ] Server-owned inventories and equipment: move inventory and crafting
+  transitions to Bend (`web/inventory.js` still owns them), then keep each
+  player's inventory in the room so a placed block must be owned and a mined
+  block is credited by the server.
+- [ ] Server-owned health, hunger and death (the client applies `hurt` and fall
+  damage itself today).
+- [ ] Check the whole player box, not only its centre column, when a pose
+  enters a solid cell.
+
+Scale:
+
+- [ ] Index the edit log per chunk. It is one Bend list, so every edit, block
+  read and chunk request walks it (about 6 ms per edit at 20k edits), and each
+  chunk request posts the whole log to a worker.
+- [ ] Cache terrain per column in the light patch: `sky_visible` still
+  generates terrain for every cell it climbs.
+- [ ] Remove the remaining strict `Bool.pick` scans in `world/fluids.bend`
+  (`append_source`, `contains`) and measure a large pool.
+
+Connection and hosting:
+
+- [ ] Reconnect automatically after a dropped connection (today the client
+  shows a toast and plays on alone).
+- [ ] Rate-limit messages per connection on every host.
+- [ ] Validate phase 4 on `wrangler dev` and a real deployment (the Durable
+  Object was last run under `wrangler dev` before phase 4).
+- [ ] More than one world per Cloudflare deployment (today one named object).
+- [ ] Optional server password.
+
+Code and checks:
+
+- [ ] Move the multiplayer wiring out of `web/game.js` into its own module.
+- [ ] Run `npm run browser:smoke` on a real machine: in the 2-vCPU cloud
+  container it times out at the same step on this branch and on its base.
+- [ ] Watch `browser:multiplayer-smoke` for flakes (one timeout at the bucket
+  step in four runs before its waits were raised to 30 s).
+- [ ] Bump `.tools/bun` to 1.4: Bun 1.3.x never sends the `101` reply on a
+  `node:http` upgrade, so the Node-host tests fail under it.
+- [ ] Continuous integration running `npm run verify` and the multiplayer
+  smoke.
+
+Features:
+
+- [ ] Chat, and a player list panel (today: an online count and nametags).
+
 ## Known limits
 
-- The edit log is a list, so an edit costs a walk of the log: about 6 ms per
-  single edit at 20k edits. A per-chunk index is the next step for large
-  worlds.
 - Inventories, equipment and positions are saved per profile and per server in
-  each browser; the server does not own them yet.
+  each browser.
 - On Cloudflare, furnace progress and simulation state are written at most every
   30 seconds.

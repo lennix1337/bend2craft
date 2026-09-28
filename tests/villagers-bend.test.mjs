@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import Inventory from "../world/inventory.bend";
-import Villagers from "../world/villagers.bend";
-import WorldState from "../world/world_state.bend";
+import { Inventory, Villagers, WorldState } from "../web/bend-modules.js";
 
 const state = Villagers.spawn(1337n);
 assert.equal(state.$, "Con");

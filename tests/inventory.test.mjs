@@ -13,10 +13,12 @@ import {
   RECIPES,
   blockForItem,
   canCraft,
+  cellNat,
   collectItem,
   countItem,
   craft,
   craftGrid,
+  DOMAIN_CELL_OFFSET,
   foodValue,
   handDamage,
   isPlaceable,
@@ -258,4 +260,18 @@ assert.equal(collectItem(tradeInventoryState, "rotten_flesh", 4), true);
 assert.equal(tradeInventory(tradeInventoryState, 13, 4, 20, 1), true);
 assert.equal(countItem(tradeInventoryState, "rotten_flesh"), 0);
 assert.equal(countItem(tradeInventoryState, "iron_ingot"), 1);
+
+// A Bend Nat cannot be negative and the 2.0.32 JS lane refuses one outright, so
+// a cell below zero is spelled shifted into the positive range. The placement
+// path in web/game.js carries its own copy of this rule, and the two must stay
+// the same shift or one of them addresses a cell the other does not.
+assert.equal(DOMAIN_CELL_OFFSET, 1_000_000);
+assert.equal(cellNat(0), 0n, "a cell on the origin is its own spelling");
+assert.equal(cellNat(40), 40n, "a positive cell is never shifted");
+assert.equal(cellNat(-40), BigInt(DOMAIN_CELL_OFFSET - 40));
+assert.equal(cellNat(-1), BigInt(DOMAIN_CELL_OFFSET - 1));
+assert.equal(cellNat(1_000_040), 1_000_040n, "the shifted range is never shifted twice");
+for (const value of [-1_000_000, -1, 0, 1, 1_000_000]) {
+  assert.ok(cellNat(value) >= 0n, `cellNat(${value}) must be a Nat`);
+}
 console.log("inventory ok");

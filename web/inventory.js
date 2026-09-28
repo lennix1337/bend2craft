@@ -1,8 +1,21 @@
-import InventoryDomain from "../world/inventory.bend";
+import { Inventory as InventoryDomain } from "./bend-modules.js";
 
 export const MAX_STACK = Number(InventoryDomain.max_stack());
 export const HOTBAR_SIZE = 9;
 export const INVENTORY_SIZE = Number(InventoryDomain.slot_count());
+
+// A Bend Nat cannot be negative and the 2.0.32 JS lane refuses a negative one
+// outright, so a cell below zero is spelled shifted into the positive half of
+// the range. The domain addresses the same shifted cell on every read and
+// write, so this is a spelling and not a second world. y is never shifted: the
+// domain has no rows below zero. The value matches DOMAIN_CELL_OFFSET in
+// web/game.js, and tests/inventory.test.mjs pins the two together.
+export const DOMAIN_CELL_OFFSET = 1_000_000;
+
+export function cellNat(value) {
+  const whole = Math.trunc(Number(value));
+  return BigInt(whole) + (whole < 0 ? BigInt(DOMAIN_CELL_OFFSET) : 0n);
+}
 
 export const BLOCK_INFO = Object.freeze({
   0: Object.freeze({ name: "air", color: "#8bbfdc" }),
@@ -453,9 +466,9 @@ export function placeInteraction(inventory, slot, item, block, x, y, z, targetEm
     BigInt(slot),
     numericItem(item),
     Number(block),
-    BigInt(x),
-    BigInt(y),
-    BigInt(z),
+    cellNat(x),
+    BigInt(Math.trunc(Number(y))),
+    cellNat(z),
     Boolean(targetEmpty),
     Boolean(inside),
     Boolean(overlapsPlayer),

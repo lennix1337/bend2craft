@@ -2,6 +2,10 @@ function validInteger(value) {
   return Number.isInteger(value);
 }
 
+// A Bend Nat cannot be negative and the 2.0.32 JS lane refuses one outright,
+// so the caller encodes each point through the same cell rule the rest of the
+// adapter uses. The value is already encoded when it arrives here, and encoding
+// it twice would name a different cell.
 function toSurfacePointList(points) {
   let list = { $: "Nil" };
   for (let index = points.length - 1; index >= 0; index -= 1) {

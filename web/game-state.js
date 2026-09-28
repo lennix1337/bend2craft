@@ -1,5 +1,4 @@
-import PlayerDomain from "../world/player.bend";
-import FluidsDomain from "../world/fluids.bend";
+import { Player as PlayerDomain, Fluids as FluidsDomain } from "./bend-modules.js";
 
 export const PLAYER_RADIUS = 0.3;
 export const PLAYER_HEIGHT = 1.8;

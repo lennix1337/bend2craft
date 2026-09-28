@@ -1,22 +1,25 @@
-import World from "../world/world.bend";
-import WorldState from "../world/world_state.bend";
-import Structures from "../world/structures.bend";
-import Horizon from "../world/horizon.bend";
-import Light from "../world/light.bend";
-import LightDirty from "../world/light-dirty.bend";
-import Entities from "../world/entities.bend";
-import Villagers from "../world/villagers.bend";
-import Furnace from "../world/furnace.bend";
-import Furnaces from "../world/furnaces.bend";
-import ChestDomain from "../world/chest.bend";
-import Chests from "../world/chests.bend";
-import Equipment from "../world/equipment.bend";
-import Simulation from "../world/simulation.bend";
-import Experience from "../world/experience.bend";
-import Crops from "../world/crops.bend";
-import Farmland from "../world/farmland.bend";
-import Fluids from "../world/fluids.bend";
-import Fire from "../world/fire.bend";
+import {
+  World,
+  WorldState,
+  Structures,
+  Horizon,
+  Light,
+  Dirty as LightDirty,
+  Entities,
+  Villagers,
+  Furnace,
+  Furnaces,
+  Chest as ChestDomain,
+  Chests,
+  Equipment,
+  Simulation,
+  Experience,
+  Crops,
+  Farmland,
+  Fluids,
+  Fire,
+  bareTag,
+} from "./bend-modules.js";
 import {
   HOTBAR_SIZE,
   MAX_STACK,
@@ -475,7 +478,7 @@ try {
   const sourceFieldKey = (source) => `${source.x},${source.y},${source.z},${source.block}`;
   const invalidateLightFields = (x, y, z, previousBlock, value) => {
     if (previousBlock === 12 || value === 12) {
-      lightSourceFieldCache.delete(`${BigInt(x)},${BigInt(y)},${BigInt(z)},12`);
+      lightSourceFieldCache.delete(`${cellNat(x)},${cellRow(y)},${cellNat(z)},12`);
     } else if (previousBlock === 7 || value === 7 || previousBlock === 21 || value === 21) {
       return;
     } else {
@@ -516,12 +519,27 @@ try {
   const generationChunkCoordinate = (chunk) => chunk < 0
     ? GENERATION_CHUNK_OFFSET + (-chunk)
     : chunk;
-  const storageCoordinate = (value) => {
-    if (value >= 0) return value;
-    const chunk = Math.floor(value / CHUNK_SIZE);
-    const local = value - chunk * CHUNK_SIZE;
-    return (GENERATION_CHUNK_OFFSET + (-chunk)) * CHUNK_SIZE + local;
+  // A Bend Nat cannot be negative, and the 2.0.32 JS lane refuses a negative
+  // host value outright rather than truncating it, so every cell that crosses
+  // from the adapter into the domain is spelled shifted into the positive half of
+  // the Nat range. The domain addresses that same shifted cell on every read and
+  // every write, so a cell below zero is named one way and not two: this used
+  // to fold the chunk grid and the cell grid by separate rules, which meant the
+  // edits list, the horizon grid, the containers and the simulation each named
+  // the same cell differently. y is never shifted, because the domain has no
+  // rows below zero. The offset matches DOMAIN_CELL_OFFSET in
+  // web/inventory.js, and tests/inventory.test.mjs pins the two together.
+  const DOMAIN_CELL_OFFSET = 1_000_000;
+  const cellNat = (value) => {
+    const whole = Math.trunc(Number(value));
+    return BigInt(whole) + (whole < 0 ? BigInt(DOMAIN_CELL_OFFSET) : 0n);
   };
+  const cellRow = (value) => BigInt(Math.trunc(Number(value)));
+  const cellPosition = (x, y, z) => [cellNat(x), cellRow(y), cellNat(z)];
+  const storageCoordinate = (value) => cellNat(value);
+  // A chunk coordinate is a Nat too, so a chunk below the origin is folded by
+  // the generation offset the worker and the chunk loader already use for it.
+  const chunkNat = (chunk) => BigInt(generationChunkCoordinate(Math.trunc(Number(chunk))));
   if (rendererKind === "webgpu") {
     try {
       // The WebGPU path has no WebGL context to certify against, so the
@@ -677,9 +695,9 @@ try {
       BigInt(generationChunkCoordinate(chunkZ)),
     ),
     generateLightCells,
-    affectedLightChunks: (x, z, chunkSize) => LightDirty.chunks(BigInt(x), BigInt(z), BigInt(chunkSize)),
-    affectedLightCells: (x, y, z) => LightDirty.cells_plane(BigInt(x), BigInt(y), BigInt(z)),
-    affectedLightColumnCells: (x, y, z) => LightDirty.cells_column(BigInt(x), BigInt(y), BigInt(z)),
+    affectedLightChunks: (x, z, chunkSize) => LightDirty.chunks(cellNat(x), cellNat(z), BigInt(chunkSize)),
+    affectedLightCells: (x, y, z) => LightDirty.cells_plane(cellNat(x), cellRow(y), cellNat(z)),
+    affectedLightColumnCells: (x, y, z) => LightDirty.cells_column(cellNat(x), cellRow(y), cellNat(z)),
     invalidateLightFields,
     requestChunk: (chunkX, chunkZ, edits, version) => {
       workerRequestCount += 1;
@@ -696,9 +714,9 @@ try {
     },
     applyEdit: (edits, x, y, z, value) => WorldState.set(
       edits,
-      BigInt(storageCoordinate(x)),
-      BigInt(y),
-      BigInt(storageCoordinate(z)),
+      cellNat(x),
+      cellRow(y),
+      cellNat(z),
       value,
     ),
   });
@@ -729,18 +747,18 @@ try {
     return changed;
   };
   let simulationState = savedGame?.simulation?.$ === "Simulation"
-    && savedGame.simulation.crops?.$ === "State"
-    && savedGame.simulation.farmland?.$ === "State"
+    && bareTag(savedGame.simulation.crops?.$) === "State"
+    && bareTag(savedGame.simulation.farmland?.$) === "State"
     ? savedGame.simulation
     : Simulation.empty();
-  let cropState = savedGame?.crops?.$ === "State"
+  let cropState = bareTag(savedGame?.crops?.$) === "State"
     ? savedGame.crops
     : Simulation.sim_crops(simulationState);
-  let farmlandState = savedGame?.farmland?.$ === "State"
+  let farmlandState = bareTag(savedGame?.farmland?.$) === "State"
     ? savedGame.farmland
     : Simulation.sim_farmland(simulationState);
   function normalizeFluidState(value) {
-    if (value?.$ !== "State") return Fluids.empty();
+    if (bareTag(value?.$) !== "State") return Fluids.empty();
     const flows = [];
     for (let node = value.flows; node?.$ === "Con"; node = node.tail) {
       const flow = node.head;
@@ -760,10 +778,10 @@ try {
     }
     return { $: "State", flows: list };
   }
-  let fluidState = savedGame?.fluids?.$ === "State"
+  let fluidState = bareTag(savedGame?.fluids?.$) === "State"
     ? Fluids.limit(normalizeFluidState(savedGame.fluids))
     : Fluids.empty();
-  let fireState = savedGame?.fire?.$ === "State"
+  let fireState = bareTag(savedGame?.fire?.$) === "State"
     ? savedGame.fire
     : Fire.empty();
   simulationState = Simulation.with_crops(simulationState, cropState);
@@ -1671,7 +1689,11 @@ try {
     const chunkX = Math.floor(x / CHUNK_SIZE);
     const chunkZ = Math.floor(z / CHUNK_SIZE);
     world.pinChunk(chunkX, chunkZ);
-    simulationState = Simulation.pin(simulationState, BigInt(chunkX), BigInt(chunkZ));
+    simulationState = Simulation.pin(
+      simulationState,
+      chunkNat(chunkX),
+      chunkNat(chunkZ),
+    );
   }
 
   function releaseUnusedSimulationChunk(chunkX, chunkZ) {
@@ -1680,7 +1702,11 @@ try {
     if (chunkX === villageChunkX && chunkZ === villageChunkZ) return;
     if (hasFurnaceInChunk(chunkX, chunkZ) || hasCropInChunk(chunkX, chunkZ) || hasFarmlandInChunk(chunkX, chunkZ)) return;
     world.unpinChunk(chunkX, chunkZ);
-    simulationState = Simulation.unpin(simulationState, BigInt(chunkX), BigInt(chunkZ));
+    simulationState = Simulation.unpin(
+      simulationState,
+      chunkNat(chunkX),
+      chunkNat(chunkZ),
+    );
   }
 
   function syncCropBlocks() {
@@ -1729,7 +1755,7 @@ try {
           if (blockAt(waterX, y, waterZ) !== 7 && blockAt(waterX, y + 1, waterZ) !== 7) continue;
           waters = {
             $: "Con",
-            head: { $: "Water", x: BigInt(waterX), z: BigInt(waterZ) },
+            head: { $: "Water", x: cellNat(waterX), z: cellNat(waterZ) },
             tail: waters,
           };
         }
@@ -1756,9 +1782,9 @@ try {
         const key = `${sampleX},${sampleY},${sampleZ}`;
         if (!unique.has(key)) {
           unique.set(key, Fluids.sample(
-            BigInt(sampleX),
-            BigInt(sampleY),
-            BigInt(sampleZ),
+            cellNat(sampleX),
+            cellRow(sampleY),
+            cellNat(sampleZ),
             Number(blockAt(sampleX, sampleY, sampleZ) ?? 1),
           ));
         }
@@ -1797,9 +1823,9 @@ try {
             const key = `${sampleX},${sampleY},${sampleZ}`;
             if (!unique.has(key)) {
               unique.set(key, Fire.sample(
-                BigInt(sampleX),
-                BigInt(sampleY),
-                BigInt(sampleZ),
+                cellNat(sampleX),
+                cellRow(sampleY),
+                cellNat(sampleZ),
                 Number(blockAt(sampleX, sampleY, sampleZ) ?? 1),
               ));
             }
@@ -1884,7 +1910,7 @@ try {
 
   function seedWaterAt(x, y, z, level = 8) {
     if (!inside(x, y, z) || !world.isActive(x, z) || blockAt(x, y, z) !== 0) return false;
-    fluidState = Fluids.seed(fluidState, BigInt(x), BigInt(y), BigInt(z), Number(level));
+    fluidState = Fluids.seed(fluidState, cellNat(x), cellRow(y), cellNat(z), Number(level));
     setBlock(x, y, z, 7);
     terrainMeshCache.invalidateBlock(x, z);
     saveGame();
@@ -1894,7 +1920,7 @@ try {
 
   function seedLavaAt(x, y, z, level = 8) {
     if (!inside(x, y, z) || !world.isActive(x, z) || blockAt(x, y, z) !== 0) return false;
-    fluidState = Fluids.seed_lava(fluidState, BigInt(x), BigInt(y), BigInt(z), Number(level));
+    fluidState = Fluids.seed_lava(fluidState, cellNat(x), cellRow(y), cellNat(z), Number(level));
     setBlock(x, y, z, 21);
     terrainMeshCache.invalidateBlock(x, z);
     saveGame();
@@ -1904,7 +1930,7 @@ try {
 
   function igniteFireAt(x, y, z) {
     if (!inside(x, y, z) || !world.isActive(x, z) || blockAt(x, y, z) !== 0) return false;
-    fireState = Fire.ignite(fireState, BigInt(x), BigInt(y), BigInt(z));
+    fireState = Fire.ignite(fireState, cellNat(x), cellRow(y), cellNat(z));
     setBlock(x, y, z, 24);
     terrainMeshCache.invalidateBlock(x, z);
     saveGame();
@@ -1916,7 +1942,7 @@ try {
     const slot = furnaceSlot("empty_bucket");
     if (slot === -1 || blockAt(x, y, z) !== 7) return false;
     if (!fillBucket(inventory, slot)) return false;
-    fluidState = Fluids.remove(fluidState, BigInt(x), BigInt(y), BigInt(z));
+    fluidState = Fluids.remove(fluidState, cellNat(x), cellRow(y), cellNat(z));
     setBlock(x, y, z, 0);
     terrainMeshCache.invalidateBlock(x, z);
     saveGame();
@@ -1928,7 +1954,7 @@ try {
     const slot = furnaceSlot("empty_bucket");
     if (slot === -1 || blockAt(x, y, z) !== 21) return false;
     if (!fillLavaBucket(inventory, slot)) return false;
-    fluidState = Fluids.remove(fluidState, BigInt(x), BigInt(y), BigInt(z));
+    fluidState = Fluids.remove(fluidState, cellNat(x), cellRow(y), cellNat(z));
     setBlock(x, y, z, 0);
     terrainMeshCache.invalidateBlock(x, z);
     saveGame();
@@ -1940,7 +1966,7 @@ try {
     const slot = furnaceSlot("water_bucket");
     if (slot === -1 || !inside(x, y, z) || blockAt(x, y, z) !== 0 || overlapsPlayer(player, x, y, z)) return false;
     if (!emptyBucket(inventory, slot)) return false;
-    fluidState = Fluids.seed(fluidState, BigInt(x), BigInt(y), BigInt(z), 8);
+    fluidState = Fluids.seed(fluidState, cellNat(x), cellRow(y), cellNat(z), 8);
     setBlock(x, y, z, 7);
     terrainMeshCache.invalidateBlock(x, z);
     saveGame();
@@ -1952,7 +1978,7 @@ try {
     const slot = furnaceSlot("lava_bucket");
     if (slot === -1 || !inside(x, y, z) || blockAt(x, y, z) !== 0 || overlapsPlayer(player, x, y, z)) return false;
     if (!emptyLavaBucket(inventory, slot)) return false;
-    fluidState = Fluids.seed_lava(fluidState, BigInt(x), BigInt(y), BigInt(z), 8);
+    fluidState = Fluids.seed_lava(fluidState, cellNat(x), cellRow(y), cellNat(z), 8);
     setBlock(x, y, z, 21);
     terrainMeshCache.invalidateBlock(x, z);
     saveGame();
@@ -2800,24 +2826,15 @@ try {
 
   function activeFurnaceState() {
     if (activeFurnace === null) return null;
-    const lookup = Furnaces.at(
-      furnaceWorldState,
-      BigInt(activeFurnace[0]),
-      BigInt(activeFurnace[1]),
-      BigInt(activeFurnace[2]),
-    );
+    const [x, y, z] = cellPosition(...activeFurnace);
+    const lookup = Furnaces.at(furnaceWorldState, x, y, z);
     return lookup.$ === "FurnaceFound" ? lookup.furnace : null;
   }
 
   function setActiveFurnaceState(state) {
     if (activeFurnace === null) return false;
-    furnaceWorldState = Furnaces.set(
-      furnaceWorldState,
-      BigInt(activeFurnace[0]),
-      BigInt(activeFurnace[1]),
-      BigInt(activeFurnace[2]),
-      state,
-    );
+    const [x, y, z] = cellPosition(...activeFurnace);
+    furnaceWorldState = Furnaces.set(furnaceWorldState, x, y, z, state);
     return true;
   }
 
@@ -2930,11 +2947,7 @@ try {
   }
 
   function chestPosition(x, y, z) {
-    return [
-      BigInt(Math.trunc(x)) + BigInt(DOMAIN_COORDINATE_OFFSET),
-      BigInt(Math.trunc(y)),
-      BigInt(Math.trunc(z)) + BigInt(DOMAIN_COORDINATE_OFFSET),
-    ];
+    return cellPosition(x, y, z);
   }
 
   function activeChestState() {
@@ -3121,12 +3134,13 @@ try {
     let nextFurnaces = furnaceWorldState;
     let nextChests = chestWorldState;
     if (block === 11) {
-      const added = Furnaces.add(furnaceWorldState, BigInt(x), BigInt(y), BigInt(z));
+      const [fx, fy, fz] = cellPosition(x, y, z);
+      const added = Furnaces.add(furnaceWorldState, fx, fy, fz);
       if (!added.ok) return false;
       nextFurnaces = added.world;
     }
     if (block === 26) {
-      const [cx, cy, cz] = chestPosition(x, y, z);
+      const [cx, cy, cz] = cellPosition(x, y, z);
       const added = Chests.add(chestWorldState, cx, cy, cz);
       if (!added.ok) return false;
       nextChests = added.world;
@@ -3150,7 +3164,11 @@ try {
       const chunkX = Math.floor(x / CHUNK_SIZE);
       const chunkZ = Math.floor(z / CHUNK_SIZE);
       world.pinChunk(chunkX, chunkZ);
-      simulationState = Simulation.pin(simulationState, BigInt(chunkX), BigInt(chunkZ));
+      simulationState = Simulation.pin(
+      simulationState,
+      chunkNat(chunkX),
+      chunkNat(chunkZ),
+    );
     }
     setBlock(x, y, z, Number(placement.edit.block));
     audio.play("place");
@@ -3176,7 +3194,7 @@ try {
     if (itemId(selectedItem(inventory, selectedSlot)) !== "wooden_hoe") return false;
     const ground = Number(blockAt(x, y, z) ?? 0);
     if (ground !== 2 && ground !== 3) return false;
-    const added = Farmland.add(farmlandState, BigInt(x), BigInt(y), BigInt(z));
+    const added = Farmland.add(farmlandState, cellNat(x), cellRow(y), cellNat(z));
     farmlandState = added.state;
     simulationState = Simulation.with_farmland(simulationState, farmlandState);
     pinCropChunk(x, z);
@@ -3192,9 +3210,9 @@ try {
     const ground = Number(blockAt(x, y - 1, z) ?? 0);
     const result = Crops.plant(
       cropState,
-      BigInt(x),
-      BigInt(y),
-      BigInt(z),
+      cellNat(x),
+      cellRow(y),
+      cellNat(z),
       ground,
       Number(blockAt(x, y, z) ?? 0),
     );
@@ -3220,7 +3238,7 @@ try {
   }
 
   function harvestCropAt(x, y, z) {
-    const result = Crops.harvest(cropState, BigInt(x), BigInt(y), BigInt(z));
+    const result = Crops.harvest(cropState, cellNat(x), cellRow(y), cellNat(z));
     if (!result.ok) return false;
     if (!collectCropHarvest(result)) {
       setInventoryMessage("Make room for seeds and wheat first.");
@@ -3316,19 +3334,20 @@ try {
     audio.play("break");
     spawnParticles(itemColor({ block: removedBlock }), 10);
     if (isCropBlock(removedBlock)) {
-      cropState = Crops.remove(cropState, BigInt(x), BigInt(y), BigInt(z));
+      cropState = Crops.remove(cropState, cellNat(x), cellRow(y), cellNat(z));
       simulationState = Simulation.with_crops(simulationState, cropState);
       releaseUnusedSimulationChunk(Math.floor(x / CHUNK_SIZE), Math.floor(z / CHUNK_SIZE));
     }
     if (removedBlock === 20) {
-      farmlandState = Farmland.remove(farmlandState, BigInt(x), BigInt(y), BigInt(z));
+      farmlandState = Farmland.remove(farmlandState, cellNat(x), cellRow(y), cellNat(z));
       simulationState = Simulation.with_farmland(simulationState, farmlandState);
       releaseUnusedSimulationChunk(Math.floor(x / CHUNK_SIZE), Math.floor(z / CHUNK_SIZE));
     }
     invalidateVillagerPath(x, y, z);
     terrainMeshCache.invalidateBlock(x, z);
     if (removedBlock === 11) {
-      const removed = Furnaces.remove(furnaceWorldState, BigInt(x), BigInt(y), BigInt(z));
+      const [fx, fy, fz] = cellPosition(x, y, z);
+      const removed = Furnaces.remove(furnaceWorldState, fx, fy, fz);
       furnaceWorldState = removed.world;
       if (!hasFurnaceInChunk(Math.floor(x / CHUNK_SIZE), Math.floor(z / CHUNK_SIZE))) {
         world.unpinChunk(Math.floor(x / CHUNK_SIZE), Math.floor(z / CHUNK_SIZE));

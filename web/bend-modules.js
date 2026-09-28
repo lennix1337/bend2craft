@@ -219,6 +219,26 @@ export const bare = (tag) => tag.replace(QUALIFIED, "");
 // which spelling a value carries depends on the module it last passed through.
 export const bareTag = (tag) => (typeof tag === "string" ? bare(tag) : tag);
 
+// A Bend cons list is a deep spine of `tail` links and an edit log runs to tens
+// of thousands of cells, so the spine is walked as a loop. Recursing into `tail`
+// spent one frame per cell and overflowed the stack somewhere past 15k edits,
+// which is inside the range an edit log reaches on a long-lived world; only
+// `head` goes back through `rewrite`, and a head is one constructor deep.
+function rewriteCon(spine, spell) {
+  const cells = [];
+  for (let node = spine; node !== null && typeof node === "object" && node.$ === "Con"; node = node.tail) {
+    cells.push(node);
+  }
+  const last = cells.length - 1;
+  let tail = rewrite(cells[last].tail, spell);
+  for (let index = last; index >= 0; index -= 1) {
+    const cell = cells[index];
+    const head = rewrite(cell.head, spell);
+    tail = head === cell.head && tail === cell.tail ? cell : { ...cell, head, tail };
+  }
+  return tail;
+}
+
 // Rebuilds a value with a new spelling of every tag, sharing untouched
 // structure so a call that needs no rewrite allocates nothing.
 function rewrite(value, spell) {
@@ -237,6 +257,9 @@ function rewrite(value, spell) {
     return out;
   }
   if (value === null || typeof value !== "object") return value;
+  // `Con` and `Nil` are Base's own list constructors and `spell` returns them
+  // unchanged, so the spine needs no tag rewrite and can skip the generic path.
+  if (value.$ === "Con") return rewriteCon(value, spell);
   let out = value;
   const tag = typeof value.$ === "string" ? value.$ : null;
   if (tag !== null) {

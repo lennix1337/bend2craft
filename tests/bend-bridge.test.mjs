@@ -131,6 +131,29 @@ assert.equal(qualify(7, "world_state"), 7, "a number is not a datatype");
 assert.equal(qualify([1, 2], "world_state").length, 2, "a Bend array is a JS array");
 assert.deepEqual({ ...qualify({ a: 1, $: "Mob" }, "entities") }, { a: 1, $: "entities.Mob" });
 
+// 5b. A cons list deep enough to blow the stack if the spine were walked by
+// recursion. An edit log reaches this size on a long-lived world and every
+// wrapped call with a foreign parameter walks it, so the spine has to be a loop.
+// The rewrite used to recurse into `tail` and died somewhere past 19,000 cells,
+// which is inside the range `benchmarks/multiplayer-room.mjs` measures.
+const DEEP = 200000;
+let deep = { $: "Nil" };
+for (let index = 0; index < DEEP; index += 1) {
+  deep = { $: "Con", head: { $: "Edit", x: BigInt(index), y: 1n, z: 1n, block: 1 }, tail: deep };
+}
+const deepQualified = qualify(deep, "world_state");
+assert.equal(deepQualified.head.$, "world_state.Edit", "the head of a deep list is spelled");
+let deepCount = 0;
+for (let node = deepQualified; node.$ === "Con"; node = node.tail) deepCount += 1;
+assert.equal(deepCount, DEEP, "a deep list keeps every cell across the boundary");
+assert.equal(deepQualified.tail.tail === undefined, false, "the spine ends in a Nil");
+let bareCount = 0;
+for (let node = simplify(deepQualified); node.$ === "Con"; node = node.tail) {
+  if (node.head.$ !== "Edit") break;
+  bareCount += 1;
+}
+assert.equal(bareCount, DEEP, "and comes back bare, one cell at a time, without recursing");
+
 // 6. Anti-drift: FOREIGN must describe exactly the foreign types the world
 // signatures declare. A new cross-file parameter fails here until the table
 // learns about it, and a stale entry fails too.

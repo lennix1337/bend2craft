@@ -1,4 +1,7 @@
-import Entities from "../world/entities.bend";
+// Through the boundary: `Entities.sunlight_damage` takes a `WorldState` as a
+// foreign parameter. The `{ $: "Nil" }` this benchmark passes is a Base list
+// constructor and stays bare either way, so routing it changes nothing measured.
+import { Entities } from "../web/bend-modules.js";
 
 const ITERATIONS = 100;
 

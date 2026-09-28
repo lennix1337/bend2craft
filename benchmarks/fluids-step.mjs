@@ -1,5 +1,7 @@
-import Fluids from "../world/fluids.bend";
-import Simulation from "../world/simulation.bend";
+// Through the boundary: `Simulation.tick_with_fluids` takes `Fluids.State` and
+// `Fluids.Sample` as foreign parameters, and the v2.0.32 JS lane wants those
+// spelled `fluids.*` on the way in.
+import { Fluids, Simulation } from "../web/bend-modules.js";
 import { bendList, listLength } from "../web/bend-list.js";
 
 function measure(fn, repeats = 10) {

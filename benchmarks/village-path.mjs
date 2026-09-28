@@ -1,6 +1,8 @@
+// Through the boundary: `Villagers.path_grid` takes a `WorldState` as a foreign
+// parameter, and which spelling the JS lane wants depends on the module the
+// value last passed through (bend-lang/bend#1105).
+import { Villagers, WorldState } from "../web/bend-modules.js";
 import Path from "../world/village_path.bend";
-import Villagers from "../world/villagers.bend";
-import WorldState from "../world/world_state.bend";
 
 const routes = [
   [26n, 27n, 20n, 27n],

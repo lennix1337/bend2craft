@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import Entities from "../world/entities.bend";
-import World from "../world/world.bend";
+import { Entities, World } from "../web/bend-modules.js";
 
 function listValues(list) {
   const values = [];
@@ -163,6 +162,46 @@ let landedDrops = dropState;
 for (let index = 0; index < 20; index += 1) landedDrops = Entities.step_drops(landedDrops, 0.2, ground);
 assert.equal(Number(listValues(landedDrops)[0].y), 1);
 assert.equal(listValues(landedDrops)[0].settled, true);
+
+// A drop rests on the floor of the column it is over, so the ground the host
+// hands over is keyed by cell, not by the drop's exact position. The adapter
+// builds one Ground per column at floor(x) + 0.5 while a drop sits at a
+// fractional x, so an exact F32 match never fires and the drop falls to the
+// bottom of the world instead of landing. Both the fractional and the whole
+// column must settle on the same floor.
+function land(columnX, columnZ, floorY) {
+  const cell = { x: Math.floor(columnX) + 0.5, z: Math.floor(columnZ) + 0.5, y: floorY };
+  const grounds = { $: "Con", head: { $: "Ground", ...cell }, tail: { $: "Nil" } };
+  let state = { $: "Con", head: Entities.make_drop(7n, 12, columnX, floorY + 2, columnZ, 1), tail: { $: "Nil" } };
+  for (let index = 0; index < 40; index += 1) state = Entities.step_drops(state, 0.05, grounds);
+  const landed = listValues(state)[0];
+  return { y: Number(landed.y), settled: landed.settled };
+}
+
+const fractional = land(13.27, 29.14, 8);
+assert.equal(fractional.y, 8, "a drop over a fractional column must land on that column's floor");
+assert.equal(fractional.settled, true, "a landed drop must report settled");
+const whole = land(13, 29, 8);
+assert.equal(whole.y, 8, "a whole-numbered column must land on the same floor");
+assert.equal(whole.settled, true);
+// The world runs on a negative domain offset, so the cell comparison has to hold
+// below zero as well. A comparison routed through Nat folds every negative
+// coordinate onto 0, which would land a drop in the wrong column.
+for (const [label, x, z] of [["a negative fractional", -40.5, -41.25], ["a negative whole", -40, -41]]) {
+  const below = land(x, z, 8);
+  assert.equal(below.y, 8, `${label} column must land on its own floor`);
+  assert.equal(below.settled, true, `${label} drop must report settled`);
+}
+// Two columns with different floors must not be confused for one another.
+const neighbour = land(13.27, 30.6, 4);
+assert.equal(neighbour.y, 4, "a neighbouring column keeps its own floor");
+// A drop over a column with no ground entry still has to fall, not hang.
+const noGround = (() => {
+  let state = { $: "Con", head: Entities.make_drop(7n, 12, 40.5, 20, 40.5, 1), tail: { $: "Nil" } };
+  for (let index = 0; index < 5; index += 1) state = Entities.step_drops(state, 0.05, { $: "Nil" });
+  return Number(listValues(state)[0].y);
+})();
+assert.ok(noGround < 20, "a drop with no ground below it must keep falling");
 
 const hostile = mobs.find((mob) => Number(mob.kind) === 2);
 assert.ok(hostile);

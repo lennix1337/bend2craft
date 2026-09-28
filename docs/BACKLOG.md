@@ -123,6 +123,7 @@ components and the machines, split by concern so the web layer has a single seam
 - [x] Observer: the one component with no signal input. Fires for two ticks when the block in front *changes*, adopts its first sight without firing, and does not watch a front cell that saturates back onto itself.
 - [x] A 20Hz ticker, circuit persistence, and one item per placeable block held in a single contract across three files.
 - [x] A linear array-backed dust flood replacing a quadratic list flood, and a window sized to the circuit so a circuit of any size settles.
+- [ ] **Configurability the contracts already have and the player cannot reach.** This is the largest gap in the slice, and it is in the adapter rather than in Bend. `place_repeater` takes a direction and a delay, `place_comparator` a direction and a mode, `place_piston` a face, `place_observer` a face — and `web/redstone.js` passes `0` for every one of them on every placement. So a placed repeater is always one tick facing east, a comparator is always compare mode facing east, and a piston or observer always points east. The contract implements and tests all four repeater delays and both comparator modes; none of them is reachable in game. This also needs the right-click interaction vanilla has, since a repeater's delay is raised by clicking it and a comparator's mode is toggled by clicking it, and `isRedstoneInteractive` currently recognises only the lever.
 - [ ] Dust climbing stairs and slabs diagonally (1.17+). Blocked on the P1 stairs/slabs/fences entry: the diagonal connection needs those blocks to exist, and the flood needs a per-cell answer about what a neighbour is.
 - [ ] Buttons: a fixed pulse rather than a held level, so the circuit gets a real second timing model alongside the lever.
 - [ ] Weighted pressure plates (light and heavy), with output strength by the number and kind of entities standing on them. The current plate is a single on/off model.
@@ -134,6 +135,7 @@ components and the machines, split by concern so the web layer has a single seam
 - [ ] Detector rail and powered rail; the activator rail is the only rail, and it has no minecart detection (a documented gap, not a faked one).
 - [ ] Lamp burnout. Vanilla's lamp is destroyed after 0.1s of destruction; the burnout here is the torch's.
 - [ ] A lit lamp or redstone torch actually lights the world. The circuit decides, the adapter exposes the read, and nothing consumes it yet: `world/light.bend` classifies light sources by block id and a lamp's id says nothing about its state, so this needs a state-aware source rather than a block id.
+- [ ] Per-block appearance, which is presentation rather than light and is a separate piece of work. The adapter already reads a dust cell's power and whether a lamp or torch is on, and the mesh pipeline takes its vertex colour from `faceColorGrade` and the atlas, so a powered wire currently draws exactly like an unpowered one. Nothing consumes the two reads.
 - [ ] The clock period is one tick longer than vanilla's (`2*latency + 3` against vanilla's 4 for a one-tick repeater). This is the cost of advancing timers once per tick instead of cascading within a tick, and it is pinned in a test with the comparison stated.
 
 ## P2 — redstone as machines and items
@@ -142,6 +144,8 @@ Redstone in Minecraft is also a set of blocks that do work, and none of these ex
 are separate from the signal layer above and each is its own contract:
 
 - [ ] Redstone dust as an *item*: a player carries dust and places a line from one click, with the vanilla line-drag placement. Today the only redstone item is the block form.
+- [ ] Redstone as a *liquid*. A dispenser filled with a bucket of redstone is a redstone source in vanilla, and the fluid is a distinct state from the block. This was excluded from the original slice along with the dust item, and the dust item has now come back in but the liquid has not.
+- [ ] Trial chambers and the vault, which drive redstone from their own block states rather than from a placed circuit.
 - [ ] Dispenser and dropper: place, dispense, and the one-tick-per-item move with hopper assistance.
 - [ ] Hopper: transfer, the 8-slot container, and its place in the transfer priority order.
 - [ ] Note block and the instruments it triggers.

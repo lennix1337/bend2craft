@@ -28,6 +28,7 @@ Start here:
 - Chunk cache/streaming adapter: `web/chunk-world.js`
 - Pure player/world state: `web/game-state.js`
 - Browser entry router/menu: `web/main.js`; WebGL/game runtime: `web/game.js`
+- Multiplayer (room, server simulation, protocol): `docs/MULTIPLAYER.md`
 - Regression tests: `tests/`
 
 ## Toolchain

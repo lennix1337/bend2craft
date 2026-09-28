@@ -4,6 +4,8 @@ import Multiplayer from "../world/multiplayer.bend";
 import World from "../world/world.bend";
 import WorldState from "../world/world_state.bend";
 import { createMobWorld } from "../server/mob-world.js";
+import { createWorldCache } from "../server/world-cache.js";
+import { createServerWorld } from "../server/server-world.js";
 import { createMultiplayerRoom } from "../server/multiplayer-room.js";
 import { PROTOCOL_VERSION, decodeClientMessage, decodeServerMessage } from "../web/multiplayer-protocol.js";
 
@@ -12,18 +14,23 @@ const list = (items) => items.reduceRight((tail, head) => ({ $: "Con", head, tai
 let edits = WorldState.empty();
 
 // The server's terrain cache agrees with the Bend world and follows edits.
-const mobWorld = createMobWorld({ seed: SEED, edits: () => edits, random: () => 0.5 });
+const mobsOver = (options) => {
+  const cache = createWorldCache({ seed: SEED, edits: () => edits });
+  const world = createMobWorld({ seed: SEED, cache, edits: () => edits, ...options });
+  return Object.assign(world, { cache });
+};
+const mobWorld = mobsOver({ random: () => 0.5 });
 for (const [x, y, z] of [[20, 8, 20], [3, 5, 3], [-5, 6, -7], [40, 15, 40]]) {
   assert.equal(
-    mobWorld.blockAt(x, y, z),
+    mobWorld.cache.blockAt(x, y, z),
     Number(WorldState.block(edits, SEED, BigInt(x < 0 ? x + 94371840 : x), BigInt(y), BigInt(z < 0 ? z + 94371840 : z))),
     `cell ${x},${y},${z}`,
   );
 }
 edits = WorldState.set(edits, 20n, 8n, 20n, 22);
-mobWorld.applyEdits([[20, 8, 20, 22]]);
-assert.equal(mobWorld.blockAt(20, 8, 20), 22, "an accepted edit reaches the cached chunk");
-assert.ok(mobWorld.cachedChunks() > 0);
+mobWorld.blocksChanged(mobWorld.cache.applyEdits([[20, 8, 20, 22]]));
+assert.equal(mobWorld.cache.blockAt(20, 8, 20), 22, "an accepted edit reaches the cached chunk");
+assert.ok(mobWorld.cache.size() > 0);
 
 // No players, no simulation.
 assert.equal(mobWorld.tick(0.2, 100, []).size, 0);
@@ -73,7 +80,7 @@ assert.ok(thrown >= 1_000_000_000);
 assert.equal(mobWorld.snapshot().drops.find((drop) => drop[0] === thrown)[5], 3);
 
 // Drops settle on the ground wherever they fall, not only on cell centres.
-const settle = createMobWorld({ seed: SEED, edits: () => edits, random: () => 0.5 });
+const settle = mobsOver({ random: () => 0.5 });
 settle.setMobsForTest({ $: "Nil" });
 const offCentre = settle.addDrop(5, 1, 26.27, surface + 2, 16.81);
 for (let step = 0; step < 10; step += 1) settle.tick(0.2, 20, [{ id: 1, x: 25.5, y: surface, z: 16.5 }]);
@@ -81,11 +88,11 @@ const settled = settle.snapshot().drops.find((drop) => drop[0] === offCentre);
 assert.equal(settled[3], Number(World.column_height(SEED, 26n, 16n)), `the drop rests on the surface (${settled[3]})`);
 
 // Night spawns come around each player (random fixed at 0.5).
-const night = createMobWorld({ seed: SEED, edits: () => edits, random: () => 0.5 });
+const night = mobsOver({ random: () => 0.5 });
 night.setMobsForTest({ $: "Nil" });
 for (let step = 0; step < 26; step += 1) night.tick(0.2, 3 * Math.PI / 0.16, [{ id: 1, x: 25.5, y: surface, z: 16.5 }]);
 assert.ok(night.snapshot().mobs.length > 0, "monsters spawn at night");
-const peaceful = createMobWorld({ seed: SEED, edits: () => edits, peaceful: true, random: () => 0.5 });
+const peaceful = mobsOver({ peaceful: true, random: () => 0.5 });
 peaceful.setMobsForTest({ $: "Nil" });
 for (let step = 0; step < 26; step += 1) peaceful.tick(0.2, 3 * Math.PI / 0.16, [{ id: 1, x: 25.5, y: surface, z: 16.5 }]);
 assert.equal(peaceful.snapshot().mobs.length, 0, "not in a peaceful world");
@@ -94,7 +101,7 @@ assert.equal(peaceful.snapshot().mobs.length, 0, "not in a peaceful world");
 // pickups and thrown items through messages.
 assert.equal(decodeClientMessage(JSON.stringify({ t: "attack", id: 1, mob: 3, damage: -1, ranged: false })), null);
 assert.equal(decodeClientMessage(JSON.stringify({ t: "drop", item: 5, amount: 65, x: 0, y: 0, z: 0 })), null);
-const room = createMultiplayerRoom({ authority: Multiplayer, seed: SEED, createMobWorld, now: () => 0 });
+const room = createMultiplayerRoom({ authority: Multiplayer, seed: SEED, createServerWorld, now: () => 0 });
 const inbox = [];
 const handle = room.connect((text) => inbox.push(JSON.parse(text)));
 handle.receive(JSON.stringify({ t: "hello", v: PROTOCOL_VERSION, name: "Lucas" }));

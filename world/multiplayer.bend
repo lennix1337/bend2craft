@@ -151,23 +151,19 @@ def valid_edit(edit: WorldState.Edit) -> Bool:
   WorldState.Edit{+x, +y, +z, +block} = edit
   Bool.and(valid_position(x, y, z), valid_block(block))
 
-def batch_length(edits: List<&2, WorldState.Edit>) -> Nat:
-  match edits:
-    case Nil{}:
-      0n
-    case Con{head, tail}:
-      1n+batch_length(tail)
+# Counts up to one past the limit, in a loop, so an oversized batch is refused
+# without walking all of it.
+def batch_fits(edits: List<&2, WorldState.Edit>, +left: Nat) -> Bool:
+  match edits left:
+    case Nil{} _:
+      True{}
+    case Con{head, tail} 0n:
+      False{}
+    case Con{head, tail} 1n+p:
+      batch_fits(tail, p)
 
 def valid_batch_size(+batch: List<&2, WorldState.Edit>) -> Bool:
-  Nat.is_le(batch_length(batch), max_batch())
-
-def apply_if(+ok: Bool, edits: List<&2, WorldState.Edit>, edit: WorldState.Edit) -> List<&2, WorldState.Edit>:
-  match ok:
-    case True{}:
-      WorldState.Edit{+x, +y, +z, +block} = edit
-      WorldState.set(edits, x, y, z, block)
-    case False{}:
-      edits
+  batch_fits(batch, max_batch())
 
 def keep_if(+ok: Bool, edit: WorldState.Edit, rest: List<&2, WorldState.Edit>) -> List<&2, WorldState.Edit>:
   match ok:
@@ -295,15 +291,16 @@ def split(
       Split{edits, chests, furnaces, Nil{}, Nil{}, Nil{}}
     case Con{+head, tail}:
       +ok = Bool.and(valid_edit(head), chest_allows(chests, head))
-      next = apply_if(ok, edits, head)
       +step = chest_step(ok, head, chests)
       +fstep = furnace_step(ok, head, furnaces)
       +changes = append_changes(step_changes(step), furnace_step_changes(fstep))
-      split.finish(ok, head, changes, split(tail, next, step_chests(step), furnace_step_furnaces(fstep)))
+      split.finish(ok, head, changes, split(tail, edits, step_chests(step), furnace_step_furnaces(fstep)))
 
+# The accepted edits are folded into the log in one pass (WorldState.set_many);
+# validity never depends on the log, only on the edit and the chests.
 def submit.wrap(+seq: U32, result: Split) -> Submission:
   Split{+edits, +chests, +furnaces, +accepted, +rejected, +changes} = result
-  Submission{Room{(seq + 1 : U32), edits, chests, furnaces}, accepted, rejected, changes}
+  Submission{Room{(seq + 1 : U32), WorldState.set_many(edits, accepted), chests, furnaces}, accepted, rejected, changes}
 
 def submit.checked(+fits: Bool, +room: Room, +batch: List<&2, WorldState.Edit>) -> Submission:
   match fits:
@@ -499,13 +496,8 @@ def revert(
 
 # Replays accepted batches on a client: the room already validated them, so
 # they fold into the local edit log in order.
-def merge(batch: List<&2, WorldState.Edit>, edits: List<&2, WorldState.Edit>) -> List<&2, WorldState.Edit>:
-  match batch:
-    case Nil{}:
-      edits
-    case Con{+head, tail}:
-      WorldState.Edit{+x, +y, +z, +block} = head
-      merge(tail, WorldState.set(edits, x, y, z, block))
+def merge(+batch: List<&2, WorldState.Edit>, edits: List<&2, WorldState.Edit>) -> List<&2, WorldState.Edit>:
+  WorldState.set_many(edits, batch)
 
 # Player poses ----------------------------------------------------------------
 
@@ -533,6 +525,21 @@ def valid_pose(+x: F32, +y: F32, +z: F32, +yaw: F32, +pitch: F32) -> Bool:
       Bool.and(F32.is_ge(y, pose_lowest_y()), F32.is_le(y, pose_highest_y())),
       Bool.and(finite_within(yaw, 1000000.0), finite_within(pitch, 1000000.0))
     )
+  )
+
+# How far from a player's feet a world interaction (a bucket, a hoe, seeds, a
+# harvest) may land, measured to the cell's centre. Generous against network
+# lag; the client's own raycast is shorter.
+def interaction_reach() -> F32:
+  8.0
+
+def within_reach(+px: F32, +py: F32, +pz: F32, +x: F32, +y: F32, +z: F32) -> Bool:
+  +dx = F32.sub(x, px)
+  +dy = F32.sub(y, py)
+  +dz = F32.sub(z, pz)
+  F32.is_le(
+    F32.add(F32.add(F32.mul(dx, dx), F32.mul(dy, dy)), F32.mul(dz, dz)),
+    F32.mul(interaction_reach(), interaction_reach())
   )
 
 def pitch_limit() -> F32:

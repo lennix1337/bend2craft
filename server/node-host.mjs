@@ -42,11 +42,11 @@ export function lanAddresses() {
  * @param {object} options.authority  the compiled world/multiplayer.bend module
  * @param {bigint} options.seed        seed for a new world (a saved world keeps its own)
  * @param {string|null} options.file   where the world is saved; null keeps it in memory
- * @param {Function} [options.createMobWorld]  server-owned mobs and drops
+ * @param {Function} [options.createServerWorld]  the server-simulated world
  * @param {boolean} [options.peaceful]  no monsters
  */
 export function attachMultiplayer(server, {
-  authority, seed, file = null, log = console.log, createMobWorld = null, peaceful = false,
+  authority, seed, file = null, log = console.log, createServerWorld = null, peaceful = false,
 }) {
   const saved = file === null ? null : readSnapshot(file);
   const worldSeed = saved === null ? seed : BigInt(saved.seed);
@@ -64,7 +64,7 @@ export function attachMultiplayer(server, {
     authority,
     seed: worldSeed,
     snapshot: saved,
-    createMobWorld,
+    createServerWorld,
     peaceful,
     onChange: () => {
       if (saveTimer === null) saveTimer = setTimeout(save, SAVE_DELAY_MS);
@@ -75,7 +75,15 @@ export function attachMultiplayer(server, {
   });
 
   // Furnaces smelt on the server's clock.
-  const ticker = setInterval(() => room.tick(), TICK_MS);
+  // The block simulation changes every tick; it is saved every 30 seconds.
+  let ticks = 0;
+  const ticker = setInterval(() => {
+    room.tick();
+    ticks += 1;
+    if (ticks % 150 === 0 && room.simulationState() !== null && saveTimer === null) {
+      saveTimer = setTimeout(save, SAVE_DELAY_MS);
+    }
+  }, TICK_MS);
   ticker.unref?.();
   server.on("close", () => clearInterval(ticker));
 

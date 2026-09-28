@@ -1,8 +1,7 @@
 // The multiplayer server's mobs and dropped items.
 //
-// The server keeps its own cache of the chunks around players and mobs, made
-// by Bend's bulk chunk export (WorldState.chunk) and patched with every
-// accepted edit, so mobs walk on the same terrain the players see. Each tick
+// Mobs walk on the server's terrain cache (server/world-cache.js), the same
+// terrain the players see. Each tick
 // runs the Bend rules: MultiplayerMobs.step_world (every mob chases or flees
 // the nearest player), Entities.sunlight_damage, Entities.threat_damage per
 // player, Entities.step_drops, night spawns around each player, and
@@ -11,21 +10,16 @@
 import Entities from "../world/entities.bend";
 import MultiplayerMobs from "../world/multiplayer_mobs.bend";
 import World from "../world/world.bend";
-import WorldState from "../world/world_state.bend";
-import { chunkIndex } from "../web/chunk-world.js";
 import { NIGHT_DAYLIGHT, daylightForTime } from "../web/daylight.js";
 import { createColumnHeightCache, isDropSolid } from "../web/drop-ground-cache.js";
 import { DOMAIN_COORDINATE_OFFSET, mobRegion } from "../web/game-state.js";
 import { NIGHT_SPAWN, nightSpawns } from "../web/mob-spawning.js";
-import { generationChunkCoordinate, worldCoordinate } from "../web/world-coordinates.js";
+import { MAX_Y } from "./world-cache.js";
 
-const CHUNK_SIZE = Number(World.chunk_size());
-const MAX_Y = Number(World.max_y());
 const OFFSET = BigInt(DOMAIN_COORDINATE_OFFSET);
 const DESPAWN_RADIUS = 64;
 const SPAWN_INTERVAL = 5;
 const DESPAWN_INTERVAL = 10;
-const CHUNK_KEEP_RADIUS = 5;
 // Drops thrown by players get ids far above any mob id (a kill drop reuses the
 // mob's id), so the two never collide.
 const PLAYER_DROP_BASE = 1_000_000_000;
@@ -59,61 +53,25 @@ export function dropToWire(drop) {
 /**
  * @param {object} options
  * @param {bigint} options.seed
+ * @param {object} options.cache  server/world-cache.js
  * @param {() => object} options.edits  the room's current Bend edit log
  * @param {boolean} [options.peaceful]  no monsters
  * @param {() => number} [options.random]
  */
-export function createMobWorld({ seed, edits, peaceful = false, random = Math.random }) {
-  const chunks = new Map();
+export function createMobWorld({ seed, cache, edits, peaceful = false, random = Math.random }) {
   let mobs = { $: "Nil" };
   let drops = Entities.empty_drops();
   let populated = false;
   let spawnTimer = 0;
   let despawnTimer = 0;
-  let ticks = 0;
   let nextDropId = PLAYER_DROP_BASE;
 
-  function chunkData(chunkX, chunkZ) {
-    const key = `${chunkX},${chunkZ}`;
-    let data = chunks.get(key);
-    if (data === undefined) {
-      const generated = WorldState.chunk(
-        seed,
-        BigInt(generationChunkCoordinate(chunkX, CHUNK_SIZE)),
-        BigInt(generationChunkCoordinate(chunkZ, CHUNK_SIZE)),
-        edits(),
-      );
-      data = Uint8Array.from(Array.isArray(generated) || ArrayBuffer.isView(generated)
-        ? generated
-        : listItems(generated), Number);
-      chunks.set(key, data);
-    }
-    return data;
-  }
+  const terrain = { blockAt: cache.blockAt, maxY: MAX_Y };
+  const ground = createColumnHeightCache({ maxY: MAX_Y, blockAt: cache.blockAt, isSolid: isDropSolid });
 
-  function blockAt(x, y, z) {
-    if (!Number.isInteger(x) || !Number.isInteger(y) || !Number.isInteger(z) || y < 0 || y >= MAX_Y) return 0;
-    const chunkX = Math.floor(x / CHUNK_SIZE);
-    const chunkZ = Math.floor(z / CHUNK_SIZE);
-    return chunkData(chunkX, chunkZ)[chunkIndex(CHUNK_SIZE, x - chunkX * CHUNK_SIZE, y, z - chunkZ * CHUNK_SIZE)];
-  }
-
-  const terrain = { blockAt, maxY: MAX_Y };
-  const ground = createColumnHeightCache({ maxY: MAX_Y, blockAt, isSolid: isDropSolid });
-
-  /** Accepted edits, as wire edits in stored coordinates. */
-  function applyEdits(wireEdits) {
-    for (const [storedX, y, storedZ, value] of wireEdits) {
-      const x = worldCoordinate(storedX);
-      const z = worldCoordinate(storedZ);
-      const chunkX = Math.floor(x / CHUNK_SIZE);
-      const chunkZ = Math.floor(z / CHUNK_SIZE);
-      const data = chunks.get(`${chunkX},${chunkZ}`);
-      if (data !== undefined && y >= 0 && y < MAX_Y) {
-        data[chunkIndex(CHUNK_SIZE, x - chunkX * CHUNK_SIZE, y, z - chunkZ * CHUNK_SIZE)] = value;
-      }
-      ground.invalidate(x, z);
-    }
+  /** Changed cells (signed world coordinates): drops re-read their ground. */
+  function blocksChanged(changes) {
+    for (const { x, z } of changes) ground.invalidate(x, z);
   }
 
   function regionsFor(list) {
@@ -143,17 +101,6 @@ export function createMobWorld({ seed, edits, peaceful = false, random = Math.ra
 
   function views() {
     return listItems(mobs).map((mob) => ({ id: Number(mob.id), kind: Number(mob.kind), alive: mob.alive }));
-  }
-
-  function evictChunks(players) {
-    const anchors = [...players, ...listItems(mobs).map((mob) => ({ x: Number(mob.x), z: Number(mob.z) }))]
-      .map(({ x, z }) => [Math.floor(x / CHUNK_SIZE), Math.floor(z / CHUNK_SIZE)]);
-    for (const key of chunks.keys()) {
-      const [chunkX, chunkZ] = key.split(",").map(Number);
-      const needed = anchors.some(([ax, az]) => Math.abs(ax - chunkX) <= CHUNK_KEEP_RADIUS && Math.abs(az - chunkZ) <= CHUNK_KEEP_RADIUS);
-      if (!needed) chunks.delete(key);
-    }
-    if (chunks.size === 0) ground.clear();
   }
 
   /**
@@ -213,8 +160,6 @@ export function createMobWorld({ seed, edits, peaceful = false, random = Math.ra
       despawnTimer = 0;
       mobs = MultiplayerMobs.despawn(mobs, targets, DESPAWN_RADIUS);
     }
-    ticks += 1;
-    if (ticks % 50 === 0) evictChunks(players);
     return hurts;
   }
 
@@ -261,10 +206,10 @@ export function createMobWorld({ seed, edits, peaceful = false, random = Math.ra
     attack,
     pickup,
     addDrop,
-    applyEdits,
+    blocksChanged,
     snapshot,
-    blockAt,
-    cachedChunks: () => chunks.size,
+    views,
+    anchors: () => listItems(mobs).map((mob) => ({ x: Number(mob.x), z: Number(mob.z) })),
     // Test seam: place mobs directly.
     setMobsForTest(list) {
       mobs = list;

@@ -306,6 +306,12 @@ export function respawnPlayer(player, spawnCell, spawnHeight) {
   PLAYER_STATES.set(player, respawned);
 }
 
+/** Puts the player at a position the server corrected it to, at rest. */
+export function placePlayer(player, x, y, z) {
+  Object.assign(player, { x, y, z, velocityY: 0, fall: 0 });
+  PLAYER_STATES.delete(player);
+}
+
 export function movePlayer(world, player, held, dt, spawnCell, spawnHeight, width = 48, depth = 48, controls = {}) {
   if (Number(player.health) <= 0) {
     return;

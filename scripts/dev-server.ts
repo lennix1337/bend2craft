@@ -3,7 +3,7 @@ import * as path from "node:path";
 import bendPlugin from "../vendor/bend/bend2/main.ts";
 import Multiplayer from "../world/multiplayer.bend";
 import { TICK_MS, createMultiplayerRoom } from "../server/multiplayer-room.js";
-import { createMobWorld } from "../server/mob-world.js";
+import { createServerWorld } from "../server/server-world.js";
 import { MAX_MESSAGE_BYTES, MULTIPLAYER_PATH } from "../web/multiplayer-protocol.js";
 
 const outdir = path.resolve(".dev");
@@ -65,7 +65,7 @@ await Bun.write(path.join(outdir, "lod-worker.js"), await lodWorker.outputs[0].a
 const room = createMultiplayerRoom({
   authority: Multiplayer,
   seed: BigInt(process.env.SEED ?? "1337"),
-  createMobWorld,
+  createServerWorld,
   peaceful: process.env.PEACEFUL === "1",
 });
 setInterval(() => room.tick(), TICK_MS);

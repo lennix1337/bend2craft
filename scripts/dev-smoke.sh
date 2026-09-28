@@ -20,6 +20,8 @@ run_followup() {
     bash "$ROOT/scripts/run-bun.sh" "$ROOT/scripts/webgpu-smoke.mjs" "$BASE_URL"
   elif [[ "${1:-}" == "--visual-quality" ]]; then
     bash "$ROOT/scripts/run-bun.sh" "$ROOT/scripts/visual-quality-smoke.mjs" "$BASE_URL"
+  elif [[ "${1:-}" == "--multiplayer" ]]; then
+    bash "$ROOT/scripts/run-bun.sh" "$ROOT/scripts/multiplayer-smoke.mjs" "$BASE_URL"
   elif [[ "${1:-}" == "--renderer-benchmark" ]]; then
     bash "$ROOT/scripts/run-bun.sh" "$ROOT/scripts/renderer-benchmark.mjs" "$BASE_URL"
   elif [[ "${1:-}" == "--fps-cap" ]]; then

@@ -198,4 +198,9 @@ assert.deepEqual(
   [["ChestPlaced", 1, 9, 1], ["FurnacePlaced", 2, 9, 1], ["ChestBroken", 1, 9, 1], ["FurnacePlaced", 1, 9, 1]],
 );
 
+// Interaction reach.
+assert.equal(Multiplayer.within_reach(10, 9, 10, 15.5, 9.5, 10.5), true);
+assert.equal(Multiplayer.within_reach(10, 9, 10, 19.5, 9.5, 10.5), false);
+assert.equal(Multiplayer.within_reach(10, 9, 10, Number.NaN, 9.5, 10.5), false);
+
 console.log("bend multiplayer ok");

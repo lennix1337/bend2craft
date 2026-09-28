@@ -293,6 +293,14 @@ export function connectMultiplayer({
           attackRequest(fields) {
             return request("attack", undefined, fields);
           },
+          /**
+           * A world interaction the server simulates ("water", "lava", "fire",
+           * "collect", "till", "plant", "harvest") at a stored position;
+           * resolves with `{ ok, ... }` (collect: `block`; harvest: `seeds`, `wheat`).
+           */
+          interactRequest(op, pos) {
+            return request("interact", op, { pos });
+          },
           /** Picks up a drop; resolves with `{ ok, item, amount }`. */
           pickupRequest(fields) {
             return request("pickup", undefined, fields);

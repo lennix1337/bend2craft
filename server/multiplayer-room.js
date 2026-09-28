@@ -1,49 +1,25 @@
 // One multiplayer world: the connected players and the Bend room that owns
-// the shared edit log. The room is transport-agnostic: the Node LAN server
+// the shared state. The room is transport-agnostic: the Node LAN server
 // (server/node-host.mjs), the Bun dev server and the Cloudflare Durable Object
 // (cloudflare/worker.js) each hand it a `send(text)` per connection and feed
-// it the text frames they receive.
+// it the text frames they receive, and call `tick()` every TICK_MS.
 //
 // Authority lives in Bend (world/multiplayer.bend): this module decodes
-// messages, calls the Bend room with whole batches, and fans the results out.
-// Every accepted batch goes to every player, the sender included, so all
-// clients apply the same batches in the same sequence order. Chest contents
-// and furnaces, and the world clock, are the room's too: every chest or
-// furnace change is sent to every player as its full state, and the host calls
-// `tick()` every TICK_MS to advance the furnaces.
-import {
-  MAX_PLAYERS,
-  PROTOCOL_VERSION,
-  bendChestsToWire,
-  bendEditsToWire,
-  bendFurnaceToWire,
-  bendFurnacesToWire,
-  bendSlotsToWire,
-  decodeClientMessage,
-  isWireChest,
-  isWireEditList,
-  isWireFurnace,
-  sanitizeName,
-  wireChestsToBend,
-  wireEditsToBend,
-  wireFurnacesToBend,
-} from "../web/multiplayer-protocol.js";
+// messages and routes them to the parts of the room, which call Bend with
+// whole batches and fan the results out.
+//
+//   room/edits.js       edit batches (players' and the simulation's)
+//   room/containers.js  chests and furnaces
+//   room/world.js       mobs, drops, villagers, fluids, fire and farming
+//   room/snapshot.js    what a world saves and how it comes back
+import { MAX_PLAYERS, PROTOCOL_VERSION, bendEditsToWire, decodeClientMessage, sanitizeName } from "../web/multiplayer-protocol.js";
+import { createContainers } from "./room/containers.js";
+import { createEdits } from "./room/edits.js";
+import { SNAPSHOT_VERSION, restoreRoom, roomSnapshot, validSnapshot } from "./room/snapshot.js";
+import { createWorldHandlers } from "./room/world.js";
 
-export const SNAPSHOT_VERSION = 2;
+export { SNAPSHOT_VERSION };
 export const TICK_MS = 200;
-const FURNACE_OPS = Object.freeze({ input: 0, fuel: 1, output: 2 });
-
-function validSnapshot(snapshot, seed) {
-  if (snapshot?.version !== 1 && snapshot?.version !== SNAPSHOT_VERSION) return false;
-  if (!isWireEditList(snapshot.edits, Infinity) || !Number.isInteger(snapshot.seq)) return false;
-  if (String(snapshot.seed) !== seed.toString()) return false;
-  if (snapshot.version === 1) return true;
-  return Array.isArray(snapshot.chests)
-    && snapshot.chests.every((chest) => isWireChest(chest) && chest.slots !== null)
-    && (snapshot.furnaces === undefined
-      || (Array.isArray(snapshot.furnaces) && snapshot.furnaces.every((f) => isWireFurnace(f) && f.state !== null)))
-    && Number.isFinite(snapshot.time) && snapshot.time >= 0;
-}
 
 /**
  * @param {object} options
@@ -59,86 +35,85 @@ function validSnapshot(snapshot, seed) {
  *   `tick: true` when only furnace smelting moved
  * @param {(event: "joined" | "left", player: object) => void} [options.onPresence]
  * @param {() => number} [options.now]  millisecond wall clock
- * @param {Function} [options.createMobWorld]  server/mob-world.js's factory
- *   (bundled with the authority); without it the room simulates no mobs
+ * @param {Function} [options.createServerWorld]  server/server-world.js's factory
+ *   (bundled with the authority); without it the room simulates nothing
  * @param {boolean} [options.peaceful]  a world without monsters
  */
 export function createMultiplayerRoom({
   authority, seed, snapshot = null, onChange = () => {}, onPresence = () => {}, now = () => Date.now(),
-  createMobWorld = null, peaceful = false,
+  createServerWorld = null, peaceful = false,
 }) {
   if (typeof seed !== "bigint") throw new TypeError("seed must be a bigint");
-  let state = authority.empty();
-  let clockOrigin = now();
-  if (snapshot !== null) {
-    if (!validSnapshot(snapshot, seed)) {
-      throw new Error("The multiplayer world snapshot is not valid for this seed.");
-    }
-    state = authority.restore(
-      snapshot.seq >>> 0,
-      wireEditsToBend(snapshot.edits),
-      wireChestsToBend(snapshot.chests ?? []),
-      wireFurnacesToBend(snapshot.furnaces ?? []),
-    );
-    // The clock runs while the server runs and resumes where it stopped.
-    clockOrigin = now() - (snapshot.time ?? 0) * 1000;
+  if (snapshot !== null && !validSnapshot(snapshot, seed)) {
+    throw new Error("The multiplayer world snapshot is not valid for this seed.");
   }
   const players = new Map();
   let nextId = 1;
-  const mobWorld = createMobWorld === null
-    ? null
-    : createMobWorld({ seed, edits: () => authority.room_edits(state), peaceful });
-  const counters = { accepted: 0, rejected: 0, dropped: 0 };
+  // The clock runs while the server runs and resumes where it stopped.
+  let clockOrigin = now() - (snapshot?.time ?? 0) * 1000;
+  const worldTime = () => Math.max(0, (now() - clockOrigin) / 1000);
 
-  function broadcast(message, except = null) {
-    const text = JSON.stringify(message);
-    for (const player of players.values()) {
-      if (player !== except && player.ready) player.send(text);
-    }
+  // The context every part of the room shares.
+  const ctx = {
+    authority,
+    seed,
+    state: snapshot === null ? authority.empty() : restoreRoom(authority, snapshot),
+    world: null,
+    counters: { accepted: 0, rejected: 0, dropped: 0, corrected: 0 },
+    send(player, message) {
+      player.send(JSON.stringify(message));
+    },
+    broadcast(message, except = null) {
+      const text = JSON.stringify(message);
+      for (const player of players.values()) {
+        if (player !== except && player.ready) player.send(text);
+      }
+    },
+    changed(change) {
+      onChange({ seq: Number(authority.room_seq(ctx.state)), edits: [], chests: [], furnaces: [], ...change });
+    },
+  };
+  if (createServerWorld !== null) {
+    ctx.world = createServerWorld({
+      seed,
+      edits: () => authority.room_edits(ctx.state),
+      peaceful,
+      saved: snapshot?.simulation ?? null,
+    });
   }
-
-  function worldTime() {
-    return Math.max(0, (now() - clockOrigin) / 1000);
-  }
-
-  function chestAt([x, y, z]) {
-    const at = [BigInt(x), BigInt(y), BigInt(z)];
-    return {
-      pos: [x, y, z],
-      slots: authority.has_chest(state, ...at) ? bendSlotsToWire(authority.chest_slots(state, ...at)) : null,
-    };
-  }
-
-  function furnaceAt([x, y, z]) {
-    const at = [BigInt(x), BigInt(y), BigInt(z)];
-    return {
-      pos: [x, y, z],
-      state: authority.has_furnace(state, ...at) ? bendFurnaceToWire(authority.furnace_state(state, ...at)) : null,
-    };
-  }
+  const containers = createContainers(ctx);
+  const edits = createEdits(ctx, containers);
+  const worldHandlers = createWorldHandlers(ctx, edits);
 
   function publicPlayer(player) {
     return { id: player.id, name: player.name, pose: player.pose };
   }
 
   function welcome(player) {
-    player.send(JSON.stringify({
+    ctx.send(player, {
       t: "welcome",
       v: PROTOCOL_VERSION,
       id: player.id,
       seed: seed.toString(),
-      seq: Number(authority.room_seq(state)),
-      edits: bendEditsToWire(authority.room_edits(state)),
-      chests: bendChestsToWire(authority.room_chests(state)),
-      furnaces: bendFurnacesToWire(authority.room_furnaces(state)),
+      seq: Number(authority.room_seq(ctx.state)),
+      edits: bendEditsToWire(authority.room_edits(ctx.state)),
+      ...containers.welcome(),
       time: worldTime(),
       players: [...players.values()].filter((other) => other !== player && other.ready).map(publicPlayer),
-    }));
+    });
   }
 
-  function handlePose(player, message) {
+  function pose(player, message) {
     if (!authority.valid_pose(message.x, message.y, message.z, message.yaw, message.pitch)) {
-      counters.dropped += 1;
+      ctx.counters.dropped += 1;
+      return;
+    }
+    // A move the Bend movement contract refuses is not relayed; the player is
+    // sent back to its last accepted pose.
+    if (ctx.world !== null && !ctx.world.checkMove(player.id, player.pose, message, now())) {
+      ctx.counters.corrected += 1;
+      const { x, y, z } = player.pose;
+      ctx.send(player, { t: "correct", x, y, z });
       return;
     }
     player.pose = {
@@ -148,142 +123,23 @@ export function createMultiplayerRoom({
       yaw: message.yaw,
       pitch: authority.clamp_pitch(message.pitch),
     };
-    broadcast({ t: "pose", id: player.id, ...player.pose }, player);
+    ctx.broadcast({ t: "pose", id: player.id, ...player.pose }, player);
   }
 
-  function handleEdits(player, message) {
-    const result = authority.submit(state, wireEditsToBend(message.edits));
-    state = authority.submission_room(result);
-    const accepted = bendEditsToWire(authority.submission_accepted(result));
-    const rejectedList = authority.submission_rejected(result);
-    const chests = [];
-    const furnaces = [];
-    for (let node = authority.submission_changes(result); node?.$ === "Con"; node = node.tail) {
-      const pos = [Number(node.head.x), Number(node.head.y), Number(node.head.z)];
-      // Tags can carry a module prefix ("multiplayer.ChestPlaced").
-      if (node.head.$.includes("Chest")) {
-        chests.push(chestAt(pos));
-      } else {
-        furnaces.push(furnaceAt(pos));
-      }
-    }
-    if (accepted.length > 0) {
-      counters.accepted += accepted.length;
-      const seq = Number(authority.room_seq(state));
-      broadcast({ t: "edits", seq, from: player.id, edits: accepted });
-      mobWorld?.applyEdits(accepted);
-      for (const chest of chests) broadcast({ t: "chest", ...chest });
-      for (const furnace of furnaces) broadcast({ t: "furnace", ...furnace });
-      onChange({ seq, edits: accepted, chests, furnaces });
-    }
-    if (rejectedList.$ === "Con") {
-      const revert = bendEditsToWire(authority.revert(rejectedList, authority.room_edits(state), seed));
-      counters.rejected += message.edits.length - accepted.length;
-      if (revert.length > 0) player.send(JSON.stringify({ t: "revert", edits: revert }));
-      // A refused break of a chest leaves the chest standing: resend it so the
-      // sender's predicted removal is undone too.
-      for (const [x, y, z] of revert) {
-        const chest = chestAt([x, y, z]);
-        if (chest.slots !== null) player.send(JSON.stringify({ t: "chest", ...chest }));
-      }
-    }
-  }
-
-  function handleChest(player, message) {
-    const [x, y, z] = message.pos.map(BigInt);
-    const outcome = message.op === "deposit"
-      ? authority.deposit(state, x, y, z, message.item, message.count, message.durability)
-      : authority.withdraw(state, x, y, z, BigInt(message.index), message.amount);
-    const ok = authority.outcome_ok(outcome);
-    player.send(JSON.stringify({
-      t: "chest-result",
-      id: message.id,
-      ok,
-      op: message.op,
-      item: Number(authority.outcome_item(outcome)),
-      amount: Number(authority.outcome_amount(outcome)),
-      durability: Number(authority.outcome_durability(outcome)),
-    }));
-    if (!ok) return;
-    state = authority.outcome_room(outcome);
-    const chest = chestAt(message.pos);
-    broadcast({ t: "chest", ...chest });
-    onChange({ seq: Number(authority.room_seq(state)), edits: [], chests: [chest], furnaces: [] });
-  }
-
-  function handleFurnace(player, message) {
-    const [x, y, z] = message.pos.map(BigInt);
-    const outcome = authority.furnace_op(state, FURNACE_OPS[message.op], x, y, z, message.item);
-    const ok = authority.outcome_ok(outcome);
-    player.send(JSON.stringify({
-      t: "furnace-result",
-      id: message.id,
-      ok,
-      op: message.op,
-      item: Number(authority.outcome_item(outcome)),
-      amount: Number(authority.outcome_amount(outcome)),
-    }));
-    if (!ok) return;
-    state = authority.outcome_room(outcome);
-    const furnace = furnaceAt(message.pos);
-    broadcast({ t: "furnace", ...furnace });
-    onChange({ seq: Number(authority.room_seq(state)), edits: [], chests: [], furnaces: [furnace] });
-  }
-
-  function handleAttack(player, message) {
-    const result = mobWorld === null || player.pose === null
-      ? { hit: false, killed: false, kind: 0 }
-      : mobWorld.attack(player.pose, message.mob, message.damage, message.ranged);
-    player.send(JSON.stringify({ t: "attack-result", id: message.id, mob: message.mob, ...result }));
-    if (result.hit) broadcast({ t: "entities", ...mobWorld.snapshot() });
-  }
-
-  function handlePickup(player, message) {
-    const result = mobWorld === null || player.pose === null
-      ? { ok: false, item: 0, amount: 0 }
-      : mobWorld.pickup(player.pose, message.drop);
-    player.send(JSON.stringify({ t: "pickup-result", id: message.id, drop: message.drop, ...result }));
-    if (result.ok) broadcast({ t: "entities", ...mobWorld.snapshot() });
-  }
-
-  function handleDrop(message) {
-    if (mobWorld === null) return;
-    mobWorld.addDrop(message.item, message.amount, message.x, message.y, message.z);
-    broadcast({ t: "entities", ...mobWorld.snapshot() });
-  }
-
-  // One simulation step: mobs and drops (sent to everyone every step while
-  // anyone is online) and furnaces (only the ones that moved are sent).
-  function tick() {
-    if (mobWorld !== null) {
-      const online = [...players.values()].filter((player) => player.ready && player.pose !== null);
-      if (online.length > 0) {
-        const hurts = mobWorld.tick(TICK_MS / 1000, worldTime(), online.map((player) => ({ id: player.id, ...player.pose })));
-        for (const [id, amount] of hurts) players.get(id)?.send(JSON.stringify({ t: "hurt", amount }));
-        broadcast({ t: "entities", ...mobWorld.snapshot() });
-      }
-    }
-    return tickFurnaces();
-  }
-
-  function tickFurnaces() {
-    const before = bendFurnacesToWire(authority.room_furnaces(state));
-    if (before.length === 0) return 0;
-    state = authority.tick(state);
-    const after = bendFurnacesToWire(authority.room_furnaces(state));
-    const changed = after.filter((furnace, index) => furnace.state.join() !== before[index]?.state.join());
-    if (changed.length === 0) return 0;
-    broadcast({ t: "furnaces", furnaces: changed });
-    onChange({ seq: Number(authority.room_seq(state)), edits: [], chests: [], furnaces: changed, tick: true });
-    return changed.length;
-  }
-
-  function handleTime(message) {
+  function time(_player, message) {
     if (message.op !== "morning") return;
     clockOrigin = now();
-    broadcast({ t: "time", time: 0 });
-    onChange({ seq: Number(authority.room_seq(state)), edits: [], chests: [], furnaces: [], time: 0 });
+    ctx.broadcast({ t: "time", time: 0 });
+    ctx.changed({ time: 0 });
   }
+
+  const handlers = {
+    pose,
+    time,
+    ...edits.handlers,
+    ...containers.handlers,
+    ...worldHandlers.handlers,
+  };
 
   /**
    * Registers a connection. `send` delivers one text frame and `close` ends
@@ -299,41 +155,38 @@ export function createMultiplayerRoom({
       close(1008, message);
     }
 
+    function hello(message) {
+      if (message.t !== "hello") return;
+      if (message.v !== PROTOCOL_VERSION) {
+        refuse(`This server speaks multiplayer protocol ${PROTOCOL_VERSION}; update the game.`);
+        return;
+      }
+      if (players.size >= MAX_PLAYERS) {
+        refuse(`The server is full (${MAX_PLAYERS} players).`);
+        return;
+      }
+      player.id = nextId;
+      nextId += 1;
+      player.name = sanitizeName(message.name, `Player ${player.id}`);
+      players.set(player.id, player);
+      welcome(player);
+      player.ready = true;
+      ctx.broadcast({ t: "joined", player: publicPlayer(player) }, player);
+      onPresence("joined", publicPlayer(player));
+    }
+
     function receive(text) {
       if (closed) return;
       const message = decodeClientMessage(typeof text === "string" ? text : String(text));
       if (message === null) {
-        counters.dropped += 1;
+        ctx.counters.dropped += 1;
         return;
       }
       if (!player.ready) {
-        if (message.t !== "hello") return;
-        if (message.v !== PROTOCOL_VERSION) {
-          refuse(`This server speaks multiplayer protocol ${PROTOCOL_VERSION}; update the game.`);
-          return;
-        }
-        if (players.size >= MAX_PLAYERS) {
-          refuse(`The server is full (${MAX_PLAYERS} players).`);
-          return;
-        }
-        player.id = nextId;
-        nextId += 1;
-        player.name = sanitizeName(message.name, `Player ${player.id}`);
-        players.set(player.id, player);
-        welcome(player);
-        player.ready = true;
-        broadcast({ t: "joined", player: publicPlayer(player) }, player);
-        onPresence("joined", publicPlayer(player));
+        hello(message);
         return;
       }
-      if (message.t === "pose") handlePose(player, message);
-      else if (message.t === "edits") handleEdits(player, message);
-      else if (message.t === "chest") handleChest(player, message);
-      else if (message.t === "furnace") handleFurnace(player, message);
-      else if (message.t === "attack") handleAttack(player, message);
-      else if (message.t === "pickup") handlePickup(player, message);
-      else if (message.t === "drop") handleDrop(message);
-      else if (message.t === "time") handleTime(message);
+      handlers[message.t]?.(player, message);
     }
 
     function disconnect() {
@@ -341,7 +194,8 @@ export function createMultiplayerRoom({
       closed = true;
       if (players.get(player.id) === player) {
         players.delete(player.id);
-        broadcast({ t: "left", id: player.id });
+        ctx.world?.forgetPlayer(player.id);
+        ctx.broadcast({ t: "left", id: player.id });
         onPresence("left", publicPlayer(player));
       }
     }
@@ -349,25 +203,23 @@ export function createMultiplayerRoom({
     return { receive, disconnect, get id() { return player.id; } };
   }
 
-  function takeSnapshot() {
-    return {
-      version: SNAPSHOT_VERSION,
-      seed: seed.toString(),
-      seq: Number(authority.room_seq(state)),
-      edits: bendEditsToWire(authority.room_edits(state)),
-      chests: bendChestsToWire(authority.room_chests(state)),
-      furnaces: bendFurnacesToWire(authority.room_furnaces(state)),
-      time: worldTime(),
-    };
+  /** One simulation step: the world (while anyone is online) and furnaces. */
+  function tick() {
+    const online = [...players.values()].filter((player) => player.ready && player.pose !== null);
+    worldHandlers.tick(TICK_MS / 1000, worldTime(), online);
+    return containers.tick();
   }
 
   return {
     connect,
     tick,
-    snapshot: takeSnapshot,
+    snapshot: () => roomSnapshot(authority, seed, ctx.state, worldTime(), ctx.world?.persistentState(true) ?? null),
+    /** The simulation state when it changed since the last call (for incremental saves). */
+    simulationState: () => ctx.world?.persistentState() ?? null,
     playerCount: () => players.size,
     worldTime,
     players: () => [...players.values()].map(publicPlayer),
-    counters: () => ({ ...counters }),
+    counters: () => ({ ...ctx.counters }),
+    world: () => ctx.world,
   };
 }

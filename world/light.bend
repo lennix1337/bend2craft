@@ -485,14 +485,25 @@ def edit_matches(edit: Edit, +x: Nat, +y: Nat, +z: Nat) -> Bool:
   Edit{+ex, +ey, +ez, block} = edit
   Bool.and(Bool.and(Nat.is_eq(ex, x), Nat.is_eq(ey, y)), Nat.is_eq(ez, z))
 
+def edit_block(edit: Edit) -> U32:
+  Edit{x, y, z, +block} = edit
+  block
+
+# The first edit of (x, y, z), in one tail-recursive pass that stops there.
+def edit_override.go(
+  edits: List<&2, Edit>, stop: Bool, +x: Nat, +y: Nat, +z: Nat, +found: EditOverride
+) -> EditOverride:
+  match edits stop:
+    case _ True{}:
+      found
+    case Nil{} False{}:
+      found
+    case Con{+head, tail} False{}:
+      +same = edit_matches(head, x, y, z)
+      edit_override.go(tail, same, x, y, z, Bool.pick(EditOverride, same, EditFound{edit_block(head)}, found))
+
 def edit_override(edits: List<&2, Edit>, +x: Nat, +y: Nat, +z: Nat) -> EditOverride:
-  match edits:
-    case Nil{}:
-      EditMissing{}
-    case Con{+head, +tail}:
-      Edit{+ex, +ey, +ez, +block} = head
-      +same = Bool.and(Bool.and(Nat.is_eq(ex, x), Nat.is_eq(ey, y)), Nat.is_eq(ez, z))
-      Bool.pick(EditOverride, same, EditFound{block}, edit_override(tail, x, y, z))
+  edit_override.go(edits, False{}, x, y, z, EditMissing{})
 
 def transparent_block(+block: U32) -> Bool:
   Bool.or(
@@ -545,18 +556,25 @@ def lava_at(edits: List<&2, Edit>, +seed: Nat, point: Point) -> Bool:
   Point{+x, +y, +z} = point
   lava_override(edit_override(edits, x, y, z), seed, point)
 
+# Whether the `remaining` cells from (x, y, z) up are all clear. `blocked` is
+# whether (x, y, z) itself is opaque; the walk stops at the first opaque cell,
+# so a cell under the ground costs one step instead of the whole column.
+def sky_visible.go(
+  +edits: List<&2, Edit>, +seed: Nat, +remaining: Nat, blocked: Bool, +x: Nat, +y: Nat, +z: Nat
+) -> Bool:
+  match remaining blocked:
+    case 0n _:
+      True{}
+    case 1n+p True{}:
+      False{}
+    case 1n+p False{}:
+      +next = Nat.add(y, 1n)
+      sky_visible.go(edits, seed, p, opaque_with_edits(edits, seed, make_point(x, next, z)), x, next, z)
+
 def sky_visible(
   +edits: List<&2, Edit>, +seed: Nat, +remaining: Nat, +x: Nat, +y: Nat, +z: Nat
 ) -> Bool:
-  match remaining:
-    case 0n:
-      True{}
-    case 1n+p:
-      +point = make_point(x, y, z)
-      Bool.and(
-        Bool.not(opaque_with_edits(edits, seed, point)),
-        sky_visible(edits, seed, p, x, Nat.add(y, 1n), z)
-      )
+  sky_visible.go(edits, seed, remaining, opaque_with_edits(edits, seed, make_point(x, y, z)), x, y, z)
 
 def base_light_with_edits(
   +edits: List<&2, Edit>, +seed: Nat, +x: Nat, +y: Nat, +z: Nat
@@ -658,13 +676,20 @@ def light32.keep_edit(edit: Edit, +base_x: Nat, +base_z: Nat) -> Bool:
 
 # Every lookup a chunk cell makes is in its own column, so the edits outside
 # the chunk's columns can never match and are dropped once per chunk.
-def light32.local_edits(edits: List<&2, Edit>, +base_x: Nat, +base_z: Nat) -> List<&2, Edit>:
+# The filters below walk the whole persistent edit list, so they are tail
+# recursive (a loop on the JavaScript target) and keep the list's order.
+def light32.local_edits.go(
+  edits: List<&2, Edit>, +base_x: Nat, +base_z: Nat, +acc: List<&2, Edit>
+) -> List<&2, Edit>:
   match edits:
     case Nil{}:
-      Nil{}
-    case Con{+head, +tail}:
-      +rest = light32.local_edits(tail, base_x, base_z)
-      Bool.pick(List<&2, Edit>, light32.keep_edit(head, base_x, base_z), Con{head, rest}, rest)
+      List.reverse.go(&2, Edit, acc, Nil{})
+    case Con{+head, tail}:
+      light32.local_edits.go(tail, base_x, base_z,
+        Bool.pick(List<&2, Edit>, light32.keep_edit(head, base_x, base_z), Con{head, acc}, acc))
+
+def light32.local_edits(edits: List<&2, Edit>, +base_x: Nat, +base_z: Nat) -> List<&2, Edit>:
+  light32.local_edits.go(edits, base_x, base_z, Nil{})
 
 def light32.put(+index: U32, +value: U32, read: Array<U32> & U32) -> Array<U32>:
   (blocks, current) = read
@@ -785,15 +810,20 @@ def light32.keep_edit_box(edit: Edit, +min_x: Nat, +min_z: Nat, +max_x: Nat, +ma
     Bool.and(Nat.is_ge(z, min_z), Nat.is_le(z, max_z))
   )
 
-def light32.box_edits(
-  edits: List<&2, Edit>, +min_x: Nat, +min_z: Nat, +max_x: Nat, +max_z: Nat
+def light32.box_edits.go(
+  edits: List<&2, Edit>, +min_x: Nat, +min_z: Nat, +max_x: Nat, +max_z: Nat, +acc: List<&2, Edit>
 ) -> List<&2, Edit>:
   match edits:
     case Nil{}:
-      Nil{}
-    case Con{+head, +tail}:
-      +rest = light32.box_edits(tail, min_x, min_z, max_x, max_z)
-      Bool.pick(List<&2, Edit>, light32.keep_edit_box(head, min_x, min_z, max_x, max_z), Con{head, rest}, rest)
+      List.reverse.go(&2, Edit, acc, Nil{})
+    case Con{+head, tail}:
+      light32.box_edits.go(tail, min_x, min_z, max_x, max_z,
+        Bool.pick(List<&2, Edit>, light32.keep_edit_box(head, min_x, min_z, max_x, max_z), Con{head, acc}, acc))
+
+def light32.box_edits(
+  edits: List<&2, Edit>, +min_x: Nat, +min_z: Nat, +max_x: Nat, +max_z: Nat
+) -> List<&2, Edit>:
+  light32.box_edits.go(edits, min_x, min_z, max_x, max_z, Nil{})
 
 # `patch_fields_with_edits` for cells whose columns all lie inside the given
 # (inclusive) box. A cell only ever looks up edits in its own column, so the

@@ -15,6 +15,8 @@ import {
 } from "../web/multiplayer-protocol.js";
 
 const SEED = 1337n;
+// An edit log holds one entry per cell; its order carries no meaning.
+const byCell = (edits) => [...edits].sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
 
 // Protocol shapes -------------------------------------------------------------
 assert.equal(decodeClientMessage("not json"), null);
@@ -99,7 +101,7 @@ assert.equal(alice.last("revert"), undefined);
 // A late joiner receives the whole log.
 const carol = client(room, "Carol");
 assert.equal(carol.last("welcome").seq, 2);
-assert.deepEqual(carol.last("welcome").edits, [[40, 8, 40, 12], [41, 8, 40, 0], [42, 8, 40, 22]]);
+assert.deepEqual(byCell(carol.last("welcome").edits), [[40, 8, 40, 12], [41, 8, 40, 0], [42, 8, 40, 22]]);
 assert.deepEqual(carol.last("welcome").players.map((p) => p.name).sort(), ["Alice", "Bob"]);
 assert.equal(carol.last("welcome").players.find((p) => p.name === "Alice").pose.x, 10.5);
 
@@ -174,14 +176,15 @@ late.handle.disconnect();
 
 // Snapshots resume the same world; a snapshot for another seed is refused.
 const snapshot = room.snapshot();
-assert.deepEqual(snapshot, {
-  version: 2,
+assert.deepEqual({ ...snapshot, edits: byCell(snapshot.edits) }, {
+  version: 3,
   seed: "1337",
   seq: 8,
-  edits: [[40, 8, 40, 12], [41, 8, 40, 0], [42, 8, 40, 22], [30, 9, 30, 0], [31, 9, 31, 26], [33, 9, 33, 11], [34, 9, 33, 11]],
+  edits: byCell([[40, 8, 40, 12], [41, 8, 40, 0], [42, 8, 40, 22], [30, 9, 30, 0], [31, 9, 31, 26], [33, 9, 33, 11], [34, 9, 33, 11]]),
   chests: [{ pos: [31, 9, 31], slots: [[33, 1, 12], ...emptySlots.slice(1)] }],
   furnaces: [{ pos: [34, 9, 33], state: [0, 0, 0, 0, 0, 0, 0, 0] }, { pos: [33, 9, 33], state: [0, 0, 14, 0, 0, 0, 0, 0] }],
   time: 5,
+  simulation: null,
 });
 const resumed = createMultiplayerRoom({ authority: Multiplayer, seed: SEED, now, snapshot: JSON.parse(JSON.stringify(snapshot)) });
 const dave = client(resumed, "Dave");

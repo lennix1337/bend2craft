@@ -1,6 +1,5 @@
 import World from "../world/world.bend";
 import WorldState from "../world/world_state.bend";
-import Structures from "../world/structures.bend";
 import Light from "../world/light.bend";
 import LightDirty from "../world/light-dirty.bend";
 import Entities from "../world/entities.bend";
@@ -12,8 +11,6 @@ import Chests from "../world/chests.bend";
 import Equipment from "../world/equipment.bend";
 import Simulation from "../world/simulation.bend";
 import Experience from "../world/experience.bend";
-import Crops from "../world/crops.bend";
-import Farmland from "../world/farmland.bend";
 import Fluids from "../world/fluids.bend";
 import Fire from "../world/fire.bend";
 import Multiplayer from "../world/multiplayer.bend";
@@ -71,6 +68,7 @@ import {
   lavaContact,
   overlapsPlayer,
   raycast,
+  placePlayer,
   respawnPlayer,
   waterCurrentPush,
 } from "./game-state.js";
@@ -89,6 +87,7 @@ import { MOB_BODY, dropBoxes, faceYaw, mobBoxes, playerBoxes, villagerBoxes } fr
 import { connectMultiplayer, createEntityMirror, createRemotePlayers } from "./multiplayer.js";
 import { NIGHT_DAYLIGHT, daylightForTime } from "./daylight.js";
 import { nightSpawns } from "./mob-spawning.js";
+import { createWorldSimulation, restoreSimulationState } from "./world-simulation.js";
 import { multiplayerUrl, wireEditsToBend, wireFurnaceToBend, wireSlotsToBend } from "./multiplayer-protocol.js";
 import { isHostileKind, mobKind } from "./mob-kinds.js";
 import { createAsyncChunkMeshCache } from "./mesh-cache.js";
@@ -914,6 +913,11 @@ try {
       LightDirty.cells_column(BigInt(stencilCoordinate(x)), BigInt(y), BigInt(stencilCoordinate(z))),
       CHUNK_SIZE,
     ),
+    affectedLightSelfCells: (x, y, z) => canonicalCells(
+      LightDirty.cells_self(BigInt(stencilCoordinate(x)), BigInt(y), BigInt(stencilCoordinate(z))),
+      CHUNK_SIZE,
+    ),
+    lightNeutral: (previous, next) => LightDirty.light_neutral(previous, next),
     lightCellCoordinate: worldCoordinate,
     invalidateLightFields,
     requestChunk: (chunkX, chunkZ, edits, version) => {
@@ -936,6 +940,11 @@ try {
       BigInt(y),
       BigInt(storageCoordinate(z)),
       value,
+    ),
+    // Fluid, fire and crop steps change many cells at once: one pass over the log.
+    applyEdits: (edits, changes) => WorldState.set_many(
+      edits,
+      wireEditsToBend(changes.map((change) => [storageCoordinate(change.x), change.y, storageCoordinate(change.z), change.value])),
     ),
   });
   const { inside, blockAt, lightAt, setBlock: rawSetBlock, setBlocks: rawSetBlocks } = world;
@@ -976,55 +985,27 @@ try {
     terrainImmediateDirty = terrainImmediateDirty || changed;
     return changed;
   };
-  let simulationState = savedGame?.simulation?.$ === "Simulation"
-    && savedGame.simulation.crops?.$ === "State"
-    && savedGame.simulation.farmland?.$ === "State"
-    ? savedGame.simulation
-    : Simulation.empty();
-  let cropState = savedGame?.crops?.$ === "State"
-    ? savedGame.crops
-    : Simulation.sim_crops(simulationState);
-  let farmlandState = savedGame?.farmland?.$ === "State"
-    ? savedGame.farmland
-    : Simulation.sim_farmland(simulationState);
-  function normalizeFluidState(value) {
-    if (value?.$ !== "State") return Fluids.empty();
-    const flows = [];
-    for (let node = value.flows; node?.$ === "Con"; node = node.tail) {
-      const flow = node.head;
-      flows.push({
-        $: "Flow",
-        x: flow.x,
-        y: flow.y,
-        z: flow.z,
-        level: flow.level,
-        source: flow.source ?? false,
-        block: flow.block ?? 7,
-      });
-    }
-    let list = { $: "Nil" };
-    for (let index = flows.length - 1; index >= 0; index -= 1) {
-      list = { $: "Con", head: flows[index], tail: list };
-    }
-    return { $: "State", flows: list };
-  }
-  let fluidState = savedGame?.fluids?.$ === "State"
-    ? Fluids.limit(normalizeFluidState(savedGame.fluids))
-    : Fluids.empty();
-  let fireState = savedGame?.fire?.$ === "State"
-    ? savedGame.fire
-    : Fire.empty();
-  simulationState = Simulation.with_crops(simulationState, cropState);
-  simulationState = Simulation.with_farmland(simulationState, farmlandState);
-  world.pinChunk(
-    Number(Structures.village_origin_x(SEED)) / CHUNK_SIZE | 0,
-    Number(Structures.village_origin_z(SEED)) / CHUNK_SIZE | 0,
-  );
-  simulationState = Simulation.pin(
-    simulationState,
-    BigInt(Number(Structures.village_origin_x(SEED)) / CHUNK_SIZE | 0),
-    BigInt(Number(Structures.village_origin_z(SEED)) / CHUNK_SIZE | 0),
-  );
+  // Fluids, fire, crops and farmland: the shared simulation module, run over
+  // this browser's chunk cache. Its block changes go through setBlocks like
+  // any other edit, so the mesh and the light follow them.
+  const worldSimulation = createWorldSimulation({
+    seed: SEED,
+    chunkSize: CHUNK_SIZE,
+    state: restoreSimulationState(savedGame),
+    world: {
+      blockAt,
+      inside,
+      isActive: (x, z) => world.isActive(x, z),
+      setBlocks: (changes) => {
+        setBlocks(changes);
+        for (const change of changes) terrainMeshCache?.invalidateBlock(change.x, change.z);
+      },
+      pinChunk: (chunkX, chunkZ) => world.pinChunk(chunkX, chunkZ),
+      unpinChunk: (chunkX, chunkZ) => world.unpinChunk(chunkX, chunkZ),
+    },
+    keepChunk: (chunkX, chunkZ) => hasFurnaceInChunk(chunkX, chunkZ),
+  });
+  worldSimulation.pinStored();
 
   let blockCount = 0;
 
@@ -1809,14 +1790,9 @@ try {
 
   function pinStoredFurnaces() {
     for (let node = Furnaces.entries(furnaceWorldState); node?.$ === "Con"; node = node.tail) {
-      world.pinChunk(
+      worldSimulation.pin(
         Math.floor(Number(node.head.x) / CHUNK_SIZE),
         Math.floor(Number(node.head.z) / CHUNK_SIZE),
-      );
-      simulationState = Simulation.pin(
-        simulationState,
-        BigInt(Math.floor(Number(node.head.x) / CHUNK_SIZE)),
-        BigInt(Math.floor(Number(node.head.z) / CHUNK_SIZE)),
       );
     }
   }
@@ -1828,323 +1804,97 @@ try {
     return false;
   }
 
-  function pinStoredCrops() {
-    for (let node = Crops.entries(cropState); node?.$ === "Con"; node = node.tail) {
-      pinCropChunk(Number(node.head.x), Number(node.head.z));
-    }
-  }
-
-  function pinStoredFarmland() {
-    for (let node = Farmland.entries(farmlandState); node?.$ === "Con"; node = node.tail) {
-      pinCropChunk(Number(node.head.x), Number(node.head.z));
-    }
-  }
-
-  function hasCropInChunk(chunkX, chunkZ) {
-    for (let node = Crops.entries(cropState); node?.$ === "Con"; node = node.tail) {
-      if (Math.floor(Number(node.head.x) / CHUNK_SIZE) === chunkX && Math.floor(Number(node.head.z) / CHUNK_SIZE) === chunkZ) return true;
-    }
-    return false;
-  }
-
-  function hasFarmlandInChunk(chunkX, chunkZ) {
-    for (let node = Farmland.entries(farmlandState); node?.$ === "Con"; node = node.tail) {
-      if (Math.floor(Number(node.head.x) / CHUNK_SIZE) === chunkX && Math.floor(Number(node.head.z) / CHUNK_SIZE) === chunkZ) return true;
-    }
-    return false;
-  }
-
-  function pinCropChunk(x, z) {
-    const chunkX = Math.floor(x / CHUNK_SIZE);
-    const chunkZ = Math.floor(z / CHUNK_SIZE);
-    world.pinChunk(chunkX, chunkZ);
-    simulationState = Simulation.pin(simulationState, BigInt(chunkX), BigInt(chunkZ));
-  }
-
-  function releaseUnusedSimulationChunk(chunkX, chunkZ) {
-    const villageChunkX = Math.floor(Number(Structures.village_origin_x(SEED)) / CHUNK_SIZE);
-    const villageChunkZ = Math.floor(Number(Structures.village_origin_z(SEED)) / CHUNK_SIZE);
-    if (chunkX === villageChunkX && chunkZ === villageChunkZ) return;
-    if (hasFurnaceInChunk(chunkX, chunkZ) || hasCropInChunk(chunkX, chunkZ) || hasFarmlandInChunk(chunkX, chunkZ)) return;
-    world.unpinChunk(chunkX, chunkZ);
-    simulationState = Simulation.unpin(simulationState, BigInt(chunkX), BigInt(chunkZ));
-  }
-
-  function syncCropBlocks() {
-    let changed = false;
-    for (let node = Crops.entries(cropState); node?.$ === "Con"; node = node.tail) {
-      const crop = node.head;
-      const x = Number(crop.x);
-      const y = Number(crop.y);
-      const z = Number(crop.z);
-      const block = Number(Crops.crop_block(crop));
-      if (Number(blockAt(x, y, z) ?? 0) === block) continue;
-      setBlock(x, y, z, block);
-      terrainMeshCache.invalidateBlock(x, z);
-      changed = true;
-    }
-    return changed;
-  }
-
-  function syncFarmlandBlocks() {
-    let changed = false;
-    for (let node = Farmland.entries(farmlandState); node?.$ === "Con"; node = node.tail) {
-      const plot = node.head;
-      const x = Number(plot.x);
-      const y = Number(plot.y);
-      const z = Number(plot.z);
-      if (Number(blockAt(x, y, z) ?? 0) === 20) continue;
-      setBlock(x, y, z, 20);
-      terrainMeshCache.invalidateBlock(x, z);
-      changed = true;
-    }
-    return changed;
-  }
-
-  function waterSourcesForFarmland() {
-    let waters = { $: "Nil" };
-    for (let node = Farmland.entries(farmlandState); node?.$ === "Con"; node = node.tail) {
-      const plot = node.head;
-      const x = Number(plot.x);
-      const y = Number(plot.y);
-      const z = Number(plot.z);
-      for (let dx = -4; dx <= 4; dx += 1) {
-        for (let dz = -4; dz <= 4; dz += 1) {
-          const waterX = x + dx;
-          const waterZ = z + dz;
-          if (!inside(waterX, y, waterZ)) continue;
-          if (blockAt(waterX, y, waterZ) !== 7 && blockAt(waterX, y + 1, waterZ) !== 7) continue;
-          waters = {
-            $: "Con",
-            head: { $: "Water", x: BigInt(waterX), z: BigInt(waterZ) },
-            tail: waters,
-          };
-        }
-      }
-    }
-    return waters;
-  }
-
-  function fluidSamples(list) {
-    const unique = new Map();
-    for (let node = list; node?.$ === "Con"; node = node.tail) {
-      const flow = node.head;
-      const x = Number(flow.x);
-      const y = Number(flow.y);
-      const z = Number(flow.z);
-      for (const [sampleX, sampleY, sampleZ] of [
-        [x, y - 1, z],
-        [x - 1, y, z],
-        [x + 1, y, z],
-        [x, y, z - 1],
-        [x, y, z + 1],
-      ]) {
-        if (!inside(sampleX, sampleY, sampleZ) || !world.isActive(sampleX, sampleZ)) continue;
-        const key = `${sampleX},${sampleY},${sampleZ}`;
-        if (!unique.has(key)) {
-          unique.set(key, Fluids.sample(
-            BigInt(sampleX),
-            BigInt(sampleY),
-            BigInt(sampleZ),
-            Number(blockAt(sampleX, sampleY, sampleZ) ?? 1),
-          ));
-        }
-      }
-    }
-    let samples = { $: "Nil" };
-    for (const sample of [...unique.values()].reverse()) {
-      samples = { $: "Con", head: sample, tail: samples };
-    }
-    return samples;
-  }
-
-  function isFluidBlock(block) {
-    return block === 7 || block === 21;
-  }
-
-  function isTransientBlock(block) {
-    return isFluidBlock(block) || block === 24;
-  }
-
-  function fireSamples(list, fluids = { $: "Nil" }) {
-    const unique = new Map();
-    for (const sourceList of [list, fluids]) {
-      for (let node = sourceList; node?.$ === "Con"; node = node.tail) {
-      const cell = node.head;
-      const x = Number(cell.x);
-      const y = Number(cell.y);
-      const z = Number(cell.z);
-      for (let dy = -1; dy <= 1; dy += 1) {
-        for (let dx = -1; dx <= 1; dx += 1) {
-          for (let dz = -1; dz <= 1; dz += 1) {
-            const sampleX = x + dx;
-            const sampleY = y + dy;
-            const sampleZ = z + dz;
-            if (!inside(sampleX, sampleY, sampleZ) || !world.isActive(sampleX, sampleZ)) continue;
-            const key = `${sampleX},${sampleY},${sampleZ}`;
-            if (!unique.has(key)) {
-              unique.set(key, Fire.sample(
-                BigInt(sampleX),
-                BigInt(sampleY),
-                BigInt(sampleZ),
-                Number(blockAt(sampleX, sampleY, sampleZ) ?? 1),
-              ));
-            }
-          }
-        }
-      }
-    }
-    }
-    let samples = { $: "Nil" };
-    for (const sample of [...unique.values()].reverse()) {
-      samples = { $: "Con", head: sample, tail: samples };
-    }
-    return samples;
-  }
-
   function tickFluids() {
-    const current = Fluids.state_flows(fluidState);
-    const samples = fluidSamples(current);
-    const previous = fluidState;
-    const currentFire = Fire.state_cells(fireState);
-    const previousFire = fireState;
-    const fireSampleList = fireSamples(currentFire, current);
-    const reactionEdits = Fluids.reactions(fluidState, samples);
-    const reactedState = Fluids.react(fluidState, samples);
-    const advanced = Simulation.tick_with_fluids_and_fire(
-      simulationState,
-      1n,
-      waterSourcesForFarmland(),
-      reactedState,
-      samples,
-      fireState,
-      fireSampleList,
+    return worldSimulation.tick().length > 0;
+  }
+
+  // Multiplayer world interactions: the server's simulation performs them
+  // (within reach of this player's pose) and its edits arrive as server
+  // batches; this client only settles the inventory from the answer.
+  function sharedInteract(op, x, y, z, settle = () => {}) {
+    multiplayer.interactRequest(op, [storageCoordinate(x), y, storageCoordinate(z)]).then(
+      (result) => {
+        settle(result);
+        refreshInventoryUi();
+        updateHud();
+        saveGame();
+      },
+      () => setInventoryMessage("The server did not answer."),
     );
-    simulationState = Simulation.tick_simulation(advanced);
-    fluidState = Simulation.tick_fluids(advanced);
-    fireState = Simulation.tick_fire(advanced);
-    cropState = Simulation.sim_crops(simulationState);
-    farmlandState = Simulation.sim_farmland(simulationState);
-    const edits = Fluids.changes(previous, fluidState);
-    const fireEdits = Fire.changes(previousFire, fireState);
-    const batch = [];
-    for (let node = edits; node?.$ === "Con"; node = node.tail) {
-      const edit = node.head;
-      const x = Number(edit.x);
-      const y = Number(edit.y);
-      const z = Number(edit.z);
-      const value = Number(edit.block);
-      if (!inside(x, y, z) || !world.isActive(x, z)) continue;
-      const currentBlock = blockAt(x, y, z);
-      if (value !== 0 && (isFluidBlock(value) || value === 24) && currentBlock !== 0) continue;
-      if (value === 0 && !isTransientBlock(currentBlock)) continue;
-      batch.push({ x, y, z, value });
-    }
-    for (let node = reactionEdits; node?.$ === "Con"; node = node.tail) {
-      const edit = node.head;
-      const x = Number(edit.x);
-      const y = Number(edit.y);
-      const z = Number(edit.z);
-      if (!inside(x, y, z) || !world.isActive(x, z)) continue;
-      batch.push({ x, y, z, value: Number(edit.block) });
-    }
-    for (let node = fireEdits; node?.$ === "Con"; node = node.tail) {
-      const edit = node.head;
-      const x = Number(edit.x);
-      const y = Number(edit.y);
-      const z = Number(edit.z);
-      const value = Number(edit.block);
-      if (!inside(x, y, z) || !world.isActive(x, z)) continue;
-      const currentBlock = blockAt(x, y, z);
-      if (value !== 0 && value === 24 && currentBlock !== 0) continue;
-      if (value === 0 && currentBlock !== 24) continue;
-      batch.push({ x, y, z, value });
-    }
-    if (batch.length > 0) {
-      setBlocks(batch);
-      for (const change of batch) {
-        terrainMeshCache.invalidateBlock(change.x, change.z);
-      }
-    }
-    return batch.length > 0;
+    return true;
   }
 
   function seedWaterAt(x, y, z, level = 8) {
-    if (!inside(x, y, z) || !world.isActive(x, z) || blockAt(x, y, z) !== 0) return false;
-    fluidState = Fluids.seed(fluidState, BigInt(x), BigInt(y), BigInt(z), Number(level));
-    setBlock(x, y, z, 7);
-    terrainMeshCache.invalidateBlock(x, z);
+    if (multiplayer !== null) return sharedInteract("water", x, y, z);
+    if (!worldSimulation.seedFluid(7, x, y, z, level)) return false;
     saveGame();
     rebuildMesh();
     return true;
   }
 
   function seedLavaAt(x, y, z, level = 8) {
-    if (!inside(x, y, z) || !world.isActive(x, z) || blockAt(x, y, z) !== 0) return false;
-    fluidState = Fluids.seed_lava(fluidState, BigInt(x), BigInt(y), BigInt(z), Number(level));
-    setBlock(x, y, z, 21);
-    terrainMeshCache.invalidateBlock(x, z);
+    if (multiplayer !== null) return sharedInteract("lava", x, y, z);
+    if (!worldSimulation.seedFluid(21, x, y, z, level)) return false;
     saveGame();
     rebuildMesh();
     return true;
   }
 
   function igniteFireAt(x, y, z) {
-    if (!inside(x, y, z) || !world.isActive(x, z) || blockAt(x, y, z) !== 0) return false;
-    fireState = Fire.ignite(fireState, BigInt(x), BigInt(y), BigInt(z));
-    setBlock(x, y, z, 24);
-    terrainMeshCache.invalidateBlock(x, z);
+    if (multiplayer !== null) return sharedInteract("fire", x, y, z);
+    if (!worldSimulation.ignite(x, y, z)) return false;
+    saveGame();
+    rebuildMesh();
+    return true;
+  }
+
+  function collectFluidAt(x, y, z, block, fill) {
+    const slot = furnaceSlot("empty_bucket");
+    if (slot === -1 || blockAt(x, y, z) !== block) return false;
+    if (multiplayer !== null) {
+      return sharedInteract("collect", x, y, z, (result) => {
+        if (!result.ok) return;
+        const empty = furnaceSlot("empty_bucket");
+        if (empty !== -1) (result.block === 21 ? fillLavaBucket : fillBucket)(inventory, empty);
+      });
+    }
+    if (!fill(inventory, slot)) return false;
+    worldSimulation.removeFluid(x, y, z);
     saveGame();
     rebuildMesh();
     return true;
   }
 
   function collectWaterAt(x, y, z) {
-    const slot = furnaceSlot("empty_bucket");
-    if (slot === -1 || blockAt(x, y, z) !== 7) return false;
-    if (!fillBucket(inventory, slot)) return false;
-    fluidState = Fluids.remove(fluidState, BigInt(x), BigInt(y), BigInt(z));
-    setBlock(x, y, z, 0);
-    terrainMeshCache.invalidateBlock(x, z);
-    saveGame();
-    rebuildMesh();
-    return true;
+    return collectFluidAt(x, y, z, 7, fillBucket);
   }
 
   function collectLavaAt(x, y, z) {
-    const slot = furnaceSlot("empty_bucket");
-    if (slot === -1 || blockAt(x, y, z) !== 21) return false;
-    if (!fillLavaBucket(inventory, slot)) return false;
-    fluidState = Fluids.remove(fluidState, BigInt(x), BigInt(y), BigInt(z));
-    setBlock(x, y, z, 0);
-    terrainMeshCache.invalidateBlock(x, z);
+    return collectFluidAt(x, y, z, 21, fillLavaBucket);
+  }
+
+  function placeFluidAt(x, y, z, block, bucket, empty) {
+    const slot = furnaceSlot(bucket);
+    if (slot === -1 || !inside(x, y, z) || blockAt(x, y, z) !== 0 || overlapsPlayer(player, x, y, z)) return false;
+    if (multiplayer !== null) {
+      return sharedInteract(block === 21 ? "lava" : "water", x, y, z, (result) => {
+        const full = furnaceSlot(bucket);
+        if (result.ok && full !== -1) empty(inventory, full);
+      });
+    }
+    if (!world.isActive(x, z) || !empty(inventory, slot)) return false;
+    worldSimulation.seedFluid(block, x, y, z, 8);
     saveGame();
     rebuildMesh();
     return true;
   }
 
   function placeWaterAt(x, y, z) {
-    const slot = furnaceSlot("water_bucket");
-    if (slot === -1 || !inside(x, y, z) || blockAt(x, y, z) !== 0 || overlapsPlayer(player, x, y, z)) return false;
-    if (!emptyBucket(inventory, slot)) return false;
-    fluidState = Fluids.seed(fluidState, BigInt(x), BigInt(y), BigInt(z), 8);
-    setBlock(x, y, z, 7);
-    terrainMeshCache.invalidateBlock(x, z);
-    saveGame();
-    rebuildMesh();
-    return true;
+    return placeFluidAt(x, y, z, 7, "water_bucket", emptyBucket);
   }
 
   function placeLavaAt(x, y, z) {
-    const slot = furnaceSlot("lava_bucket");
-    if (slot === -1 || !inside(x, y, z) || blockAt(x, y, z) !== 0 || overlapsPlayer(player, x, y, z)) return false;
-    if (!emptyLavaBucket(inventory, slot)) return false;
-    fluidState = Fluids.seed_lava(fluidState, BigInt(x), BigInt(y), BigInt(z), 8);
-    setBlock(x, y, z, 21);
-    terrainMeshCache.invalidateBlock(x, z);
-    saveGame();
-    rebuildMesh();
-    return true;
+    return placeFluidAt(x, y, z, 21, "lava_bucket", emptyLavaBucket);
   }
 
   // Spawn reads the time of day, so resolve it before the one-shot mob spawn
@@ -2157,10 +1907,7 @@ try {
     furnaceWorldState = multiplayer.furnaces.reduce((state, furnace) => mirrorServerFurnace(state, furnace), Furnaces.empty());
   }
   pinStoredFurnaces();
-  pinStoredFarmland();
-  pinStoredCrops();
-  syncCropBlocks();
-  syncFarmlandBlocks();
+  worldSimulation.syncBlocks();
 
   function mobViews(list) {
     const views = [];
@@ -3416,7 +3163,7 @@ try {
   function tickFurnace() {
     // A multiplayer server ticks its furnaces and sends the result.
     if (multiplayer === null) furnaceWorldState = Furnaces.tick_world(furnaceWorldState);
-    if (syncCropBlocks()) simulationTerrainDirty = true;
+    if (multiplayer === null && worldSimulation.syncBlocks().length > 0) simulationTerrainDirty = true;
     if (furnaceOpen) updateFurnaceStatus();
     return true;
   }
@@ -3719,12 +3466,7 @@ try {
     if (!placement.ok) return false;
     furnaceWorldState = nextFurnaces;
     chestWorldState = nextChests;
-    if (block === 11) {
-      const chunkX = Math.floor(x / CHUNK_SIZE);
-      const chunkZ = Math.floor(z / CHUNK_SIZE);
-      world.pinChunk(chunkX, chunkZ);
-      simulationState = Simulation.pin(simulationState, BigInt(chunkX), BigInt(chunkZ));
-    }
+    if (block === 11) worldSimulation.pin(Math.floor(x / CHUNK_SIZE), Math.floor(z / CHUNK_SIZE));
     setBlock(x, y, z, Number(placement.edit.block));
     audio.play("place");
     // A placed block puffs its own colour off the top face, tighter and slower
@@ -3750,14 +3492,17 @@ try {
 
   function tillBlockAt(x, y, z) {
     if (itemId(selectedItem(inventory, selectedSlot)) !== "wooden_hoe") return false;
-    const ground = Number(blockAt(x, y, z) ?? 0);
-    if (ground !== 2 && ground !== 3) return false;
-    const added = Farmland.add(farmlandState, BigInt(x), BigInt(y), BigInt(z));
-    farmlandState = added.state;
-    simulationState = Simulation.with_farmland(simulationState, farmlandState);
-    pinCropChunk(x, z);
-    setBlock(x, y, z, 20);
-    terrainMeshCache.invalidateBlock(x, z);
+    if (multiplayer !== null) {
+      const ground = blockAt(x, y, z);
+      if (ground !== 2 && ground !== 3) return false;
+      const hoeSlot = selectedSlot;
+      return sharedInteract("till", x, y, z, (result) => {
+        if (!result.ok) return;
+        useTool(inventory, hoeSlot);
+        setInventoryMessage("Soil tilled into farmland.");
+      });
+    }
+    if (!worldSimulation.till(x, y, z)) return false;
     useTool(inventory, selectedSlot);
     setInventoryMessage("Soil tilled into farmland.");
     return true;
@@ -3765,24 +3510,24 @@ try {
 
   function placeCropAt(x, y, z) {
     if (itemId(selectedItem(inventory, selectedSlot)) !== "wheat_seeds") return false;
-    const ground = Number(blockAt(x, y - 1, z) ?? 0);
-    const result = Crops.plant(
-      cropState,
-      BigInt(x),
-      BigInt(y),
-      BigInt(z),
-      ground,
-      Number(blockAt(x, y, z) ?? 0),
-    );
-    if (!result.ok || !consume(inventory, selectedSlot)) {
+    if (multiplayer !== null) {
+      return sharedInteract("plant", x, y, z, (result) => {
+        const seeds = inventory.findIndex((slot) => itemId(slot) === "wheat_seeds");
+        if (result.ok && seeds !== -1) {
+          consume(inventory, seeds);
+          setInventoryMessage("Wheat planted.");
+        } else if (!result.ok) {
+          setInventoryMessage("Seeds need an empty block above hydrated farmland.");
+        }
+      });
+    }
+    // The seed is spent only when the crop takes.
+    const trial = inventory.map((slot) => ({ ...slot }));
+    if (!consume(trial, selectedSlot) || !worldSimulation.plant(x, y, z)) {
       setInventoryMessage("Seeds need an empty block above hydrated farmland.");
       return false;
     }
-    cropState = result.state;
-    simulationState = Simulation.with_crops(simulationState, cropState);
-    pinCropChunk(x, z);
-    setBlock(x, y, z, 16);
-    terrainMeshCache.invalidateBlock(x, z);
+    inventory.splice(0, inventory.length, ...trial);
     setInventoryMessage("Wheat planted.");
     return true;
   }
@@ -3796,48 +3541,28 @@ try {
   }
 
   function harvestCropAt(x, y, z) {
-    const result = Crops.harvest(cropState, BigInt(x), BigInt(y), BigInt(z));
-    if (!result.ok) return false;
-    if (!collectCropHarvest(result)) {
-      setInventoryMessage("Make room for seeds and wheat first.");
-      return false;
+    if (multiplayer !== null) {
+      return sharedInteract("harvest", x, y, z, (result) => {
+        if (!result.ok) return;
+        // Whatever does not fit lands at the player's feet.
+        if (!collectItem(inventory, "wheat_seeds", Number(result.seeds))) dropAtPlayer(ITEM_IDS.wheat_seeds, Number(result.seeds));
+        if (!collectItem(inventory, "wheat", Number(result.wheat))) dropAtPlayer(ITEM_IDS.wheat, Number(result.wheat));
+        setInventoryMessage("Wheat harvested.");
+      });
     }
-    cropState = result.state;
-    simulationState = Simulation.with_crops(simulationState, cropState);
-    setBlock(x, y, z, 0);
-    terrainMeshCache.invalidateBlock(x, z);
-    releaseUnusedSimulationChunk(Math.floor(x / CHUNK_SIZE), Math.floor(z / CHUNK_SIZE));
+    const result = worldSimulation.harvest(x, y, z, collectCropHarvest);
+    if (result.refused) setInventoryMessage("Make room for seeds and wheat first.");
+    if (!result.ok) return false;
     setInventoryMessage("Wheat harvested.");
     return true;
   }
 
   function cropViews() {
-    const views = [];
-    for (let node = Crops.entries(cropState); node?.$ === "Con"; node = node.tail) {
-      const crop = node.head;
-      views.push({
-        x: Number(crop.x),
-        y: Number(crop.y),
-        z: Number(crop.z),
-        stage: Number(crop.stage),
-        age: Number(crop.age),
-      });
-    }
-    return views;
+    return worldSimulation.cropViews();
   }
 
   function farmlandViews() {
-    const views = [];
-    for (let node = Farmland.entries(farmlandState); node?.$ === "Con"; node = node.tail) {
-      const plot = node.head;
-      views.push({
-        x: Number(plot.x),
-        y: Number(plot.y),
-        z: Number(plot.z),
-        moisture: Number(plot.moisture),
-      });
-    }
-    return views;
+    return worldSimulation.farmlandViews();
   }
 
   let miningState = null;
@@ -3895,24 +3620,14 @@ try {
     // it used to fire from the middle of the display, so a block mined off
     // screen looked identical to one mined under the crosshair.
     emitBlockDebris(vfx, x + 0.5, y + 0.5, z + 0.5, hexToRgb(itemColor({ block: removedBlock })), 12, 0.9);
-    if (isCropBlock(removedBlock)) {
-      cropState = Crops.remove(cropState, BigInt(x), BigInt(y), BigInt(z));
-      simulationState = Simulation.with_crops(simulationState, cropState);
-      releaseUnusedSimulationChunk(Math.floor(x / CHUNK_SIZE), Math.floor(z / CHUNK_SIZE));
-    }
-    if (removedBlock === 20) {
-      farmlandState = Farmland.remove(farmlandState, BigInt(x), BigInt(y), BigInt(z));
-      simulationState = Simulation.with_farmland(simulationState, farmlandState);
-      releaseUnusedSimulationChunk(Math.floor(x / CHUNK_SIZE), Math.floor(z / CHUNK_SIZE));
-    }
+    worldSimulation.blockChanged(x, y, z, removedBlock, Number(mining.edit.block));
     invalidateVillagerPath(x, y, z);
     terrainMeshCache.invalidateBlock(x, z);
     if (removedBlock === 11) {
       const removed = Furnaces.remove(furnaceWorldState, BigInt(x), BigInt(y), BigInt(z));
       furnaceWorldState = removed.world;
       if (!hasFurnaceInChunk(Math.floor(x / CHUNK_SIZE), Math.floor(z / CHUNK_SIZE))) {
-        world.unpinChunk(Math.floor(x / CHUNK_SIZE), Math.floor(z / CHUNK_SIZE));
-        simulationState = Simulation.unpin(simulationState, BigInt(Math.floor(x / CHUNK_SIZE)), BigInt(Math.floor(z / CHUNK_SIZE)));
+        worldSimulation.releaseChunk(Math.floor(x / CHUNK_SIZE), Math.floor(z / CHUNK_SIZE));
       }
       if (sameFurnacePosition(activeFurnace, x, y, z)) {
         activeFurnace = null;
@@ -4218,7 +3933,7 @@ try {
       villagerPathWorkerResponses: villagerPathWorkerResponses,
       villagerPathWorkerRejects: villagerPathWorkerRejects,
       villagerPathPending,
-      simulationTime: Number(Simulation.time(simulationState)),
+      simulationTime: Number(Simulation.time(worldSimulation.simulation)),
       mobs: mobs.filter((mob) => mob.alive).length,
       villagers: villagers.length,
       drops: drops.length,
@@ -4258,11 +3973,11 @@ try {
         craftingGrid: craftingGrid.map((item) => ({ ...item })),
         furnaces: furnaceWorldState,
         chests: chestWorldState,
-        crops: cropState,
-        farmland: farmlandState,
-        fluids: fluidState,
-        fire: fireState,
-        simulation: simulationState,
+        crops: worldSimulation.crops,
+        farmland: worldSimulation.farmland,
+        fluids: worldSimulation.fluids,
+        fire: worldSimulation.fire,
+        simulation: worldSimulation.simulation,
         entities: packEntityState(mobDomainState, dropDomainState),
         xp: xpState,
         villagers: villagerDomainState,
@@ -5208,8 +4923,8 @@ try {
       get activeChunks() { return world.activeChunkCount(); },
       get pinnedChunks() { return world.pinnedChunkCount(); },
       get pendingChunks() { return world.pendingChunkCount(); },
-      get simulationTime() { return Number(Simulation.time(simulationState)); },
-      get simulationChunks() { return Number(Simulation.pinned_count(simulationState)); },
+      get simulationTime() { return Number(Simulation.time(worldSimulation.simulation)); },
+      get simulationChunks() { return Number(Simulation.pinned_count(worldSimulation.simulation)); },
       workerCount: chunkWorkers.length,
       get workerRequests() { return workerRequestCount; },
       get workerResponses() { return workerResponseCount; },
@@ -5276,7 +4991,7 @@ try {
     getFarmland: farmlandViews,
     getFluids: () => {
       const flows = [];
-      for (let node = Fluids.state_flows(fluidState); node?.$ === "Con"; node = node.tail) {
+      for (let node = Fluids.state_flows(worldSimulation.fluids); node?.$ === "Con"; node = node.tail) {
         flows.push({
           x: Number(node.head.x),
           y: Number(node.head.y),
@@ -5289,7 +5004,7 @@ try {
     },
     getFire: () => {
       const cells = [];
-      for (let node = Fire.state_cells(fireState); node?.$ === "Con"; node = node.tail) {
+      for (let node = Fire.state_cells(worldSimulation.fire); node?.$ === "Con"; node = node.tail) {
         cells.push({
           x: Number(node.head.x),
           y: Number(node.head.y),
@@ -5538,7 +5253,7 @@ try {
       footstepTimer = 0;
     }
     if (isInWater(world, player)) {
-      const [pushX, pushZ] = waterCurrentPush(Fluids.take(64n, Fluids.state_flows(fluidState)), player.x, player.y, player.z);
+      const [pushX, pushZ] = waterCurrentPush(Fluids.take(64n, Fluids.state_flows(worldSimulation.fluids)), player.x, player.y, player.z);
       if (pushX !== 0 || pushZ !== 0) {
         player.x += pushX * dt;
         player.z += pushZ * dt;
@@ -5587,7 +5302,8 @@ try {
       stepDrops(dt);
     }
     collectNearbyDrops();
-    if (tickFluids()) simulationTerrainDirty = true;
+    // A multiplayer server simulates fluids, fire, crops and villagers.
+    if (multiplayer === null && tickFluids()) simulationTerrainDirty = true;
     if (lavaContact(world, player)) applyLavaDamage(player, dt);
     nightSpawnTimer += dt;
     if (nightSpawnTimer >= 5) {
@@ -5603,7 +5319,7 @@ try {
       }
     }
     villagerSimulationSteps += 1;
-    if (villagerSimulationSteps >= 5) {
+    if (villagerSimulationSteps >= 5 && multiplayer === null) {
       villagerSimulationSteps = 0;
       if (updateVillagers(1.0)) simulationTerrainDirty = true;
     }
@@ -5704,23 +5420,19 @@ try {
   // request in flight for them is re-requested with the new log.
   function applyServerEdits(wireEdits, fromSelf = false) {
     const changes = [];
-    const touched = [];
-    let allLoaded = true;
+    const unloaded = [];
     for (const [storedX, y, storedZ, value] of wireEdits) {
       const x = worldCoordinate(storedX);
       const z = worldCoordinate(storedZ);
-      touched.push([x, z]);
-      if (!world.isLoaded(x, z)) {
-        allLoaded = false;
-        continue;
-      }
-      if (inside(x, y, z) && blockAt(x, y, z) !== value) changes.push({ x, y, z, value });
+      if (!inside(x, y, z)) continue;
+      if (!world.isLoaded(x, z)) unloaded.push({ x, y, z, value });
+      else if (blockAt(x, y, z) !== value) changes.push({ x, y, z, value });
     }
     // Our own batch, already predicted everywhere it is loaded: nothing moves.
-    if (fromSelf && allLoaded && changes.length === 0) return false;
+    if (fromSelf && unloaded.length === 0 && changes.length === 0) return false;
     const previous = changes.map((change) => blockAt(change.x, change.y, change.z));
     const nextEdits = Multiplayer.merge(wireEditsToBend(wireEdits), world.getEdits());
-    if (!world.mergeEdits(nextEdits, changes, touched)) return false;
+    if (!world.mergeEdits(nextEdits, changes, unloaded)) return false;
     changes.forEach((change, index) => {
       dropGroundCache?.invalidate(change.x, change.z);
       if (previous[index] !== 0) hiddenTerrainBlocks.add(`${change.x},${change.y},${change.z}`);
@@ -5804,6 +5516,20 @@ try {
     multiplayer.on("entities", (message) => {
       const now = performance.now();
       entityMirror.push(message, now);
+      if (Array.isArray(message.villagers)) {
+        let list = { $: "Nil" };
+        for (let index = message.villagers.length - 1; index >= 0; index -= 1) {
+          const [id, profession, vx, vy, vz, homeX, homeZ, resting] = message.villagers[index];
+          list = {
+            $: "Con",
+            head: { $: "Villager", id: BigInt(id), profession, x: vx, y: vy, z: vz, home_x: BigInt(homeX), home_z: BigInt(homeZ), resting: resting === 1 },
+            tail: list,
+          };
+        }
+        villagerDomainState = list;
+        villagers = villagerViews(villagerDomainState);
+        if (Number.isInteger(message.villagerTick)) villagerTick = message.villagerTick;
+      }
       // The frame blends positions; this keeps a paused client current too.
       mobs = entityMirror.mobs(now);
       drops = entityMirror.drops();
@@ -5816,6 +5542,9 @@ try {
       audio.play("hurt");
       if (!isPlayerAlive(player)) showDeath();
     });
+    // The server refused a move (too fast, or into a block): back to the last
+    // pose it accepted.
+    multiplayer.on("correct", (message) => placePlayer(player, message.x, message.y, message.z));
     multiplayer.on("furnaces", (message) => message.furnaces.forEach(applyServerFurnace));
     multiplayer.on("chest", (chest) => {
       chestWorldState = mirrorServerChest(chestWorldState, chest);

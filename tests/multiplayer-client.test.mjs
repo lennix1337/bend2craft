@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import * as http from "node:http";
 import Multiplayer from "../world/multiplayer.bend";
+import World from "../world/world.bend";
 import { attachMultiplayer } from "../server/node-host.mjs";
+import { createServerWorld } from "../server/server-world.js";
 import { INTERPOLATION_DELAY_MS, connectMultiplayer, createEntityMirror, createRemotePlayers, lerpAngle } from "../web/multiplayer.js";
 import { MOB_BODY, TILE_PLAYER_SLEEVE, playerBoxes } from "../web/mob-models.js";
 
@@ -130,6 +132,28 @@ const disconnected = got(second, "disconnect");
 second.close();
 await disconnected;
 
-await assert.rejects(connectMultiplayer({ url: "ws://127.0.0.1:1/multiplayer", name: "x", timeoutMs: 2000 }));
 await new Promise((resolve) => server.close(resolve));
+
+// World requests against a host that simulates the world: every result type
+// decodes on the client and settles its request.
+const simulated = http.createServer();
+attachMultiplayer(simulated, { authority: Multiplayer, seed: 1337n, file: null, log: () => {}, createServerWorld, peaceful: true });
+await new Promise((resolve) => simulated.listen(0, "127.0.0.1", resolve));
+const farmer = await connectMultiplayer({ url: `ws://127.0.0.1:${simulated.address().port}/multiplayer`, name: "Farmer" });
+farmer.start();
+const standY = Number(World.column_height(1337n, 25n, 14n));
+const field = Number(World.column_height(1337n, 28n, 11n));
+assert.equal(farmer.sendPose({ x: 25.5, y: standY, z: 14.5, yaw: 0, pitch: 0 }, 0), true);
+await new Promise((resolve) => setTimeout(resolve, 100));
+const far = await farmer.interactRequest("till", [68, field - 1, 11]);
+assert.deepEqual([far.ok, far.reason], [false, "reach"]);
+assert.equal((await farmer.interactRequest("till", [28, field - 1, 11])).ok, true);
+const missed = await farmer.attackRequest({ mob: 999, damage: 4, ranged: false });
+assert.deepEqual([missed.hit, missed.killed], [false, false], "attack results reach the client");
+const nothing = await farmer.pickupRequest({ drop: 999 });
+assert.equal(nothing.ok, false);
+farmer.close();
+await new Promise((resolve) => simulated.close(resolve));
+
+await assert.rejects(connectMultiplayer({ url: "ws://127.0.0.1:1/multiplayer", name: "x", timeoutMs: 2000 }));
 console.log("multiplayer client ok");

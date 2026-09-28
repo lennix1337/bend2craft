@@ -211,38 +211,48 @@ def door_changed(result: DoorResult) -> Bool:
   DoorResult{edits, changed} = result
   changed
 
-def cons_door_edit(head: WorldState.Edit, tail: List<&2, WorldState.Edit>) -> List<&2, WorldState.Edit>:
-  Con{head, tail}
+# The open door cells (block 15) of the log, last edit first.
+def open_door_cells(edits: List<&2, WorldState.Edit>, +acc: List<&2, WorldState.Edit>) -> List<&2, WorldState.Edit>:
+  match edits:
+    case Nil{}:
+      acc
+    case Con{+head, tail}:
+      WorldState.Edit{+x, +y, +z, +block} = head
+      open_door_cells(tail, Bool.pick(List<&2, WorldState.Edit>, U32.is_eq(block, 15), Con{head, acc}, acc))
 
-def close_door_result(
-  edit: WorldState.Edit, +seed: Nat, +villagers: List<&2, Villager>,
-  +player_x: F32, +player_z: F32, +edits: List<&2, WorldState.Edit>
+def close_door(+close: Bool, +edits: List<&2, WorldState.Edit>, +seed: Nat, +x: Nat, +y: Nat, +z: Nat) -> List<&2, WorldState.Edit>:
+  match close:
+    case True{}:
+      +has_lower = Bool.and(Nat.is_gt(y, 0n), U32.is_eq(WorldState.block(edits, seed, x, Nat.sub(y, 1n), z), 15))
+      +bottom = Bool.pick(Nat, has_lower, Nat.sub(y, 1n), y)
+      WorldState.set_many(edits, Con{WorldState.make_edit(x, bottom, z, 14), Con{WorldState.make_edit(x, Nat.add(bottom, 1n), z, 14), Nil{}}})
+    case False{}:
+      edits
+
+def close_doors(
+  doors: List<&2, WorldState.Edit>, +villagers: List<&2, Villager>, +seed: Nat,
+  +player_x: F32, +player_z: F32, +edits: List<&2, WorldState.Edit>, +changed: Bool
 ) -> DoorResult:
-  WorldState.Edit{+x, +y, +z, +block} = edit
-  +open = U32.is_eq(block, 15)
-  +player_near = near_position(player_x, player_z, x, z)
-  +villager_near_door = villager_near(villagers, x, z)
-  +clear = Bool.not(Bool.or(player_near, villager_near_door))
-  +has_lower = Bool.and(Nat.is_gt(y, 0n), U32.is_eq(WorldState.block(edits, seed, x, Nat.sub(y, 1n), z), 15))
-  +bottom = Bool.pick(Nat, has_lower, Nat.sub(y, 1n), y)
-  +closed_bottom = WorldState.set(edits, x, bottom, z, 14)
-  +closed = WorldState.set(closed_bottom, x, Nat.add(bottom, 1n), z, 14)
-  Bool.pick(DoorResult, Bool.and(open, clear), DoorResult{closed, True{}}, DoorResult{edits, False{}})
+  match doors:
+    case Nil{}:
+      DoorResult{edits, changed}
+    case Con{+head, tail}:
+      WorldState.Edit{+x, +y, +z, block} = head
+      +clear = Bool.not(Bool.or(near_position(player_x, player_z, x, z), villager_near(villagers, x, z)))
+      +still_open = U32.is_eq(WorldState.block(edits, seed, x, y, z), 15)
+      +close = Bool.and(clear, still_open)
+      close_doors(tail, villagers, seed, player_x, player_z, close_door(close, edits, seed, x, y, z), Bool.or(changed, close))
 
+# Closes every open door no player or villager stands next to (both halves),
+# and reports whether any closed. One pass collects the open door cells, then
+# each is closed against the log: O(doors x edits) instead of re-walking the
+# rest of the log for every edit, and every walk is a loop on the JavaScript
+# target (benchmarks/edit-log.mjs measures it).
 def update_doors_result(
   +villagers: List<&2, Villager>, +seed: Nat,
   +edits: List<&2, WorldState.Edit>, +player_x: F32, +player_z: F32
 ) -> DoorResult:
-  match edits:
-    case Nil{}:
-      DoorResult{Nil{}, False{}}
-    case Con{+head, +tail}:
-      +rest = update_doors_result(villagers, seed, tail, player_x, player_z)
-      +with_rest = cons_door_edit(head, door_edits(rest))
-      +current = close_door_result(head, seed, villagers, player_x, player_z, with_rest)
-      +changed = Bool.or(door_changed(rest), door_changed(current))
-      +next_edits = Bool.pick(List<&2, WorldState.Edit>, changed, door_edits(current), edits)
-      DoorResult{next_edits, changed}
+  close_doors(open_door_cells(edits, Nil{}), villagers, seed, player_x, player_z, edits, False{})
 
 def update_doors(
   +villagers: List<&2, Villager>, +seed: Nat,

@@ -39,19 +39,29 @@ def flow(x: Nat, y: Nat, z: Nat, level: U32) -> Flow:
 def lava_flow(x: Nat, y: Nat, z: Nat, level: U32) -> Flow:
   Flow{x, y, z, level, False{}, lava_block()}
 
+def sample_matches(sample: Sample, +x: Nat, +y: Nat, +z: Nat) -> Bool:
+  Sample{+sx, +sy, +sz, block} = sample
+  Bool.and(Bool.and(Nat.is_eq(sx, x), Nat.is_eq(sy, y)), Nat.is_eq(sz, z))
+
+def sample_value(sample: Sample) -> U32:
+  Sample{sx, sy, sz, +block} = sample
+  block
+
+# The first sample of (x, y, z), in one tail-recursive pass that stops there;
+# an unsampled cell reads as stone.
+def sample_block.go(samples: List<&2, Sample>, stop: Bool, +value: U32, +x: Nat, +y: Nat, +z: Nat) -> U32:
+  match samples stop:
+    case _ True{}:
+      value
+    case Nil{} False{}:
+      1
+    case Con{+head, tail} False{}:
+      sample_block.go(tail, sample_matches(head, x, y, z), sample_value(head), x, y, z)
+
 def sample_block(
   samples: List<&2, Sample>, +x: Nat, +y: Nat, +z: Nat
 ) -> U32:
-  match samples:
-    case Nil{}:
-      1
-    case Con{+head, +tail}:
-      Sample{+sx, +sy, +sz, +block} = head
-      +same = Bool.and(
-        Bool.and(Nat.is_eq(sx, x), Nat.is_eq(sy, y)),
-        Nat.is_eq(sz, z)
-      )
-      Bool.pick(U32, same, block, sample_block(tail, x, y, z))
+  sample_block.go(samples, False{}, 1, x, y, z)
 
 def open_cell(samples: List<&2, Sample>, +x: Nat, +y: Nat, +z: Nat) -> Bool:
   +block = sample_block(samples, x, y, z)

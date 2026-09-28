@@ -219,7 +219,7 @@ does the same thing by hand.
 Several players can share one world. The server holds the world's seed and its
 ordered edit log; the authority is `world/multiplayer.bend`, which validates each
 submitted batch (in-world cell, known block, bounded batch size), folds the
-accepted edits into the log with `WorldState.set`, and advances a sequence
+accepted edits into the log in one `WorldState.set_many` pass, and advances a sequence
 number. Poses are validated there too (finite, inside the world band, pitch
 clamped). Every accepted batch is sent to every player, the sender included, and
 each client replays the batches in sequence order with `Multiplayer.merge`, so
@@ -238,24 +238,29 @@ items handed over after the inventory filled up drop at the player's feet. The
 world clock is the server's as well: every player sees the same time of day,
 and sleeping starts the morning for everyone.
 
-Mobs and dropped items run on the server too (`server/mob-world.js`). The
-server caches the chunks around players and mobs with Bend's bulk
-`WorldState.chunk`, patches them with every accepted edit, and every 200 ms runs
-the Bend entity rules: `MultiplayerMobs.step_world` (each mob chases or flees
-the nearest player), `Entities.sunlight_damage`, `Entities.threat_damage` for
-each player (sent to that player as damage), `Entities.step_drops`, night spawns
-around every player (`web/mob-spawning.js`, shared with single player) and
-`MultiplayerMobs.despawn` (only mobs far from every player). Every player
-receives the mobs and drops each tick and renders them blended between
-snapshots. Hits (`MultiplayerMobs.attack`: damage clamped to the strongest
-weapon, melee or bow reach from the server's pose of the attacker), pickups
-(`MultiplayerMobs.pickup`: the drop must exist and be within reach) and thrown
-items go through the server, so two players cannot pick up the same drop.
-`PEACEFUL=1` (or `vars.PEACEFUL` in `wrangler.jsonc`) hosts a world without
-monsters.
+Mobs, dropped items, villagers, fluids, fire, crops and farmland run on the
+server too (`server/server-world.js`). The server caches the chunks around
+players and mobs with Bend's bulk `WorldState.chunk`, patches them with every
+accepted edit, and every 200 ms runs the Bend entity, villager and simulation
+rules for every player: mobs chase or flee the nearest player
+(`MultiplayerMobs.step_world`), burn in daylight, hurt the players they reach,
+spawn at night around every player and despawn only far from all of them;
+villagers walk and open doors; water and lava flow, fire spreads and burns
+out, and crops grow. Its block changes reach the edit log as server batches.
+Hits (damage clamped to the strongest weapon, reach measured from the server's
+pose of the attacker), pickups (two players cannot take the same drop), thrown
+items and world interactions (buckets, fire, hoes, seeds and harvests, within
+reach of the player's pose) are requests the server answers. Player movement is
+checked against `world/multiplayer_moves.bend` (speed and rise budgets, no
+walking into blocks); a refused pose is not relayed and the player is sent
+back. `PEACEFUL=1` (or `vars.PEACEFUL` in `wrangler.jsonc`) hosts a world
+without monsters. [docs/MULTIPLAYER.md](docs/MULTIPLAYER.md) maps every rule to
+its Bend contract and server module.
 
-- `server/multiplayer-room.js`: the transport-agnostic room (players, fan-out,
-  snapshots) around the compiled Bend authority.
+- `server/multiplayer-room.js`, `server/room/`: the transport-agnostic room
+  (players, routing, fan-out, snapshots) around the compiled Bend authority.
+- `server/server-world.js`: the server-simulated world (terrain cache, mobs,
+  villagers, fluids, fire, crops, movement checks).
 - `server/websocket.mjs`, `server/node-host.mjs`: a dependency-free WebSocket
   endpoint on `/multiplayer` for `scripts/play-server.mjs`, saving the world to
   `worlds/multiplayer.json` (git-ignored).
@@ -297,13 +302,11 @@ npx wrangler deploy
 Then open `https://<worker>.workers.dev/?play=1&mp=1`. The deployment hosts one
 shared world; `vars.SEED` in `wrangler.jsonc` sets the seed of a new one.
 
-Scope so far: block edits, player presence, chests, furnaces, the time of
-day, mobs and dropped items are shared. Villagers, crops' growth timers and
-fluid/fire simulation state stay local to each client (a simulation's block
-changes are shared by the client that runs it), and player movement is still
-client-trusted, as `web/game-state.js` owns physics. Inventory, equipment and
-position are saved per profile and per server. On Cloudflare, furnace smelting
-progress is written to storage at most every 30 seconds.
+Scope so far: blocks, player presence and movement, chests, furnaces, the time
+of day, mobs, drops, villagers, fluids, fire and crops are shared and
+server-owned. Inventory, equipment and position are saved per profile and per
+server in each browser. On Cloudflare, furnace progress and simulation state
+are written to storage at most every 30 seconds.
 
 ## Commands
 
@@ -322,6 +325,8 @@ npm run smoke:dev    # bounded readiness smoke; always cleans up its server
 npm run browser:smoke # Playwright browser smoke; requires a local browser binary
 npm run browser:lighting-smoke # verify sky light after mining a surface block
 npm run browser:streaming-smoke # measure radius-six chunk hydration and mesh readiness
+npm run browser:multiplayer-smoke # two browsers sharing one dev-server world
+npm run bench:multiplayer # room batch, merge, welcome and movement-check costs
 npm run build        # clean dist/ and create the current static bundle
 ```
 

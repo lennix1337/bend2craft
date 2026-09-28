@@ -36,7 +36,7 @@ const authorityModule = path.join(root, "multiplayer-authority.js");
 if (!existsSync(authorityModule)) {
   throw new Error(`Multiplayer authority not found at ${authorityModule}. Run "npm run build" first.`);
 }
-const { default: authority, createMobWorld } = await import(pathToFileURL(authorityModule).href);
+const { default: authority, createServerWorld } = await import(pathToFileURL(authorityModule).href);
 
 const types = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -131,7 +131,7 @@ const multiplayer = attachMultiplayer(server, {
   authority,
   seed: BigInt(multiplayerSeedText),
   file: multiplayerFile,
-  createMobWorld,
+  createServerWorld,
   // PEACEFUL=1 hosts a world without monsters.
   peaceful: process.env.PEACEFUL === "1",
 });

@@ -121,3 +121,15 @@ def cells_column.fill(
 
 def cells_column(+x: Nat, +y: Nat, +z: Nat) -> List<&2, Cell>:
   cells_column.fill(World.max_y(), x, 0n, z, Nil{})
+
+# Air and water are both clear and dark to the light rules (light.bend treats
+# them alike), so swapping one for the other changes no light but the swapped
+# cell's own ambient: its stencil is the cell alone.
+def clear_and_dark(+block: U32) -> Bool:
+  Bool.or(U32.is_eq(block, 0), U32.is_eq(block, 7))
+
+def light_neutral(+previous: U32, +next: U32) -> Bool:
+  Bool.and(clear_and_dark(previous), clear_and_dark(next))
+
+def cells_self(+x: Nat, +y: Nat, +z: Nat) -> List<&2, Cell>:
+  Con{Cell{x, y, z}, Nil{}}

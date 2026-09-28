@@ -5,7 +5,7 @@
 //
 // Deploy with `npm run build` and then `npx wrangler deploy` (see README).
 import { DurableObject } from "cloudflare:workers";
-import authority, { createMobWorld } from "../dist/multiplayer-authority.js";
+import authority, { createServerWorld } from "../dist/multiplayer-authority.js";
 import { TICK_MS, createMultiplayerRoom, SNAPSHOT_VERSION } from "../server/multiplayer-room.js";
 
 // Furnace smelting changes state five times a second; its rows are written at
@@ -59,7 +59,13 @@ export class MultiplayerWorld extends DurableObject {
       for (const furnace of tickedFurnaces.values()) saveFurnace(furnace);
       tickedFurnaces.clear();
     };
-    this.flushTicks = flushTicks;
+    // The block simulation (fluids, fire, crops) changes every tick; it is
+    // written with the smelting batch, and when the last player leaves.
+    this.flushTicks = () => {
+      flushTicks();
+      const simulation = this.room?.simulationState();
+      if (simulation) saveMeta("simulation", simulation);
+    };
     const saveMeta = (key, value) => sql.exec(
       "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
       key,
@@ -73,15 +79,16 @@ export class MultiplayerWorld extends DurableObject {
     this.room = createMultiplayerRoom({
       authority,
       seed: BigInt(seed),
-      createMobWorld,
+      createServerWorld,
       peaceful: env.PEACEFUL === "1",
       snapshot: {
         version: SNAPSHOT_VERSION, seed, seq: Number(meta.get("seq") ?? 0), edits, chests, furnaces, time: resumedTime,
+        simulation: meta.get("simulation") ?? null,
       },
       onChange: ({ seq, edits: accepted, chests: changedChests, furnaces: changedFurnaces, time, tick }) => {
         if (tick) {
           for (const furnace of changedFurnaces) tickedFurnaces.set(furnace.pos.join(), furnace);
-          if (tickSaveTimer === null) tickSaveTimer = setTimeout(flushTicks, TICK_SAVE_MS);
+          if (tickSaveTimer === null) tickSaveTimer = setTimeout(() => this.flushTicks(), TICK_SAVE_MS);
           return;
         }
         for (const furnace of changedFurnaces) {
@@ -119,7 +126,11 @@ export class MultiplayerWorld extends DurableObject {
     const { 0: client, 1: server } = new WebSocketPair();
     server.accept();
     // The furnaces tick while anyone is connected.
-    this.ticker ??= setInterval(() => this.room.tick(), TICK_MS);
+    this.ticker ??= setInterval(() => {
+      this.room.tick();
+      this.ticks = (this.ticks ?? 0) + 1;
+      if (this.ticks % Math.round(TICK_SAVE_MS / TICK_MS) === 0) this.flushTicks();
+    }, TICK_MS);
     const handle = this.room.connect(
       (text) => {
         try {

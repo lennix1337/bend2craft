@@ -8,7 +8,7 @@
 // Edits travel as [x, y, z, block] in stored (Bend) coordinates: the same
 // non-negative encoding WorldState keeps (see web/world-coordinates.js).
 
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 5;
 export const MULTIPLAYER_PATH = "/multiplayer";
 export const MAX_MESSAGE_BYTES = 256 * 1024;
 export const MAX_EDITS_PER_MESSAGE = 4096;
@@ -16,6 +16,8 @@ export const MAX_PLAYERS = 16;
 export const MAX_NAME_LENGTH = 24;
 export const POSE_INTERVAL_MS = 100;
 export const CHEST_SLOTS = 9;
+// World interactions the server simulates (server/server-world.js).
+export const INTERACT_OPS = Object.freeze(["water", "lava", "fire", "collect", "till", "plant", "harvest"]);
 export const MAX_STACK = 64;
 
 function isStoredInteger(value) {
@@ -140,6 +142,10 @@ export function decodeClientMessage(text) {
         && message.damage >= 0 && typeof message.ranged === "boolean"
         ? { t: "attack", id: message.id, mob: message.mob, damage: message.damage, ranged: message.ranged }
         : null;
+    case "interact":
+      return isU32(message.id) && INTERACT_OPS.includes(message.op) && isWirePosition(message.pos)
+        ? { t: "interact", id: message.id, op: message.op, pos: message.pos }
+        : null;
     case "pickup":
       return isU32(message.id) && isStoredInteger(message.drop) ? { t: "pickup", id: message.id, drop: message.drop } : null;
     case "drop":
@@ -197,15 +203,21 @@ export function decodeServerMessage(text) {
     case "entities":
       return Array.isArray(message.mobs) && message.mobs.every((mob) => Array.isArray(mob) && mob.length === 11 && mob.every(Number.isFinite))
         && Array.isArray(message.drops) && message.drops.every((drop) => Array.isArray(drop) && drop.length === 6 && drop.every(Number.isFinite))
+        && (message.villagers === undefined
+          || (Array.isArray(message.villagers) && message.villagers.every((v) => Array.isArray(v) && v.length === 8 && v.every(Number.isFinite))))
         ? message
         : null;
     case "hurt":
       return Number.isFinite(message.amount) && message.amount >= 0 ? message : null;
+    case "correct":
+      return [message.x, message.y, message.z].every(Number.isFinite) ? message : null;
     case "chest-result":
     case "furnace-result":
-    case "attack-result":
     case "pickup-result":
+    case "interact-result":
       return isU32(message.id) && typeof message.ok === "boolean" ? message : null;
+    case "attack-result":
+      return isU32(message.id) && typeof message.hit === "boolean" && typeof message.killed === "boolean" ? message : null;
     case "furnace":
       return isWireFurnace(message) ? message : null;
     case "furnaces":

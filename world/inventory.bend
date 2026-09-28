@@ -203,7 +203,27 @@ def add_items(slots: List<&2, Slot>, +item: U32, +amount: U32) -> AddResult:
 def is_block_item(+item: U32) -> Bool:
   Bool.or(
     Bool.and(U32.is_ne(item, 0), U32.is_lt(item, 7)),
-    Bool.or(U32.is_eq(item, 31), U32.is_eq(item, 32))
+    Bool.or(
+      Bool.or(U32.is_eq(item, 31), U32.is_eq(item, 32)),
+      # The redstone slice: items 51-62 are the placeable redstone blocks from
+      # world/redstone.bend, whose own contract owns the block ids they place.
+      Bool.or(
+        Bool.or(U32.is_eq(item, 51), U32.is_eq(item, 52)),
+        Bool.or(
+          Bool.or(U32.is_eq(item, 53), U32.is_eq(item, 54)),
+          Bool.or(
+            Bool.or(U32.is_eq(item, 55), U32.is_eq(item, 56)),
+            Bool.or(
+              Bool.or(U32.is_eq(item, 57), U32.is_eq(item, 58)),
+              Bool.or(
+                Bool.or(U32.is_eq(item, 59), U32.is_eq(item, 60)),
+                Bool.or(U32.is_eq(item, 61), U32.is_eq(item, 62))
+              )
+            )
+          )
+        )
+      )
+    )
   )
 
 def collect.finalize(

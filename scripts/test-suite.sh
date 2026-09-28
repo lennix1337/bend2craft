@@ -21,6 +21,14 @@ TESTS=(
   tests/simulation-bend.test.mjs
   tests/fluids-bend.test.mjs
   tests/fire-bend.test.mjs
+  tests/redstone-bend.test.mjs
+  tests/redstone-grid-bend.test.mjs
+  tests/redstone-clock-bend.test.mjs
+  tests/redstone-machines-bend.test.mjs
+  tests/redstone-observer-bend.test.mjs
+  tests/redstone-all-bend.test.mjs
+  tests/redstone-blocks.test.mjs
+  tests/redstone-adapter.test.mjs
   tests/simulation-ticker.test.mjs
   tests/crops-bend.test.mjs
   tests/farmland-bend.test.mjs

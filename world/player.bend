@@ -77,7 +77,24 @@ def overlaps(state: State, +x: Nat, +y: Nat, +z: Nat) -> Bool:
 def floor_nat(value: F32) -> Nat:
   U32.to_nat(F32.to_u32(value))
 
-def list_at(+index: Nat, blocks: List<&2, U32>) -> U32:
+# The region is stored one y-plane at a time: a list of `height` planes, each a list
+# of `width * depth` cells in x-major order within the plane.
+#
+# It was one flat list, and `region_block` walked it to the cell's index. That is a
+# linear walk over every cell below the one asked for, so the cost of a lookup was the
+# cell's position and the cost of a tick was the position of the player's own cells: a
+# 2x2 chunk region is 32 x 20 x 32 cells, the player stands about a third of the way
+# down, and every one of the roughly fifteen lookups a step makes walked the same
+# several thousand cells. Measured, one tick cost 0.25 ms against a 16 x 20 x 16 region
+# and 1.00 ms against the 32 x 20 x 32 one — a factor of four for a factor of four in
+# cells, which is the signature of the index rather than of the work.
+#
+# Two levels cost `height + width * depth` in the worst case and about `height / 2 +
+# width * depth / 2` in practice, which is 522 cells for the region the client ships
+# against 6,272 for the flat walk. A lookup outside the region is also cheaper now: it
+# runs off the end of the plane list and finds an empty plane, where the flat walk ran
+# off the end of all 20,480 cells.
+def list_at(index: Nat, blocks: List<&2, U32>) -> U32:
   match index blocks:
     case 0n Nil{}:
       1
@@ -88,8 +105,20 @@ def list_at(+index: Nat, blocks: List<&2, U32>) -> U32:
     case 1n+p h <> t:
       list_at(p, t)
 
-def region_index(+width: Nat, +depth: Nat, +x: Nat, +y: Nat, +z: Nat) -> Nat:
-  Nat.add(x, Nat.mul(width, Nat.add(z, Nat.mul(depth, y))))
+# The plane at this height, or an empty plane when the height is outside the region.
+def plane_at(+index: Nat, planes: List<&2, List<&2, U32>>) -> List<&2, U32>:
+  match index planes:
+    case 0n Nil{}:
+      []
+    case 0n h <> t:
+      h
+    case 1n+p Nil{}:
+      []
+    case 1n+p h <> t:
+      plane_at(p, t)
+
+def region_index(+width: Nat, +x: Nat, +z: Nat) -> Nat:
+  Nat.add(x, Nat.mul(width, z))
 
 def region_block.if(block: U32, valid: Bool) -> U32:
   match valid:
@@ -99,7 +128,7 @@ def region_block.if(block: U32, valid: Bool) -> U32:
       1
 
 def region_block(
-  blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
+  planes: List<&2, List<&2, U32>>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat, +x: Nat, +y: Nat, +z: Nat
 ) -> U32:
   +valid_x = Nat.is_ge(x, origin_x) && Nat.is_lt(x, Nat.add(origin_x, width))
@@ -110,13 +139,13 @@ def region_block(
   +local_y = Nat.sub(y, origin_y)
   +local_z = Nat.sub(z, origin_z)
   region_block.if(
-    list_at(region_index(width, depth, local_x, local_y, local_z), blocks),
+    list_at(region_index(width, local_x, local_z), plane_at(local_y, planes)),
     valid
   )
 
 def scan_z(
   +remaining: Nat, +x: Nat, +y: Nat, +z: Nat,
-  +blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
+  +blocks: List<&2, List<&2, U32>>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat, +player_y: F32
 ) -> Bool:
   match remaining:
@@ -130,7 +159,7 @@ def scan_z(
 
 def scan_y(
   +remaining: Nat, +x: Nat, +y: Nat, +min_z: Nat, +z_count: Nat,
-  +blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
+  +blocks: List<&2, List<&2, U32>>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat, +player_y: F32
 ) -> Bool:
   match remaining:
@@ -144,7 +173,7 @@ def scan_y(
 
 def scan_x(
   +remaining: Nat, +x: Nat, +min_y: Nat, +y_count: Nat,
-  +min_z: Nat, +z_count: Nat, +blocks: List<&2, U32>,
+  +min_z: Nat, +z_count: Nat, +blocks: List<&2, List<&2, U32>>,
   +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat, +player_y: F32
 ) -> Bool:
@@ -158,7 +187,7 @@ def scan_x(
       )
 
 def collides(
-  state: State, +x: F32, +y: F32, +z: F32, +blocks: List<&2, U32>,
+  state: State, +x: F32, +y: F32, +z: F32, +blocks: List<&2, List<&2, U32>>,
   +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat
 ) -> Bool:
@@ -229,7 +258,7 @@ def water_contact(blocks: List<&2, U32>) -> Bool:
       Bool.or(is_water(head), water_contact(tail))
 
 def head_in_water(
-  blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
+  blocks: List<&2, List<&2, U32>>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat, +x: F32, +y: F32, +z: F32
 ) -> Bool:
   is_water(region_block(blocks, origin_x, origin_y, origin_z, width, height, depth,
@@ -238,7 +267,7 @@ def head_in_water(
 # The feet cell controls swim buoyancy; using the upper body would stop the
 # upward impulse before the player can clear a one-block shoreline.
 def body_in_water(
-  blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
+  blocks: List<&2, List<&2, U32>>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat, +x: F32, +y: F32, +z: F32
 ) -> Bool:
   is_water(region_block(blocks, origin_x, origin_y, origin_z, width, height, depth,
@@ -311,7 +340,7 @@ def eat(state: State, +nutrition: F32) -> State:
 def step.values(
   +x: F32, +y: F32, +z: F32, +yaw: F32, +pitch: F32, +velocity_y: F32, +grounded: Bool,
   +health: F32, +hunger: F32, +air: F32, +fall: F32, +poison: F32,
-  +keys: U32, +dt: F32, +blocks: List<&2, U32>,
+  +keys: U32, +dt: F32, +blocks: List<&2, List<&2, U32>>,
   +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat,
   +spawn_x: Nat, +spawn_z: Nat, +spawn_height: Nat
@@ -365,7 +394,7 @@ def step.values(
   tick_survival(breathed, dt, Bool.and(sprinting, Bool.not(in_water)))
 
 def step(
-  state: State, keys: U32, dt: F32, blocks: List<&2, U32>,
+  state: State, keys: U32, dt: F32, blocks: List<&2, List<&2, U32>>,
   +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat,
   +spawn_x: Nat, +spawn_z: Nat, +spawn_height: Nat
@@ -381,7 +410,7 @@ type RayResult is Data:
 def raycast.loop(
   +remaining: Nat, +index: Nat, +dx: F32, +dy: F32, +dz: F32,
   +origin_x: F32, +origin_y: F32, +origin_z: F32,
-  +blocks: List<&2, U32>, +region_x: Nat, +region_y: Nat, +region_z: Nat,
+  +blocks: List<&2, List<&2, U32>>, +region_x: Nat, +region_y: Nat, +region_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat,
   same_cell: Bool, empty: Bool, block_value: U32, +cell_x: Nat, +cell_y: Nat, +cell_z: Nat,
   +last_x: Nat, +last_y: Nat, +last_z: Nat, has_last: Bool
@@ -415,7 +444,7 @@ def raycast.loop(
               Hit{cell_x, cell_y, cell_z, last_x, last_y, last_z, has_last}
 
 def raycast.start(
-  state: State, direction_value: Direction, +blocks: List<&2, U32>,
+  state: State, direction_value: Direction, +blocks: List<&2, List<&2, U32>>,
   +region_x: Nat, +region_y: Nat, +region_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat
 ) -> RayResult:
@@ -429,7 +458,7 @@ def raycast.start(
   raycast.loop(160n, 0n, dx, dy, dz, px, origin_y, pz, blocks, region_x, region_y, region_z, width, height, depth, False{}, U32.is_eq(block, 0), block, cell_x, cell_y, cell_z, 0n, 0n, 0n, False{})
 
 def raycast(
-  +state: State, blocks: List<&2, U32>,
+  +state: State, blocks: List<&2, List<&2, U32>>,
   +region_x: Nat, +region_y: Nat, +region_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat
 ) -> RayResult:

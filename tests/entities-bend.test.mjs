@@ -1,16 +1,19 @@
 import assert from "node:assert/strict";
 import { Entities, World } from "../web/bend-modules.js";
-import { bendList, listValues } from "../web/bend-list.js";
+import { bendList, bendPlanes, listValues } from "../web/bend-list.js";
 
 // The Region record is a Bend ADT, so it can only be built field by field. Three
 // builders below need it, and one list fold serves all of them, so the shape lives
 // here instead of drifting across the copies.
 const REGION_SIZE = { width: 5, height: 6, depth: 5 };
+const PLANE_CELLS = REGION_SIZE.width * REGION_SIZE.depth;
 
+// `values` arrives in the region's own cell order, y-major, so the plane at height
+// `y` is the slice of `PLANE_CELLS` cells starting at `y * PLANE_CELLS`.
 function bendRegion(originX, originY, originZ, values) {
   return {
     $: "Region",
-    blocks: bendList(values),
+    blocks: bendPlanes(values, PLANE_CELLS),
     origin_x: BigInt(originX),
     origin_y: BigInt(originY),
     origin_z: BigInt(originZ),
@@ -594,15 +597,11 @@ function ledgeRegion() {
       }
     }
   }
-  let cells = { $: "Nil" };
-  for (let index = values.length - 1; index >= 0; index -= 1) {
-    cells = { $: "Con", head: values[index], tail: cells };
-  }
   return {
     $: "Con",
     head: {
       $: "Region",
-      blocks: cells,
+      blocks: bendPlanes(values, 5 * 5),
       origin_x: 4n,
       origin_y: 0n,
       origin_z: 0n,

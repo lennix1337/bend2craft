@@ -5,6 +5,7 @@ import ../world/world_state.bend as WorldState
 import ./voxel-probe/voxel_probe.bend as Voxel
 import ./player-probe/player_probe.bend as PlayerProbe
 import ./frame-probe/frame_probe.bend as Frame
+import ./face-probe/face_probe.bend as Face
 import ./save-migration/save_migration.bend as Migration
 import ./client.bend as Client
 
@@ -231,7 +232,7 @@ type Two is Data:
   Two{first: U32, second: U32}
 
 def peek(state: Client.Client) -> Peek:
-  Client.Client{player, +pose, keys, +edits, region, path} = state
+  Client.Client{player, +pose, keys, +edits, region, path, world} = state
   Peek{Frame.eye_z(Frame.eye_of(pose)), edits}
 
 def eye_z_of(peeked: Peek) -> F32:
@@ -243,7 +244,7 @@ def edits_of(+peeked: Peek) -> List<&2, WorldState.Edit>:
   edits
 
 def aim_of_state(+state: Client.Client) -> Aim:
-  Client.Client{player, +pose, keys, edits, +region, path} = state
+  Client.Client{player, +pose, keys, edits, +region, path, world} = state
   aim_of(Client.aimed(pose, region))
 
 # The tick's own answer, read through the same question the loop asks, so the test and
@@ -417,6 +418,78 @@ def verify_save() -> IO(Unit):
     saved : Saved <- dig_then_save(aimed_state, aim)
     check_save(saved)
 
+# --- the world's cache --------------------------------------------------------
+#
+# The client extracts the view region's faces once and keeps them, so a frame's world
+# has to follow the edit log and nothing else. Two failures are possible and both are
+# silent in a frame rate: a cache that never invalidates draws the pre-dig world for
+# the rest of the session, and a cache that always invalidates is the per-frame
+# extraction this replaced, which costs more than the rest of the frame put together.
+# The first is caught by the faces and the frame changing after a dig; the second by a
+# state that did not move handing back the very same faces.
+
+# What one `Client.view` produced: how many exposed faces the world holds, whether the
+# world it returned already names the state's own edit log, and the frame it drew.
+type Viewed is Data:
+  Viewed{faces: U32, matched: Bool, frame: U32}
+
+type Cache is Data:
+  Cache{before: Viewed, again: Viewed, after: Viewed}
+
+# `Client.view` answers a pair, and a pair can only be taken apart by a def that takes
+# it as a parameter, which is what `viewed` is: the client's own draw step, with the
+# assertions read off what it handed back.
+def viewed(drawn: Client.Client & Image) -> Viewed:
+  (next, image) = drawn
+  Client.Client{player, pose, keys, +edits, region, path, +world} = next
+  Viewed{Face.face_total(Client.w_faces(world)),
+    Client.same_edits(Client.w_edits(world), edits), Voxel.fingerprint(image)}
+
+def cache_views() -> IO(Cache):
+  do IO<Cache>:
+    +state : Client.Client <- Client.start()
+    +before : Viewed = viewed(Client.view(state))
+    +again : Viewed = viewed(Client.view(state))
+    +looked : Client.Client <- looked_down(state)
+    dug : Maybe<&1, Client.Client> <- Client.tick.events(
+      [Key{Client.dig_code(), True{}}], looked)
+    dug_state : Client.Client <- dug_or_die(dug)
+    IO.pure(Cache, Cache{before, again, viewed(Client.view(dug_state))})
+def check_stable(before: Viewed, again: Viewed) -> IO(Unit):
+  Viewed{faces, matched, frame} = before
+  Viewed{again_faces, again_matched, again_frame} = again
+  do IO<Unit>:
+    Unit <- require(matched,
+      "the world a frame was handed did not name the state's own edit log")
+    Unit <- require(Bool.and(U32.is_eq(faces, again_faces), U32.is_eq(frame, again_frame)),
+      "a state that did not move drew a different frame: the world cache is not stable")
+    check(again_matched, "the world's edit log drifted from the state's")
+
+def check_refreshed(before: Viewed, after: Viewed) -> IO(Unit):
+  Viewed{faces, matched, frame} = before
+  Viewed{after_faces, after_matched, after_frame} = after
+  do IO<Unit>:
+    Unit <- require(after_matched,
+      "the world a frame was handed did not name the state's own edit log")
+    Unit <- require(U32.is_ne(faces, after_faces),
+      "the dig did not reach the world: the cache never invalidated")
+    check(U32.is_ne(frame, after_frame),
+      "the dig did not reach the frame: the world's faces were rebuilt but not used")
+
+def check_cache(cache: Cache) -> IO(Unit):
+  Cache{+before, +again, +after} = cache
+  do IO<Unit>:
+    Unit <- check_stable(before, again)
+    check_refreshed(before, after)
+
+def verify_cache() -> IO(Unit):
+  do IO<Unit>:
+    # The same reason `verify_save` writes an empty snapshot first: the client starts
+    # on whatever its save holds, and the run before this one left a dug world there.
+    Unit <- empty_world()
+    cache : Cache <- cache_views()
+    check_cache(cache)
+
 def main() -> IO(Unit):
   do IO<Unit>:
     Unit <- verify_stored_cell()
@@ -424,7 +497,8 @@ def main() -> IO(Unit):
     Unit <- verify_targeting()
     Unit <- verify_tick()
     Unit <- verify_frame()
+    Unit <- verify_cache()
     Unit <- verify_save()
-    IO.print("client: fold, key edges, targeting, tick, frame and save passed")
+    IO.print("client: fold, key edges, targeting, tick, frame, world cache and save passed")
 
 #|client: fold, key edges, targeting, tick, frame and save passed

@@ -5,7 +5,7 @@ import ../../world/world_state.bend as WorldState
 
 type Region is Data:
   Region{
-    blocks: List<&2, U32>,
+    blocks: List<&2, List<&2, U32>>,
     origin_x: Nat,
     origin_y: Nat,
     origin_z: Nat,
@@ -102,11 +102,13 @@ def player_is_refused(value: Maybe<&1, Player.State>) -> Bool:
 # ---------------------------------------------------------------------------
 # Region materialization
 #
-# The region keeps one flat list in `Player.region_index` order, so a cell moves
-# from local_x + size * (local_z + size * y) inside its bulk chunk export to
+# The region keeps one flat list in the region's cell order, so a cell moves from
+# local_x + size * (local_z + size * y) inside its bulk chunk export to
 # (base_x + local_x) + width * ((base_z + local_z) + depth * y) inside the
 # region. Composing the grid is one bulk `WorldState.chunk` call per chunk and
-# one cell copy per cell; the cell rule is never asked for a single cell.
+# one cell copy per cell; the cell rule is never asked for a single cell. That flat
+# list is cut into y-planes on the way out, which is the shape `Player.region_block`
+# indexes, and the cut copies no cell: a plane is a slice of the list.
 # ---------------------------------------------------------------------------
 
 # Every cell of a `columns` x `rows` chunk grid.
@@ -174,8 +176,28 @@ def copy_grid.go(
       copy_grid.go(p, Nat.add(index, 1n), seed, chunk_x, chunk_z, columns, edits,
         copied, width, depth)
 
-def region_blocks(+cells: Nat, region: Array<U32>) -> List<&2, U32>:
-  share_blocks(List.take(&1, U32, Array.to_list(~U32, region), cells))
+# One flat cell list split into y-planes, which is the shape `Player.region_block`
+# reads. The region's cell order is x-major within a z-row and z-rows stacked by y, so
+# the plane at height y is exactly the `width * depth` cells that share that y, and a
+# plane boundary is every `width * depth` cells in the flat list.
+#
+# The slices are taken front to back and consed onto the front of the accumulator,
+# which leaves them in reverse; the reverse is the one pass that puts plane 0 at the
+# head, where `plane_at` counts from. The player probe's own extraction walks forward
+# and reverses for the same reason.
+def plane_blocks(remaining: Nat, +source: List<&2, U32>, +per_plane: Nat,
+  acc: List<&2, List<&2, U32>>) -> List<&2, List<&2, U32>>:
+  match remaining:
+    case 0n:
+      List.reverse(&2, List<&2, U32>, acc)
+    case 1n+p:
+      plane_blocks(p, List.drop(&2, U32, source, per_plane), per_plane,
+        List.take(&2, U32, source, per_plane) <> acc)
+
+def region_planes(+cells: Nat, +height: Nat, region: Array<U32>) ->
+  List<&2, List<&2, U32>>:
+  plane_blocks(height, share_blocks(List.take(&1, U32, Array.to_list(~U32, region), cells)),
+    Nat.div(cells, height), [])
 
 # A `columns` x `rows` grid of bulk chunks with (chunk_x, chunk_z) at its
 # minimum corner. Requires cells the guard accepts; the checked entry point
@@ -190,14 +212,15 @@ def region_grid(
   +cells = region_cells(columns, rows)
   filled = copy_grid.go(Nat.mul(columns, rows), 0n, seed, chunk_x, chunk_z, columns,
     edits, Array.new(U32, region_depth(cells), 0), U32.from_nat(width), U32.from_nat(depth))
-  Region{region_blocks(cells, filled), domain_cell(Nat.mul(chunk_x, size)), 0n,
+  Region{region_planes(cells, World.max_y(), filled), domain_cell(Nat.mul(chunk_x, size)), 0n,
     domain_cell(Nat.mul(chunk_z, size)), width, World.max_y(), depth}
 
 # One bulk export already sits in the region's cell order, so a one-chunk region
-# is the export itself: no cell is copied.
+# is the export itself: no cell is copied. It is split into planes on the way in,
+# because that is the shape `Player.region_block` reads.
 def from_bulk(chunk: Array<U32>, +chunk_x: Nat, +chunk_z: Nat) -> Region:
   +size = World.chunk_size()
-  Region{share_blocks(Array.to_list(~U32, chunk)),
+  Region{region_planes(Nat.mul(Nat.mul(size, size), World.max_y()), World.max_y(), chunk),
     domain_cell(Nat.mul(chunk_x, size)), 0n, domain_cell(Nat.mul(chunk_z, size)),
     size, World.max_y(), size}
 

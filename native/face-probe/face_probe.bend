@@ -52,9 +52,27 @@ type Bounds is Data:
 
 # A face reduced to a conservative pixel box. Near-plane-crossing faces use the
 # full frame as their candidate box; the ray/quad test still decides ownership.
+#
+# The box is stored packed rather than as four numbers: `low` is `x0 | y0 << 16` and
+# `high` is `x1 | y1 << 16`. Two reasons, and both are about the per-pixel walk. A
+# pixel packs the same way, and because the halves occupy disjoint bit ranges with y
+# in the more significant one, `low <= pix <= high` as two unsigned compares is
+# exactly `x0 <= px <= x1 and y0 <= py <= y1`: y decides first and the x halves are
+# only compared when y ties. And it is the whole test, where the four-number form
+# needed four `U32.is_le` and three `Bool.and`, each of which is a call the pinned
+# runtime dispatches. At the client's own view that is 170 candidates for each of
+# 4,096 pixels, so the walk is the frame.
+#
+# Every coordinate is at most 65535: `corners` clamps the near-plane fallback to
+# that and `clip` clamps the rest to the frame edge, so no half can overflow into
+# its neighbour.
 type Screen is Data:
-  Screen{x0: U32, y0: U32, x1: U32, y1: U32, depth: F32, block: U32, dir: Nat,
-    alive: Bool, origin: P}
+  Screen{low: U32, high: U32, depth: F32, block: U32, dir: Nat, alive: Bool,
+    origin: P}
+
+# Pack one corner of a box into the single word the pixel walk compares against.
+def pack(x: U32, y: U32) -> U32:
+  U32.or(x, U32.shln(y, 16n))
 
 # The screen tile grid: tile rows, then buckets within a row, then the faces in a
 # bucket. A bucket is only ever read, so one `&2` grid is shared by every pixel.
@@ -62,9 +80,13 @@ type Tiles is Data:
   Tiles{rows: List<&2, List<&2, List<&2, Screen>>>, size: U32, edge: U32,
     camera: Voxel.Camera, half: F32, focal: F32}
 
-# The winning face for one pixel, with how many candidates were considered.
+# The winning face for one pixel. The candidate count this record used to carry is
+# gone: the walk advanced it once per candidate, which meant one `Best` allocation
+# per candidate, and the number it reported was `List.length` of the pixel's own
+# bucket. `Face.candidate_count` still reports that, from the bucket lengths, with
+# no per-candidate work at all.
 type Best is Data:
-  Best{block: U32, dir: Nat, depth: F32, candidates: U32}
+  Best{block: U32, dir: Nat, depth: F32}
 
 # What an observation pass counted over one frame.
 type Observed is Data:
@@ -224,6 +246,22 @@ def x_walk(remaining: Nat, +zm_row: List<&2, U32>, +row: List<&2, U32>,
           +faces = emit(U32.is_ne(h, 0), h, prev_value, xp, ym, yp, zm, zp, x, y, z, acc)
           x_walk(r, zmt, t, zpt, ymt, ypt, h, (x + 1 : U32), y, z, faces)
 
+# The head of a row, or an all-air row when the rows have run out.
+#
+# `Maybe.default(head, air_row(cells))` says this too, and it is the shape the rest of
+# the file uses, but its default argument is *built before the call*. This walk asks
+# once per row of every layer — 20 layers of 32 rows is 640 times — and an air row is
+# `cells` wide, so the eager version spent 20,480 cons cells per cold frame building air
+# it then discarded, against the few thousand it spent reading blocks. This is the same
+# trap as the walk's `Bool.and` hit test: a guard around a call is not a guard around
+# its arguments.
+def head_row(cells: U32, rows: List<&2, List<&2, U32>>) -> List<&2, U32>:
+  match rows:
+    case Nil{}:
+      air_row(cells)
+    case head <> rest:
+      head
+
 # Walk the 16 z-rows of one layer. The three carried layer cursors give the
 # below/this/above rows at the same z, and each step advances all of them. The
 # walk runs `rows_deep` z-rows and each of those runs `cells` x-steps, which is what
@@ -243,10 +281,19 @@ def z_walk(remaining: Nat, +cells: U32, +below: List<&2, List<&2, U32>>,
         case _ _ Nil{}:
           acc
         case b <> bt h <> ht a <> at:
-          +zprow = Maybe.default(&2, List<&2, U32>,
-            List.head(&2, List<&2, U32>, ht), air_row(cells))
+          +zprow = head_row(cells, ht)
           +x_walked = x_walk(U32.to_nat(cells), prev_row, h, zprow, b, a, 0, 0, y, z, acc)
           z_walk(r, cells, bt, ht, at, h, (z + 1 : U32), y, x_walked)
+
+# The head layer of a layer stack, or all air when the stack is exhausted. This
+# is what makes the y=0 and y=19 boundaries read as air without a bounds check.
+def head_layer(stack: List<&2, List<&2, List<&2, U32>>>, cells: U32,
+  rows_deep: U32) -> List<&2, List<&2, U32>>:
+  match stack:
+    case Nil{}:
+      air_layer(cells, rows_deep)
+    case head <> rest:
+      head
 
 # Walk the 20 layers. `l0..l3` are the layers y-1, y, y+1 and y+2, so the whole
 # run keeps the rows it needs one and two layers ahead without an index walk.
@@ -259,20 +306,8 @@ def layer_walk(remaining: Nat, +cells: U32, +rows_deep: U32,
       acc
     case 1n+r:
       +walked = z_walk(U32.to_nat(rows_deep), cells, l0, l1, l2, air_row(cells), 0, y, acc)
-      +l3_next = Maybe.default(&2, List<&2, List<&2, U32>>,
-        List.head(&2, List<&2, List<&2, U32>>, rest), air_layer(cells, rows_deep))
-      layer_walk(r, cells, rows_deep, l1, l2, l3, l3_next,
+      layer_walk(r, cells, rows_deep, l1, l2, l3, head_layer(rest, cells, rows_deep),
         List.tail(&2, List<&2, List<&2, U32>>, rest), (y + 1 : U32), walked)
-
-# The head layer of a layer stack, or all air when the stack is exhausted. This
-# is what makes the y=0 and y=19 boundaries read as air without a bounds check.
-def head_layer(stack: List<&2, List<&2, List<&2, U32>>>, cells: U32,
-  rows_deep: U32) -> List<&2, List<&2, U32>>:
-  match stack:
-    case Nil{}:
-      air_layer(cells, rows_deep)
-    case head <> rest:
-      head
 
 # The 20 real layers in y order, behind one all-air layer so the walk that
 # carries the layer below reads air at y=0 rather than the layer itself. Two
@@ -559,7 +594,7 @@ def corners(a: Q, b: Q, c: Q, d: Q, +block: U32, dir: Nat, origin: P) -> Screen:
   +y0 = Bool.pick(U32, all_front, raw_y0, 0)
   +x1 = Bool.pick(U32, all_front, raw_x1, 65535)
   +y1 = Bool.pick(U32, all_front, raw_y1, 65535)
-  Screen{x0, y0, x1, y1, F32.max(span_near(s3), 0.0001), block, dir,
+  Screen{pack(x0, y0), pack(x1, y1), F32.max(span_near(s3), 0.0001), block, dir,
     any_front, origin}
 
 # Project the four corners of the unit square whose plane coordinate is fixed and
@@ -608,6 +643,181 @@ def box_of(dir: Nat, +block: U32, +fx: F32, +fy: F32, +fz: F32, +eye: Voxel.Vec,
       square(dir, fx, fy, fz, fz, 2n, eye, right, up, forward, half, focal, block)
 
 # ---------------------------------------------------------------------------
+# 2a. How much geometry a frame actually holds.
+#
+# `box_of` reduces a face to the conservative box the walk tests, and the sum of those
+# boxes is what the walk is charged. A renderer that painted each face once instead
+# would touch each face's own quad, and the two differ by the box's waste over the quad:
+# a wall seen edge-on has a thin quad inside a wide box, and that difference is the whole
+# argument for painting rather than walking per pixel.
+#
+# So the quads are measured at the same camera as the boxes rather than assumed from
+# them. `Square` holds the four projected corners in cycle order, which is the order the
+# shoelace needs; `square` above builds them in a different order because a running span
+# does not care, and rebuilding that walk to reorder it would put a hot path at risk for
+# a diagnostic.
+# ---------------------------------------------------------------------------
+
+type Square is Data:
+  Square{a: Q, b: Q, c: Q, d: Q}
+
+# The plane coordinate of a face's square, and the axis it is constant in. These are
+# `box_of`'s own two decisions, written out again rather than reached through it: the
+# diagnostic must not sit in the hot path it measures, and `quad_area_below` holds the
+# two forms together.
+def plane_of(dir: Nat, +fx: F32, +fy: F32, +fz: F32) -> F32:
+  match dir:
+    case 0n:
+      F32.add(fx, 1.0)
+    case 1n:
+      F32.add(fy, 1.0)
+    case 2n:
+      F32.add(fz, 1.0)
+    case 3n:
+      fx
+    case 4n:
+      fy
+    case _:
+      fz
+
+def axis_of(dir: Nat) -> Nat:
+  match dir:
+    case 0n:
+      0n
+    case 1n:
+      1n
+    case 2n:
+      2n
+    case 3n:
+      0n
+    case 4n:
+      1n
+    case _:
+      2n
+
+def square_axis(axis: Nat, +fx: F32, +fy: F32, +fz: F32, +plane: F32,
+  +eye: Voxel.Vec, +right: Voxel.Vec, +up: Voxel.Vec, +forward: Voxel.Vec,
+  +half: F32, +focal: F32) -> Square:
+  match axis:
+    case 0n:
+      Square{project(eye, right, up, forward, plane, fy, fz, half, focal),
+        project(eye, right, up, forward, plane, (fy + 1.0 : F32), fz, half, focal),
+        project(eye, right, up, forward, plane, (fy + 1.0 : F32), (fz + 1.0 : F32), half, focal),
+        project(eye, right, up, forward, plane, fy, (fz + 1.0 : F32), half, focal)}
+    case 1n:
+      Square{project(eye, right, up, forward, fx, plane, fz, half, focal),
+        project(eye, right, up, forward, (fx + 1.0 : F32), plane, fz, half, focal),
+        project(eye, right, up, forward, (fx + 1.0 : F32), plane, (fz + 1.0 : F32), half, focal),
+        project(eye, right, up, forward, fx, plane, (fz + 1.0 : F32), half, focal)}
+    case _:
+      Square{project(eye, right, up, forward, fx, fy, plane, half, focal),
+        project(eye, right, up, forward, (fx + 1.0 : F32), fy, plane, half, focal),
+        project(eye, right, up, forward, (fx + 1.0 : F32), (fy + 1.0 : F32), plane, half, focal),
+        project(eye, right, up, forward, fx, (fy + 1.0 : F32), plane, half, focal)}
+
+def square_plane(axis: Nat, +fx: F32, +fy: F32, +fz: F32, +plane: F32, +eye: Voxel.Vec,
+  +right: Voxel.Vec, +up: Voxel.Vec, +forward: Voxel.Vec, +half: F32, +focal: F32) -> Square:
+  square_axis(axis, fx, fy, fz, plane, eye, right, up, forward, half, focal)
+
+# `dir` twice would be two reads of one affine parameter, so the axis is resolved first
+# and the plane second.
+def square_of(+dir: Nat, +fx: F32, +fy: F32, +fz: F32, +eye: Voxel.Vec, +right: Voxel.Vec,
+  +up: Voxel.Vec, +forward: Voxel.Vec, +half: F32, +focal: F32) -> Square:
+  square_plane(axis_of(dir), fx, fy, fz, plane_of(dir, fx, fy, fz), eye, right, up, forward,
+    half, focal)
+
+# The shoelace of one edge pair, `px * qy - qx * py`.
+def edge(px: F32, py: F32, qx: F32, qy: F32) -> F32:
+  F32.sub(F32.mul(px, qy), F32.mul(qx, py))
+
+def clamp(+value: F32, +last: F32) -> F32:
+  F32.min(F32.max(value, 0.0), last)
+
+# Twice the area of a quad, by the shoelace over its four edges in cycle order, every
+# corner first clamped into the frame.
+#
+# The clamp is not decoration and is not optional. A quad whose corner is behind the eye
+# projects to a coordinate of tens of thousands of pixels, and one such corner makes the
+# shoelace term enormous: the first run of this reported 4,193,030,645 for a 16,384-pixel
+# frame, which is a wrap of the sum rather than a measurement. The faces that cross the
+# eye plane are counted separately and excluded, and the rest are clamped, so the sum is
+# a quantity that can be compared with the frame it is drawn into.
+def shoelace2(s: Square, +last: F32) -> F32:
+  Square{a, b, c, d} = s
+  Q{x1, y1, _} = a
+  Q{x2, y2, _} = b
+  Q{x3, y3, _} = c
+  Q{x4, y4, _} = d
+  +ax = clamp(x1, last)
+  +ay = clamp(y1, last)
+  +bx = clamp(x2, last)
+  +by = clamp(y2, last)
+  +cx = clamp(x3, last)
+  +cy = clamp(y3, last)
+  +dx = clamp(x4, last)
+  +dy = clamp(y4, last)
+  +e1 = edge(ax, ay, bx, by)
+  +e2 = edge(bx, by, cx, cy)
+  +e3 = edge(cx, cy, dx, dy)
+  +e4 = edge(dx, dy, ax, ay)
+  F32.add(F32.add(e1, e2), F32.add(e3, e4))
+
+# The quad's area inside the frame. Clamping corners is not polygon clipping: a quad
+# that leaves the frame counts its clamped hull, so this overcounts the off-frame part
+# rather than undercounting the on-frame part. It is the same convention `clip_area` uses
+# for the boxes, and the two numbers are meant to be read against each other.
+def quad_area(s: Square, +last: F32) -> U32:
+  +sum = shoelace2(s, last)
+  F32.to_u32(F32.mul(0.5, F32.abs(sum)))
+
+def q_depth_first(s: Square) -> F32:
+  Square{a, _, _, _} = s
+  q_depth(a)
+
+# One face's contribution: the pixels its own quad covers at this camera, and whether any
+# of its corners fell behind the eye, which is the case the shoelace cannot describe.
+type Counted is Data:
+  Counted{pixels: U32, behind: Bool}
+
+def quad_area.first(dir: Nat, +block: U32, +fx: F32, +fy: F32, +fz: F32, +eye: Voxel.Vec,
+  +right: Voxel.Vec, +up: Voxel.Vec, +forward: Voxel.Vec, +half: F32, +focal: F32,
+  +last: F32) -> Counted:
+  +square = square_of(dir, fx, fy, fz, eye, right, up, forward, half, focal)
+  +behind = F32.is_le(q_depth_first(square), 0.0001)
+  Counted{Bool.pick(U32, behind, 0, quad_area(square, last)), behind}
+
+def counted_pixels(c: Counted) -> U32:
+  match c:
+    case Counted{pixels, behind}:
+      pixels
+
+def counted_behind(c: Counted) -> Bool:
+  match c:
+    case Counted{pixels, behind}:
+      behind
+
+def counted.plus(one: Counted, +total: Counted) -> Counted:
+  Counted{pixels, behind} = one
+  Counted{sum, crossed} = total
+  Counted{U32.add(pixels, sum), Bool.or(behind, crossed)}
+
+def quad_area.go(faces: List<&2, Face>, +eye: Voxel.Vec, +right: Voxel.Vec, +up: Voxel.Vec,
+  +forward: Voxel.Vec, +half: F32, +focal: F32, +last: F32, +total: Counted) -> Counted:
+  match faces:
+    case Nil{}:
+      total
+    case Face{fx, fy, fz, dir, block} <> rest:
+      quad_area.go(rest, eye, right, up, forward, half, focal, last, counted.plus(
+        quad_area.first(dir, block, U32.to_f32(fx), U32.to_f32(fy), U32.to_f32(fz), eye,
+          right, up, forward, half, focal, last), total))
+
+def quad_area_of(faces: List<&2, Face>, +camera: Voxel.Camera, +half: F32, +focal: F32,
+  +size: U32) -> Counted:
+  quad_area.go(faces, cam_eye(camera), cam_right(camera), cam_up(camera),
+    cam_forward(camera), half, focal, F32.from_nat(U32.to_nat(U32.sub(size, (1 : U32)))),
+    Counted{(0 : U32), False{}})
+
+# ---------------------------------------------------------------------------
 # 3. The screen tile grid, and the per-pixel fold over one tile's candidates.
 # ---------------------------------------------------------------------------
 
@@ -640,50 +850,52 @@ def empty_grid(+across: U32) -> List<&2, List<&2, List<&2, Screen>>>:
   grid_rows_of(U32.to_nat(across), blank)
 
 # Screen-face accessors. A `Screen` record can be read exactly once, so every
-# field the caller needs is taken by its own accessor.
+# field the caller needs is taken by its own accessor. The four box corners are
+# unpacked from the two words the walk compares; nothing in the per-pixel walk uses
+# these, which is the point of packing them.
 def s_x0(s: Screen) -> U32:
   match s:
-    case Screen{x0, y0, x1, y1, depth, block, dir, alive, origin}:
-      x0
+    case Screen{low, high, depth, block, dir, alive, origin}:
+      U32.and(low, 65535)
 
 def s_y0(s: Screen) -> U32:
   match s:
-    case Screen{x0, y0, x1, y1, depth, block, dir, alive, origin}:
-      y0
+    case Screen{low, high, depth, block, dir, alive, origin}:
+      U32.shrn(low, 16n)
 
 def s_x1(s: Screen) -> U32:
   match s:
-    case Screen{x0, y0, x1, y1, depth, block, dir, alive, origin}:
-      x1
+    case Screen{low, high, depth, block, dir, alive, origin}:
+      U32.and(high, 65535)
 
 def s_y1(s: Screen) -> U32:
   match s:
-    case Screen{x0, y0, x1, y1, depth, block, dir, alive, origin}:
-      y1
+    case Screen{low, high, depth, block, dir, alive, origin}:
+      U32.shrn(high, 16n)
 
 def s_depth(s: Screen) -> F32:
   match s:
-    case Screen{x0, y0, x1, y1, depth, block, dir, alive, origin}:
+    case Screen{low, high, depth, block, dir, alive, origin}:
       depth
 
 def s_block(s: Screen) -> U32:
   match s:
-    case Screen{x0, y0, x1, y1, depth, block, dir, alive, origin}:
+    case Screen{low, high, depth, block, dir, alive, origin}:
       block
 
 def s_dir(s: Screen) -> Nat:
   match s:
-    case Screen{x0, y0, x1, y1, depth, block, dir, alive, origin}:
+    case Screen{low, high, depth, block, dir, alive, origin}:
       dir
 
 def s_alive(s: Screen) -> Bool:
   match s:
-    case Screen{x0, y0, x1, y1, depth, block, dir, alive, origin}:
+    case Screen{low, high, depth, block, dir, alive, origin}:
       alive
 
 def s_origin(s: Screen) -> P:
   match s:
-    case Screen{x0, y0, x1, y1, depth, block, dir, alive, origin}:
+    case Screen{low, high, depth, block, dir, alive, origin}:
       origin
 
 def position_key(origin: P) -> U32:
@@ -696,7 +908,11 @@ def position_key(origin: P) -> U32:
 # grid observes the actual screen boxes, face plane and material in every bucket.
 def s_depth_key(s: Screen) -> U32:
   match s:
-    case Screen{x0, y0, x1, y1, depth, block, dir, alive, origin}:
+    case Screen{+low, +high, depth, block, dir, alive, origin}:
+      +x0 = U32.and(low, 65535)
+      +y0 = U32.shrn(low, 16n)
+      +x1 = U32.and(high, 65535)
+      +y1 = U32.shrn(high, 16n)
       +xy0 = U32.xor(U32.mul(x0, 73856093), U32.mul(y0, 19349663))
       +xy1 = U32.xor(U32.mul(x1, 83492791), U32.mul(y1, 2971215073))
       +z = F32.to_u32(F32.mul(depth, 1024.0))
@@ -716,7 +932,7 @@ def clip(x0: U32, y0: U32, x1: U32, y1: U32, depth: F32, block: U32, dir: Nat,
   +cx1 = U32.min(x1, U32.sub(size, 1))
   +cy1 = U32.min(y1, U32.sub(size, 1))
   +ok = Bool.and(alive, Bool.and(U32.is_le(cx0, cx1), U32.is_le(cy0, cy1)))
-  Screen{cx0, cy0, cx1, cy1, depth, block, dir, ok, origin}
+  Screen{pack(cx0, cy0), pack(cx1, cy1), depth, block, dir, ok, origin}
 
 def clip_screen(+s: Screen, +size: U32) -> Screen:
   clip(s_x0(s), s_y0(s), s_x1(s), s_y1(s), s_depth(s), s_block(s), s_dir(s),
@@ -800,17 +1016,26 @@ def bucket_all(faces: List<&2, Face>, +eye: Voxel.Vec, +right: Voxel.Vec, +up: V
         place(s_alive(screen), s_x0(screen), s_y0(screen), s_x1(screen), s_y1(screen),
           screen, across, edge, rows))
 
-def bucket_faces_with_tile_size(faces: List<&2, Face>, +eye: Voxel.Vec, +right: Voxel.Vec,
-  +up: Voxel.Vec, +forward: Voxel.Vec, +half: F32, +focal: F32, +size: U32,
-  +edge: U32) -> Tiles:
-  +across = tiles_across(size, edge)
-  +empty : List<&2, List<&2, List<&2, Screen>>> = empty_grid(across)
-  Tiles{bucket_all(faces, eye, right, up, forward, half, focal, size, across, edge, empty),
-    size, edge, Voxel.Camera{eye, forward, right, up}, half, focal}
-
-def bucket_faces(faces: List<&2, Face>, +eye: Voxel.Vec, +right: Voxel.Vec, +up: Voxel.Vec,
-  +forward: Voxel.Vec, +half: F32, +focal: F32, +size: U32) -> Tiles:
-  bucket_faces_with_tile_size(faces, eye, right, up, forward, half, focal, size, tile_size())
+# Which builder fills the grid, by how many tiles are across it.
+#
+# The two builders are equivalent — `row_major_matches_scatter` holds that on every
+# size the test covers — and they fail in opposite directions. Scatter pays
+# `2 * across * placements` list steps, because each placement costs a `List.get` and a
+# `List.set` and both walk the row it is indexing. Row-major pays no index at all: it
+# fills one tile row at a time and conses, at the price of re-deciding every face's
+# placement once per row, which is about eight operations a visit.
+#
+# So scatter wins when the row is short, and row-major wins when it is long enough that
+# eight operations a visit is cheaper than two walks of `across`. Measured at the
+# client's own region and camera, grid build inclusive of projection:
+#
+#   tiles across   4 (64x64)    8 (128x128)
+#   scatter            2.90         5.40
+#   row-major          3.00         5.10
+#
+# The crossover is between them, so eight is where the choice is made.
+def grid_is_wide(across: U32) -> Bool:
+  U32.is_ge(across, 8)
 
 # Project once into a forward-ordered screen list. The row-major builder below
 # scans this list once per tile and conses matches into that tile's bucket.
@@ -881,6 +1106,30 @@ def row_major_rows(count: Nat, +ty: U32, +across: U32,
       +row = row_major_buckets(U32.to_nat(across), 0, ty, edge, screens)
       row <> tail
 
+def bucket_faces.for(faces: List<&2, Face>, wide: Bool, +eye: Voxel.Vec,
+  +right: Voxel.Vec, +up: Voxel.Vec, +forward: Voxel.Vec, +half: F32, +focal: F32,
+  +size: U32, +across: U32, +edge: U32) -> Tiles:
+  match wide:
+    case False{}:
+      +empty : List<&2, List<&2, List<&2, Screen>>> = empty_grid(across)
+      Tiles{bucket_all(faces, eye, right, up, forward, half, focal, size, across, edge,
+        empty), size, edge, Voxel.Camera{eye, forward, right, up}, half, focal}
+    case True{}:
+      +screens = project_screens(faces, eye, right, up, forward, half, focal, size)
+      Tiles{row_major_rows(U32.to_nat(across), 0, across, edge, screens), size, edge,
+        Voxel.Camera{eye, forward, right, up}, half, focal}
+
+def bucket_faces_with_tile_size(faces: List<&2, Face>, +eye: Voxel.Vec, +right: Voxel.Vec,
+  +up: Voxel.Vec, +forward: Voxel.Vec, +half: F32, +focal: F32, +size: U32,
+  +edge: U32) -> Tiles:
+  +across = tiles_across(size, edge)
+  bucket_faces.for(faces, grid_is_wide(across), eye, right, up, forward, half, focal,
+    size, across, edge)
+
+def bucket_faces(faces: List<&2, Face>, +eye: Voxel.Vec, +right: Voxel.Vec, +up: Voxel.Vec,
+    +forward: Voxel.Vec, +half: F32, +focal: F32, +size: U32) -> Tiles:
+  bucket_faces_with_tile_size(faces, eye, right, up, forward, half, focal, size, tile_size())
+
 def bucket_faces_row_major_with_tile_size(faces: List<&2, Face>, +eye: Voxel.Vec,
   +right: Voxel.Vec, +up: Voxel.Vec, +forward: Voxel.Vec, +half: F32, +focal: F32,
   +size: U32, +edge: U32) -> Tiles:
@@ -907,23 +1156,18 @@ def bucket_at(+rows: List<&2, List<&2, List<&2, Screen>>>, +tx: U32, +ty: U32) -
 
 def b_block(b: Best) -> U32:
   match b:
-    case Best{block, dir, depth, candidates}:
+    case Best{block, dir, depth}:
       block
 
 def b_dir(b: Best) -> Nat:
   match b:
-    case Best{block, dir, depth, candidates}:
+    case Best{block, dir, depth}:
       dir
 
 def b_depth(b: Best) -> F32:
   match b:
-    case Best{block, dir, depth, candidates}:
+    case Best{block, dir, depth}:
       depth
-
-def b_candidates(b: Best) -> U32:
-  match b:
-    case Best{block, dir, depth, candidates}:
-      candidates
 
 def position_x(origin: P) -> F32:
   match origin:
@@ -970,6 +1214,28 @@ def within_unit(+coord: F32, +origin: F32) -> Bool:
 
 # Intersecting the face plane is an exact point-in-projected-quad test: the hit
 # belongs to the projected face iff its world point lies in the face's unit square.
+#
+# Two ways of doing less work here were tried and both lost, and the reason is the same
+# and worth writing down.
+#
+# The hit's coordinate along the face's own normal is the plane coordinate by
+# construction, so one of the three comparisons is always true and could be skipped by
+# choosing the normal's axis in a `match` first. Measured a wash: 17.90 ms of sequential
+# walk against 17.80.
+#
+# Short-circuiting the three behind `match`es so a candidate that misses on its first
+# coordinate does not pay for the other two is a *worse* wash: 54.45 ms of sequential
+# walk at 128x128 against 52.50, with the bare iteration unchanged, so the two extra
+# dispatches are being paid on every candidate and saving nothing.
+#
+# The reason is the same in both cases and it is the opposite of the win beside it. The
+# walk's *depth* test short-circuits because it usually fails — most candidates are
+# farther than the running best, so the guard usually skips the work. The quad test only
+# runs for candidates that already passed the box test *and* beat the running best on
+# depth, so its operands usually **pass**, and guarding a usually-true operand buys
+# nothing and costs a dispatch. **Short-circuiting pays when the guarded operand usually
+# fails and costs when it usually holds.** Look at which way the bias runs before
+# reaching for it.
 def face_contains_hit(origin: P, eye: Voxel.Vec, ray: Voxel.Vec, +distance: F32) -> Bool:
   P{x, y, z} = origin
   Voxel.Vec{ex, ey, ez} = eye
@@ -980,81 +1246,328 @@ def face_contains_hit(origin: P, eye: Voxel.Vec, ray: Voxel.Vec, +distance: F32)
   Bool.and(Bool.and(within_unit(hit_x, x), within_unit(hit_y, y)),
     within_unit(hit_z, z))
 
-# Keep the exact face-quad hit that is nearest along this pixel's normalized ray.
-def covers_pixel(+s: Screen, +px: U32, +py: U32) -> Bool:
-  Bool.and(
-    Bool.and(U32.is_le(s_x0(s), px), U32.is_le(px, s_x1(s))),
-    Bool.and(U32.is_le(s_y0(s), py), U32.is_le(py, s_y1(s))))
+# A candidate whose screen box holds the pixel, with the exact distance along this
+# pixel's ray written into the record. The winner's `depth` is therefore the exact
+# ray distance, not the projected one, so the next candidate is compared against the
+# same scale as the test that produced it. Rebuilding from the record's own fields
+# rather than threading values down the walk matters: a rejected candidate is the
+# common case by two orders of magnitude, and every value threaded past it is paid
+# for on every candidate whether or not the walk needs it.
+def retimed(+s: Screen, +distance: F32) -> Screen:
+  Screen{low, high, depth, block, dir, alive, origin} = s
+  Screen{low, high, distance, block, dir, alive, origin}
 
-# A candidate that fails the screen-box test is counted and dropped. The counter
-# advances on every candidate, whether or not it wins, so it measures the walk
-# rather than the result.
-def missed(+best: Best) -> Best:
-  Best{b_block(best), b_dir(best), b_depth(best), (b_candidates(best) + 1 : U32)}
+# The exact face-quad hit, when this candidate wins the pixel. The distance is a
+# parameter rather than a computed value because a `match` may only scrutinize a
+# parameter or a field, and this is the branch the walk should skip when the
+# candidate is not nearer.
+def decide(covered: Bool, +s: Screen, +distance: F32, +win: Screen) -> Screen:
+  match covered:
+    case False{}:
+      win
+    case True{}:
+      retimed(s, distance)
 
-# The exact face-quad hit that is nearest along this pixel's normalized ray.
-def nearer(+s: Screen, +eye: Voxel.Vec, +ray: Voxel.Vec, +best: Best) -> Best:
-  +limit = b_depth(best)
-  +block = b_block(best)
-  +dir = b_dir(best)
-  +seen = (b_candidates(best) + 1 : U32)
+# The quad test, behind a `match` on the depth comparison.
+#
+# `face_contains_hit` is three multiplies, three adds and six float compares against
+# the two float compares that decide whether the candidate is in front of the eye and
+# nearer than the pixel's current winner. It used to be the third argument of a
+# `Bool.and`, which evaluates both arguments before the call, so every candidate that
+# reached the plane test paid for it — including the ones that had already lost on
+# depth, which is the overwhelming majority. Of the candidates whose screen box holds
+# a given pixel, only the ones that successively beat the running best reach the quad,
+# and the expected number of those is the harmonic number of the bucket's depth-hits
+# rather than the bucket's depth-hits itself.
+def decide.quad(nearer_than_win: Bool, +s: Screen, +origin: P, +eye: Voxel.Vec,
+  +ray: Voxel.Vec, +distance: F32, +win: Screen) -> Screen:
+  match nearer_than_win:
+    case False{}:
+      win
+    case True{}:
+      decide(face_contains_hit(origin, eye, ray, distance), s, distance, win)
+
+# The plane intersection, behind a `match` on the in-front-of-the-eye comparison, so
+# the depth comparison is made before the quad test rather than alongside it. This is a
+# divide, three multiplies and six float compares, against the two integer compares of
+# the box test, and a bucket holds every face that overlaps its tile while a pixel is
+# covered by only the few whose screen box contains it, so running this for every
+# candidate in the tile was most of the per-pixel cost.
+def nearer(+s: Screen, +eye: Voxel.Vec, +ray: Voxel.Vec, +win: Screen) -> Screen:
   +face_dir = s_dir(s)
-  +distance = ray_plane_depth(face_dir, s_origin(s), eye, ray)
-  +nearer_ok = Bool.and(F32.is_gt(distance, 0.0001), F32.is_lt(distance, limit))
-  +inside_face = face_contains_hit(s_origin(s), eye, ray, distance)
-  +covered = Bool.and(nearer_ok, inside_face)
-  +winner : Best = Best{s_block(s), face_dir, distance, seen}
-  +loser : Best = Best{block, dir, limit, seen}
-  Bool.pick(Best, covered, winner, loser)
+  +origin = s_origin(s)
+  +distance = ray_plane_depth(face_dir, origin, eye, ray)
+  decide.quad(Bool.and(F32.is_gt(distance, 0.0001), F32.is_lt(distance, s_depth(win))),
+    s, origin, eye, ray, distance, win)
 
-# Keep the nearest covering face. The two tests are split across a `match` on a
-# parameter because the second is enormously more expensive than the first: the box
-# test is four integer compares, and the plane hit behind it is a divide, three
-# multiplies and six float compares. Running the second for every candidate in the
-# tile was most of the per-pixel cost, and a `Bool.pick` would not have helped
-# because its arguments are built before the call, whereas a `match` on a parameter
-# skips the rejected branch outright. Most candidates in a tile fail the box test,
-# since a bucket holds every face that overlaps the tile and a pixel is covered by
-# only the few whose screen box contains it.
-def decide(inside: Bool, +s: Screen, +eye: Voxel.Vec, +ray: Voxel.Vec, +best: Best) -> Best:
+# The pixel is above the box's top edge, or level with it and right of its right
+# edge. Splitting the box test across two `match`es is what makes the second compare
+# conditional: a candidate whose box starts past the pixel in y is rejected on one
+# compare, and the runtime never dispatches the second.
+def consider.inside(inside: Bool, +s: Screen, +eye: Voxel.Vec, +ray: Voxel.Vec,
+  +win: Screen) -> Screen:
   match inside:
     case False{}:
-      missed(best)
+      win
     case True{}:
-      nearer(s, eye, ray, best)
+      nearer(s, eye, ray, win)
 
-def closer(+s: Screen, +px: U32, +py: U32, +eye: Voxel.Vec, +ray: Voxel.Vec,
-  +best: Best) -> Best:
-  decide(covers_pixel(s, px, py), s, eye, ray, best)
+# The pixel is below the box's bottom edge, or level with it and left of its left
+# edge. The two halves of the packed words decide this between them: y sits in the
+# more significant half, so it settles the test unless the two y values tie.
+def consider(low_side: Bool, high: U32, +s: Screen, +pix: U32, +eye: Voxel.Vec,
+  +ray: Voxel.Vec, +win: Screen) -> Screen:
+  match low_side:
+    case False{}:
+      win
+    case True{}:
+      consider.inside(U32.is_le(pix, high), s, eye, ray, win)
 
-# Walk the bucket, folding the best covering face forward. The counter is the
-# measured candidates-per-pixel, not an assumption about the cost model.
-def scan_bucket(bucket: List<&2, Screen>, +px: U32, +py: U32, +eye: Voxel.Vec,
-  +ray: Voxel.Vec, +best: Best) -> Best:
+# Walk the bucket, folding the winning face forward. The accumulator is a `Screen`
+# and not a `Best` on purpose: a rejected candidate is by far the common case, and
+# with a `Best` it cost a record allocation per rejection. At the client's own view
+# that is 170 candidates for each of 4,096 pixels, in the loop whose whole job is
+# to reject them. Here a rejected candidate allocates nothing, and a winner costs
+# the one record that carries the new depth.
+#
+
+# per call and not per candidate: measured against a one-candidate-per-call walk
+
+# a twentieth of the total, so the rest is the step back into the loop.
+def scan_bucket(bucket: List<&2, Screen>, +pix: U32, +eye: Voxel.Vec,
+  +ray: Voxel.Vec, +win: Screen) -> Screen:
   match bucket:
     case Nil{}:
-      best
+      win
     case +s <> rest:
-      scan_bucket(rest, px, py, eye, ray, closer(s, px, py, eye, ray, best))
+      Screen{low, high, depth, block, dir, alive, origin} = s
+      scan_bucket(rest, pix, eye, ray,
+        consider(U32.is_le(low, pix), high, s, pix, eye, ray, win))
 
 # The nearest face covering one pixel, or the sky block when nothing covers it.
-# The depth starts at the maximum so the first candidate always wins its test.
-def no_face() -> Best:
-  Best{(0 : U32), 0n, (1.0e30 : F32), (0 : U32)}
+# The depth starts at the maximum so the first candidate always wins its test, and
+# the block is 0, which is the sky the colour path already looks for. Its box spans
+# the whole 16-bit range, so it sits in the same packed form the walk compares.
+def no_face() -> Screen:
+  Screen{(0 : U32), 4294967295, (1.0e30 : F32), (0 : U32), 0n, False{},
+    P{(0.0 : F32), (0.0 : F32), (0.0 : F32)}}
 
-def face_at_pixel(tiles: Tiles, +px: U32, +py: U32) -> Best:
+def nearest_face(tiles: Tiles, +px: U32, +py: U32) -> Screen:
   Tiles{rows, size, +edge, +camera, half, focal} = tiles
   +eye = Voxel.Camera.eye(camera)
   +ray = Voxel.Camera.ray_for(camera, px, py, half, focal)
-  scan_bucket(bucket_at(rows, U32.div(px, edge), U32.div(py, edge)), px, py,
-    eye, ray, no_face())
+  # The pixel packs the way the boxes do, once per pixel rather than once per
+  # candidate: this is the only place the walk's two compares are set up.
+  +pix = pack(px, py)
+  scan_bucket(bucket_at(rows, U32.div(px, edge), U32.div(py, edge)), pix, eye, ray,
+    no_face())
+
+def face_at_pixel(tiles: Tiles, +px: U32, +py: U32) -> Best:
+  +win = nearest_face(tiles, px, py)
+  Best{s_block(win), s_dir(win), s_depth(win)}
 
 # The colour of one pixel, using the ray renderer's palette and per-face tint so
 # the two renderers' colours are directly comparable.
+#
+# This looks like the eager-argument trap twice over and is neither. `Bool.pick` builds
+# both arms, so a sky pixel does pay for `Voxel.block_color` — a match over thirty ids —
+# and `Voxel.shade_color`, which is three integer divides; and the winner is read
+# through `s_block` twice and `s_dir` once, three accessor calls each destructuring all
+# seven fields. Splitting the pick behind a `match` and reading the winner once needs a
+# `shade.of` helper and a `shade.is_sky` helper, because a destructure needs a parameter
+# and a `let`-bound local will not do, and that is two more dispatches per pixel against
+# the one it removes.
+#
+# Measured, it is a small loss: the sequential walk 53.70 ms against 52.80, with the bare
+# iteration unchanged. The arithmetic is the reason and it is worth having — skipping a
+# usually-taken arm saves three integer divides, about 23 cycles each, while a dispatch
+# is well under ten, so the saving does not cover the call that buys it. `Bool.pick` is
+# one dispatch for both arms; two helpers are two.
 def face_pixel_color(tiles: Tiles, +px: U32, +py: U32) -> U32:
-  +best = face_at_pixel(tiles, px, py)
-  Bool.pick(U32, U32.is_eq(b_block(best), 0), Voxel.sky_color(py),
-    Voxel.shade_color(Voxel.block_color(b_block(best)), U32.from_nat(b_dir(best))))
+  +win = nearest_face(tiles, px, py)
+  Bool.pick(U32, U32.is_eq(s_block(win), 0), Voxel.sky_color(py),
+    Voxel.shade_color(Voxel.block_color(s_block(win)), U32.from_nat(s_dir(win))))
+
+# ---------------------------------------------------------------------------
+# 4a. Walk cost probe: what a step of the bucket walk actually costs.
+# ---------------------------------------------------------------------------
+
+# The floor. One cons cell, one destructure, one add, one tail call: no test, no
+# branch, no helper. This is the runtime's list iteration and nothing else, so the
+# difference between it and `scan_bucket` is everything the walk does per candidate
+# on top of stepping.
+def step_only(bucket: List<&2, Screen>, +pix: U32, +acc: U32) -> U32:
+  match bucket:
+    case Nil{}:
+      acc
+    case +s <> rest:
+      Screen{low, high, depth, block, dir, alive, origin} = s
+      step_only(rest, pix, U32.add(acc, low))
+
+# The same iteration with the destructure left out. `step_only` binds all seven fields
+# of the record because a pattern must list every one of them, and the walk reads two;
+# the difference between this and `step_only` is what those five unread field reads
+# cost, which is the whole case for splitting the record.
+def step_bare(bucket: List<&2, Screen>, +acc: U32) -> U32:
+  match bucket:
+    case Nil{}:
+      acc
+    case +s <> rest:
+      step_bare(rest, U32.add(acc, 1))
+
+# The same walk with the two halves of the box test folded into one `Bool.and` and
+# one helper, so the reject path makes a single call instead of two. The shipped walk
+# splits the test so the second compare is conditional; here both are always paid and
+# the call is saved. The bench measures the two the same over three runs, so this is
+# not an improvement to collect — it is here because it is the other end of the
+# measurement that prices the walk's reject path, and because it is the shape the
+# split has to be checked against. `nearest_face_one` is the same answer as
+# `nearest_face`, and `face_probe_test` holds them equal on every pixel.
+def consider.any(inside: Bool, +s: Screen, +eye: Voxel.Vec, +ray: Voxel.Vec,
+  +win: Screen) -> Screen:
+  match inside:
+    case False{}:
+      win
+    case True{}:
+      nearer(s, eye, ray, win)
+
+def scan_bucket_one(bucket: List<&2, Screen>, +pix: U32, +eye: Voxel.Vec,
+  +ray: Voxel.Vec, +win: Screen) -> Screen:
+  match bucket:
+    case Nil{}:
+      win
+    case +s <> rest:
+      Screen{low, high, depth, block, dir, alive, origin} = s
+      scan_bucket_one(rest, pix, eye, ray,
+        consider.any(Bool.and(U32.is_le(low, pix), U32.is_le(pix, high)), s, eye, ray, win))
+
+def nearest_face_one(tiles: Tiles, +px: U32, +py: U32) -> Screen:
+  Tiles{rows, size, +edge, +camera, half, focal} = tiles
+  +eye = Voxel.Camera.eye(camera)
+  +ray = Voxel.Camera.ray_for(camera, px, py, half, focal)
+  +pix = pack(px, py)
+  scan_bucket_one(bucket_at(rows, U32.div(px, edge), U32.div(py, edge)), pix, eye, ray,
+    no_face())
+
+def face_pixel_color_one(tiles: Tiles, +px: U32, +py: U32) -> U32:
+  +win = nearest_face_one(tiles, px, py)
+  Bool.pick(U32, U32.is_eq(s_block(win), 0), Voxel.sky_color(py),
+    Voxel.shade_color(Voxel.block_color(s_block(win)), U32.from_nat(s_dir(win))))
+
+# The bare iteration, summed over every pixel, so a benchmark can time it.
+def step_mix(hash: U32, value: U32) -> U32:
+  U32.xor(U32.mul(hash, 16777619), value)
+
+def step_row(+rows: List<&2, List<&2, List<&2, Screen>>>, +edge: U32, remaining: Nat,
+  +px: U32, +py: U32, +hash: U32) -> U32:
+  match remaining:
+    case 0n:
+      hash
+    case 1n+r:
+      +next = (px + 1 : U32)
+      step_row(rows, edge, r, next, py,
+        step_mix(hash, step_only(bucket_at(rows, U32.div(px, edge), U32.div(py, edge)),
+          pack(px, py), 2166136261)))
+
+def step_walk(+rows: List<&2, List<&2, List<&2, Screen>>>, +edge: U32, +size: U32,
+  rows_left: Nat, +py: U32, +hash: U32) -> U32:
+  match rows_left:
+    case 0n:
+      hash
+    case 1n+r:
+      +next = (py + 1 : U32)
+      step_walk(rows, edge, size, r, next, step_row(rows, edge, U32.to_nat(size), 0, py, hash))
+
+def step_bare_row(+rows: List<&2, List<&2, List<&2, Screen>>>, +edge: U32,
+  remaining: Nat, +px: U32, +py: U32, +hash: U32) -> U32:
+  match remaining:
+    case 0n:
+      hash
+    case 1n+r:
+      step_bare_row(rows, edge, r, (px + 1 : U32), py,
+        step_mix(hash, step_bare(bucket_at(rows, U32.div(px, edge), U32.div(py, edge)),
+          2166136261)))
+
+def step_bare.walk(+rows: List<&2, List<&2, List<&2, Screen>>>, +edge: U32, +size: U32,
+  rows_left: Nat, +py: U32, +hash: U32) -> U32:
+  match rows_left:
+    case 0n:
+      hash
+    case 1n+r:
+      step_bare.walk(rows, edge, size, r, (py + 1 : U32),
+        step_bare_row(rows, edge, U32.to_nat(size), 0, py, hash))
+
+def step_bare.go(remaining: Nat, +rows: List<&2, List<&2, List<&2, Screen>>>,
+  +edge: U32, +size: U32, +hash: U32) -> U32:
+  match remaining:
+    case 0n:
+      hash
+    case 1n+r:
+      step_bare.go(r, rows, edge, size,
+        step_bare.walk(rows, edge, size, U32.to_nat(size), 0, hash))
+
+# A \match\ may only scrutinize a parameter or a field, and destructuring the grid
+# turns every other binder into a computed value, so the countdown and the destructure
+# cannot share a definition.
+def step_bare.rows(remaining: Nat, +tiles: Tiles, +size: U32, +hash: U32) -> U32:
+  Tiles{rows, tile_size, edge, camera, half, focal} = tiles
+  step_bare.go(remaining, rows, edge, size, hash)
+
+def step_bare.go2(remaining: Nat, +tiles: Tiles, +size: U32, +hash: U32) -> U32:
+  match remaining:
+    case 0n:
+      hash
+    case 1n+p:
+      step_bare.rows(p, tiles, size, hash)
+
+# A `match` may only scrutinize a parameter or a field, and destructuring the grid
+# turns every other binder into a computed value, so the countdown and the destructure
+# cannot share a definition.
+def step.rows.go(remaining: Nat, +rows: List<&2, List<&2, List<&2, Screen>>>,
+  +edge: U32, +size: U32, +hash: U32) -> U32:
+  match remaining:
+    case 0n:
+      hash
+    case 1n+r:
+      step.rows.go(r, rows, edge, size,
+        step_walk(rows, edge, size, U32.to_nat(size), 0, hash))
+
+def step.rows(remaining: Nat, +tiles: Tiles, +size: U32, +hash: U32) -> U32:
+  Tiles{rows, tile_size, edge, camera, half, focal} = tiles
+  step.rows.go(remaining, rows, edge, size, hash)
+
+def step.go(remaining: Nat, +tiles: Tiles, +size: U32, +hash: U32) -> U32:
+  match remaining:
+    case 0n:
+      hash
+    case 1n+p:
+      step.rows(p, tiles, size, hash)
+
+# The one-call walk, over the same grid, driven the same way `pixel.go` drives the
+# shipped one.
+def one_row(+tiles: Tiles, remaining: Nat, +px: U32, +py: U32, +size: U32,
+  +hash: U32) -> U32:
+  match remaining:
+    case 0n:
+      hash
+    case 1n+r:
+      +next = (px + 1 : U32)
+      one_row(tiles, r, next, py, size, step_mix(hash, face_pixel_color_one(tiles, px, py)))
+
+def one_walk(+tiles: Tiles, rows_left: Nat, +py: U32, +size: U32, +hash: U32) -> U32:
+  match rows_left:
+    case 0n:
+      hash
+    case 1n+r:
+      +next = (py + 1 : U32)
+      one_walk(tiles, r, next, size, one_row(tiles, U32.to_nat(size), 0, py, size, hash))
+
+def one.go(remaining: Nat, +tiles: Tiles, +size: U32, +hash: U32) -> U32:
+  match remaining:
+    case 0n:
+      hash
+    case 1n+p:
+      one.go(p, tiles, size, one_walk(tiles, U32.to_nat(size), 0, size, hash))
 
 # ---------------------------------------------------------------------------
 # 5. The quadtree fold, the same shape as the ray renderer's `image`.
@@ -1137,19 +1650,26 @@ def render_size_at_with_tile_size(chunk: Array<U32>, +eye: Voxel.Vec, +yaw: F32,
     cam_right(camera), cam_up(camera), cam_forward(camera), half, focal, size, edge)
   render_size_tiles(tiles, depth)
 
+# The frame over a face list the caller already holds. Extraction is the client's to
+# schedule, not the renderer's: the region's cells do not change when the player walks,
+# so a client that re-extracts them every frame pays for a world that did not move.
+# Everything from the projection down is the same code either way.
+def render_faces_at_with_tile_size(faces: List<&2, Face>, +eye: Voxel.Vec, +yaw: F32,
+  +pitch: F32, +depth: Nat, +edge: U32) -> Image:
+  +camera : Voxel.Camera = Voxel.Camera.look(eye, yaw, pitch)
+  +half = Voxel.projection_half(depth)
+  +focal = F32.mul(1.5, half)
+  +size = U32.shln((1 : U32), depth)
+  render_size_tiles(bucket_faces_with_tile_size(faces, cam_eye(camera), cam_right(camera),
+    cam_up(camera), cam_forward(camera), half, focal, size, edge), depth)
+
 # The same frame over a region of chunks. Identical to the entry above from the
 # projection down; only the face source differs, so a region cannot drift into a
 # different camera, bucket or fill than the one-chunk path the agreement gate checks.
 def render_region_at_with_tile_size(chunks: List<&2, List<&2, U32>>, columns: Nat,
   rows: Nat, +eye: Voxel.Vec, +yaw: F32, +pitch: F32, +depth: Nat, +edge: U32) -> Image:
-  +camera : Voxel.Camera = Voxel.Camera.look(eye, yaw, pitch)
-  +half = Voxel.projection_half(depth)
-  +focal = F32.mul(1.5, half)
-  +size = U32.shln((1 : U32), depth)
-  +tiles = bucket_faces_with_tile_size(faces_from_chunks(chunks, columns, rows),
-    cam_eye(camera), cam_right(camera), cam_up(camera), cam_forward(camera),
-    half, focal, size, edge)
-  render_size_tiles(tiles, depth)
+  render_faces_at_with_tile_size(faces_from_chunks(chunks, columns, rows), eye, yaw,
+    pitch, depth, edge)
 
 def render_size_at(chunk: Array<U32>, +eye: Voxel.Vec, +yaw: F32, +pitch: F32,
   +depth: Nat) -> Image:

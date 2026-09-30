@@ -14,8 +14,8 @@ import ./save-migration/save_migration.bend as Migration
 # face renderer's, and the save format is the same `B2CW:1` the legacy importer
 # reads and writes. What is here is the wiring, and only the wiring.
 #
-# The window is 64x64: the largest square whose measured frame cost fits the pinned
-# runtime's own 60 Hz pacing on this machine. See `window_width` for the numbers.
+# The window is 64x64: the largest square whose measured frame cost leaves room in the
+# pinned runtime's own 60 Hz pacing on this machine. See `window_width` for the numbers.
 type Client is Data:
   Client{
     player: Player.State,
@@ -23,28 +23,89 @@ type Client is Data:
     keys: U32,
     edits: List<&2, WorldState.Edit>,
     region: PlayerProbe.Region,
-    path: String
+    path: String,
+    world: World
   }
 
-# The window is 64x64, and that is a measured choice rather than a preference.
-# `native/client-probe` times the client's own stages at its own spawn camera with
-# the image read back through the same quadtree walk `window_show` performs:
-# per-call medians over seven samples, native C, `--gpu off`, eight threads, give
-# 5.98 ms of render at 32x32, 9.45 ms at 64x64 and 22.55 ms at 128x128, with the tick
-# at 0.88 ms on top. So 64x64 is about 10.3 ms of a frame against the 16.7 ms the
-# pinned runtime's own 60 Hz pacing leaves, and 128x128 would be 24.35 ms, which is
-# about 41 FPS. 64x64 is the largest square this engine holds at 60 Hz on this
-# machine; 128x128 is one benchmark away from being honest about not.
+# The view region's exposed faces, and the edit log they were extracted from.
+#
+# This is the client's world, kept between frames. The view region is a fixed set of
+# chunks, so its cells and its exposed faces do not change when the player walks: only
+# the camera does, and the camera is read after this. Re-extracting the region every
+# frame costs more than the whole rest of the frame put together, so the client holds
+# the faces and rebuilds them only when the edit log says the world did change.
+#
+# The key is the edit log itself and not its length, because `WorldState.set` replaces
+# an existing entry in place: digging the same cell twice leaves the log the same size
+# and the cell a different value. The log holds one entry per edited cell and a session
+# edits a handful, so comparing it costs a few dozen field reads against a region walk
+# of 20,480 cells.
+type World is Data:
+  World{faces: List<&2, Face.Face>, edits: List<&2, WorldState.Edit>}
+
+def w_faces(world: World) -> List<&2, Face.Face>:
+  match world:
+    case World{faces, edits}:
+      faces
+
+def w_edits(world: World) -> List<&2, WorldState.Edit>:
+  match world:
+    case World{faces, edits}:
+      edits
+
+def same_edit(a: WorldState.Edit, b: WorldState.Edit) -> Bool:
+  WorldState.Edit{ax, ay, az, ablock} = a
+  WorldState.Edit{bx, by, bz, bblock} = b
+  Bool.and(Bool.and(Nat.is_eq(ax, bx), Nat.is_eq(ay, by)),
+    Bool.and(Nat.is_eq(az, bz), U32.is_eq(ablock, bblock)))
+
+def same_edits(+a: List<&2, WorldState.Edit>, +b: List<&2, WorldState.Edit>) -> Bool:
+  match a b:
+    case Nil{} Nil{}:
+      True{}
+    case Con{ah, at} Con{bh, bt}:
+      Bool.and(same_edit(ah, bh), same_edits(at, bt))
+    case _ _:
+      False{}
+
+# The window is 128x128, and that is a measured choice rather than a preference.
+#
+# The frame rate the player sees is not this number. `window_pace` in the pinned
+# runtime's `effs/window.c` sleeps every presented frame to the next 16.67 ms tick, so
+# the client is capped at 60 Hz however fast the frame is, and `vendor/bend` is not
+# ours to edit. What is ours is the frame cost, and therefore how large a window fits
+# inside the cap. `native/client-probe` times the client's own stages at its own spawn
+# camera with the image read back through the same quadtree walk `window_show`
+# performs, native C, `--gpu off`, eight threads on the machine named in
+# `docs/2026-09-30-native-renderer-investigation.md`:
+#
+#   size    render   frame   headroom
+#     32     3.21      —         —
+#     64     5.83      —         —
+#    128    13.95   14.20     2.5 ms
+#    256    49.00      —         —
+#
+# 128x128 was 24.35 ms at the start of this work and did not fit the cap. It fits now,
+# with 2.5 ms of slack, and it is what ships: 256x256 at 49.00 ms is 20 Hz and is not a
+# choice, and a smaller window is a smaller picture for the same 60 frames.
+#
+# `native/client-probe/run-fps.sh` measures the live loop rather than the stages, and it
+# is the number this comment is really about: 59.98, 60.00 and 59.99 presented frames a
+# second over 600-frame runs at 128x128, which is the ceiling rather than a budget
+# beside it. 64x64 remains the size to fall back to.
+#
+# Every frame the client can draw is inside the 16.67 ms tick, including the one that
+# follows a dig: `frame_held` 14.05 [13.80, 14.25] and `frame_edited` 16.05
+# [15.75, 16.50] over twenty-one samples. The dig frame is the tightest, and it got
+# there by not building the air rows and air layers the extraction asks for on every row
+# of every layer and uses on one — `Maybe.default` builds its default before the call.
+# 64x64 remains the size to fall back to, at four times the margin.
 def window_width() -> U32:
-  64
+  128
 
 def frame_depth() -> Nat:
-  6n
+  7n
 
-# The scatter tile edge, chosen by measurement at this window size: 16 buckets a
-# tile reads 12.6 ms per frame at 128x128 and eight threads against the 8-pixel
-# default's 21.4 ms, and both renderers agree exactly at either edge, so the choice
-# is cost only.
 # The tile edge the renderer buckets faces into, chosen from the frame depth by
 # measurement rather than by taste. A tile costs a fixed amount to build, project and
 # hold, and every pixel in it walks the whole bucket, so the two costs pull in opposite
@@ -61,6 +122,17 @@ def frame_depth() -> Nat:
 # The crossover sits between 128 and 256: below it the per-tile cost dominates and 16
 # wins, above it the per-pixel bucket walk dominates and 32 wins. `edge 32` also costs
 # 14.80 ms on the full 64x64 frame against 10.45 at 16, so the shipped size keeps 16.
+#
+# That table is one chunk, and the edge was re-measured at the client's own region and
+# camera before this was settled, because the two have to be compared as they ship. The
+# per-pixel walk is cheaper at a smaller edge and the scatter builder is dearer, and the
+# builder is not parallel: at 64x64 the walk charges 695,808 candidates at edge 16,
+# 488,640 at edge 8 and 400,128 at edge 2, while the builder's cost is
+# `2 * across * placements` list steps, which is 21,744 steps at edge 16 and 134,976 at
+# edge 8. The walk parallelises and the builder does not, so the balance that puts the
+# tile count at 16 is the balance that was measured. Dropping to edge 8 measured 9.50 ms
+# of render against 7.75 at edge 16 at the time, and the whole-frame cost is what moved:
+# the walk saves 4.0 ms and the builder spends 2.5 ms of it back.
 #
 # The edge follows the depth of the frame being built, not the depth the client ships,
 # so that a frame measured at another size is measured with the edge that size wants.
@@ -168,7 +240,7 @@ def quitting_from(closing: Bool, keys: U32) -> Bool:
 
 # `Player.raycast` answers in the encoded window, so the aim state is rebuilt
 # from the pose instead of taking the player the tick owns.
-def aim_cast(+pose: Frame.Pose, +blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat,
+def aim_cast(+pose: Frame.Pose, +blocks: List<&2, List<&2, U32>>, +origin_x: Nat, +origin_y: Nat,
   +origin_z: Nat, +width: Nat, +height: Nat, +depth: Nat) -> Player.RayResult:
   +eye = Frame.eye_of(pose)
   +x = F32.add(Frame.eye_x(eye), F32.from_nat(origin_x))
@@ -327,23 +399,68 @@ def region_chunks(+seed: Nat, +edits: List<&2, WorldState.Edit>) ->
   List<&2, List<&2, U32>>:
   region_rows(Frame.view_rows(), seed, Frame.chunk_x(), Frame.chunk_z(), edits)
 
+# The region's exposed faces for one edit log. This is the one def that owns the
+# region's shape, so the cold path and the warm path cannot disagree about how many
+# chunks are in view or which cells they cover.
+#
+# The cold path's whole cost, and worth knowing its shape before trying to cache any of
+# it. At the client's own region it measures 1.88 ms, and it splits into the four chunk
+# exports at 0.35 ms and the region-wide extraction at 1.53 ms.
+#
+# Only the 0.35 ms is cacheable per chunk, and that is worth 0.26 ms. The faces are not
+# cacheable at all, because a face on a chunk seam is decided by the neighbouring chunk:
+# `faces_from_chunks` flattens the region's chunks, pads it and reads six neighbours per
+# cell precisely so that the seam is right. A cache of *faces* would have to invalidate
+# neighbours as well, and a cache that misses that shows stale seam faces: wrong rendering
+# at a boundary, not a failed assertion.
+#
+# Caching the chunks' *cells* is sound, and it was built and measured. It buys nothing,
+# because the rendered region is one chunk: `Frame.view_columns` and `Frame.view_rows` are
+# both 1, so the cache has a single key, that key is the whole edit log, and `world_for`
+# only rebuilds when the log has changed. Every rebuild therefore missed, and the cache
+# cost a record, a list and a per-edit filter pass to return the same cells. A per-chunk
+# cache needs a per-chunk region to pay off, and the two-by-two region was measured at
+# 19.10 ms against a 16.67 ms budget (`Frame.view_columns`). The 0.26 ms is real and
+# unreachable until the view is wider than one chunk, which the frame budget forbids.
+def world_built(+edits: List<&2, WorldState.Edit>) -> World:
+  World{Face.faces_from_chunks(region_chunks(Frame.seed(), edits),
+    Frame.view_columns(), Frame.view_rows()), edits}
+
+# The cached world when the edit log is unchanged, and a fresh extraction when it is
+# not.
+def world_of(unchanged: Bool, +world: World, +edits: List<&2, WorldState.Edit>) -> World:
+  match unchanged:
+    case True{}:
+      world
+    case False{}:
+      world_built(edits)
+
+def world_for(+world: World, +edits: List<&2, WorldState.Edit>) -> World:
+  world_of(same_edits(w_edits(world), edits), world, edits)
+
 # The frame at an explicit depth, so the benchmark can measure the sizes the client
 # might ship at without restating the render call. The client's own `image_of` is this
 # at the depth it ships; the benchmark used to inline its own copy of the call, which is
 # how it came to measure a one-chunk render the client no longer does.
-def image_at_depth(+edits: List<&2, WorldState.Edit>, +pose: Frame.Pose, +depth: Nat) ->
-  Image:
+def image_at_depth(world: World, +pose: Frame.Pose, +depth: Nat) -> Image:
   +eye = Frame.eye_of(pose)
-  Face.render_region_at_with_tile_size(region_chunks(Frame.seed(), edits),
-    Frame.view_columns(), Frame.view_rows(), eye, Frame.yaw_of(pose),
+  Face.render_faces_at_with_tile_size(w_faces(world), eye, Frame.yaw_of(pose),
     Frame.pitch_of(pose), depth, tile_edge_at(depth))
 
-def image_of(+edits: List<&2, WorldState.Edit>, +pose: Frame.Pose) -> Image:
-  image_at_depth(edits, pose, frame_depth())
+def image_of(world: World, +pose: Frame.Pose) -> Image:
+  image_at_depth(world, pose, frame_depth())
 
+# The frame and the state that goes with it.
+#
+# `App.loop` runs `view` and then `tick`, so a dig the tick records on this frame is
+# drawn on the next one. That is the loop's order rather than this function's choice:
+# the tick runs after the draw either way, and putting the refresh here rather than in
+# the tick costs the same frame and keeps the world's lifetime with the thing that
+# reads it.
 def view(state: Client) -> Client & Image:
-  Client{player, +pose, keys, +edits, region, path} = state
-  (state, image_of(edits, pose))
+  Client{player, +pose, keys, +edits, region, path, +world} = state
+  +next : World = world_for(world, edits)
+  (Client{player, pose, keys, edits, region, path, next}, image_of(next, pose))
 
 # --- the tick ----------------------------------------------------------------
 #
@@ -357,29 +474,30 @@ def view(state: Client) -> Client & Image:
 
 def tick.acting(player: Player.State, pose: Frame.Pose, +mask: U32,
   +edits: List<&2, WorldState.Edit>, region: PlayerProbe.Region, +path: String,
-  saving: Bool) -> IO(Maybe<Client>):
+  +world: World, saving: Bool) -> IO(Maybe<Client>):
   match saving:
     case True{}:
       do IO<Maybe<Client>>:
         written : Unit <- save_text.at(path, Migration.encode(Migration.Snapshot{Frame.seed(), edits}))
-        return Some{Client{player, pose, mask, edits, region, path}}
+        return Some{Client{player, pose, mask, edits, region, path, world}}
     case False{}:
-      IO.pure(Maybe<Client>, Some{Client{player, pose, mask, edits, region, path}})
+      IO.pure(Maybe<Client>, Some{Client{player, pose, mask, edits, region, path, world}})
 
 def tick.quitting(quitting: Bool, player: Player.State, pose: Frame.Pose, +mask: U32,
   edits: List<&2, WorldState.Edit>, region: PlayerProbe.Region, path: String,
-  saving: Bool) -> IO(Maybe<Client>):
+  +world: World, saving: Bool) -> IO(Maybe<Client>):
   match quitting:
     case True{}:
       IO.pure(Maybe<Client>, None{})
     case False{}:
-      tick.acting(player, pose, mask, edits, region, path, saving)
+      tick.acting(player, pose, mask, edits, region, path, world, saving)
 
 def tick.decided(next_edits: List<&2, WorldState.Edit>, staged: Frame.Staged, +mask: U32,
-  region: PlayerProbe.Region, path: String, saving: Bool, closing: Bool) -> IO(Maybe<Client>):
+  region: PlayerProbe.Region, path: String, +world: World, saving: Bool,
+  closing: Bool) -> IO(Maybe<Client>):
   Frame.Staged{player, pose, changed} = staged
   quitting = quitting_from(closing, mask)
-  tick.quitting(quitting, player, pose, mask, next_edits, region, path, saving)
+  tick.quitting(quitting, player, pose, mask, next_edits, region, path, world, saving)
 
 # `App` hands the tick a `List<&1, Event>` and the frame probe folds a
 # `List<&2, Event>`. This is the whole bridge: one pass that shares each event
@@ -414,23 +532,28 @@ def share_events(events: List<&1, Event>) -> Folded:
 # The mask is read off that fold for the edge decisions, and the player transition
 # and the pose come from the probe's own `advance`, so no rule is asked twice.
 def tick.folded(folded: Folded, player: Player.State, +pose: Frame.Pose, +keys: U32,
-  edits: List<&2, WorldState.Edit>, +region: PlayerProbe.Region, path: String) -> IO(Maybe<Client>):
+  edits: List<&2, WorldState.Edit>, +region: PlayerProbe.Region, path: String,
+  +world: World) -> IO(Maybe<Client>):
   Folded{+shared, closing} = folded
   +mask : U32 = Frame.keys_mask(Frame.input(shared))
   +staged : Frame.Staged = Frame.advance(player, shared, Frame.tick_dt(), region,
     Frame.origin_x(), Frame.origin_z(), pose)
   next_edits = edited(edits, pose, region, wants_dig(keys, mask), wants_place(keys, mask))
-  tick.decided(next_edits, staged, mask, region, path, wants_save(keys, mask), closing)
+  tick.decided(next_edits, staged, mask, region, path, world, wants_save(keys, mask),
+    closing)
 
 def tick.events(events: List<&1, Event>, state: Client) -> IO(Maybe<Client>):
-  Client{player, +pose, +keys, edits, +region, path} = state
-  tick.folded(share_events(events), player, pose, keys, edits, region, path)
+  Client{player, +pose, +keys, edits, +region, path, +world} = state
+  tick.folded(share_events(events), player, pose, keys, edits, region, path, world)
 
 # --- start -------------------------------------------------------------------
 
 def start.readied(player: Player.State, +pose: Frame.Pose, +region: PlayerProbe.Region,
   +edits: List<&2, WorldState.Edit>, +path: String) -> IO(Client):
-  IO.pure(Client, Client{player, pose, 0, edits, region, path})
+  # The world is built once here, from the edits the save carried, and every later
+  # frame reads it back unless the tick changed the log.
+  +world : World = world_built(edits)
+  IO.pure(Client, Client{player, pose, 0, edits, region, path, world})
 
 def start.placed(+player: Player.State, region: PlayerProbe.Region,
   +edits: List<&2, WorldState.Edit>, +path: String) -> IO(Client):

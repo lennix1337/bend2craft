@@ -1,5 +1,25 @@
 import assert from "node:assert/strict";
 import Player from "../world/player.bend";
+import { bendPlanes } from "../web/bend-list.js";
+
+// The region is a list of y-planes, each `width * depth` cells, which is the shape
+// `Player.region_block` reads. The fixtures below are written in the region's own
+// cell order, y-major, so the plane at height `y` is the slice starting at
+// `y * width * depth`.
+const REGION = { width: 5, height: 6, depth: 5 };
+const PLANE_CELLS = REGION.width * REGION.depth;
+
+function regionOf(solidAt) {
+  const values = [];
+  for (let y = 0; y < REGION.height; y += 1) {
+    for (let z = 0; z < REGION.depth; z += 1) {
+      for (let x = 0; x < REGION.width; x += 1) {
+        values.push(solidAt(x, y, z));
+      }
+    }
+  }
+  return bendPlanes(values, PLANE_CELLS);
+}
 
 const state = Player.create(2n, 2n, 1n);
 assert.equal(state.$, "State");
@@ -24,18 +44,10 @@ const direction = Player.direction(state);
 assert.equal(direction.$, "Direction");
 assert.ok(Number(direction.z) < 0);
 
-let blocks = { $: "Nil" };
-for (let index = 5 * 6 * 5 - 1; index >= 0; index -= 1) {
-  const y = Math.floor(index / 25);
-  blocks = { $: "Con", head: y === 0 ? 1 : 0, tail: blocks };
-}
+const blocks = regionOf((_x, y) => (y === 0 ? 1 : 0));
 assert.equal(Player.collides(state, 2.5, 1.05, 2.5, blocks, 0n, 0n, 0n, 5n, 6n, 5n), false);
 assert.equal(Player.collides(state, 2.5, 0.2, 2.5, blocks, 0n, 0n, 0n, 5n, 6n, 5n), true);
-let farmlandBlocks = { $: "Nil" };
-for (let index = 5 * 6 * 5 - 1; index >= 0; index -= 1) {
-  const y = Math.floor(index / 25);
-  farmlandBlocks = { $: "Con", head: y === 0 ? 20 : 0, tail: farmlandBlocks };
-}
+const farmlandBlocks = regionOf((_x, y) => (y === 0 ? 20 : 0));
 assert.equal(Player.collides(state, 2.5, 0.9375, 2.5, farmlandBlocks, 0n, 0n, 0n, 5n, 6n, 5n), false);
 assert.equal(Player.collides(state, 2.5, 0.9, 2.5, farmlandBlocks, 0n, 0n, 0n, 5n, 6n, 5n), true);
 let landed = state;
@@ -85,12 +97,11 @@ assert.ok(2.5 - Number(sneakOverride.z) < (2.5 - Number(walker.z)) * 0.75, "snea
 
 // --- survival: fall damage, water, drowning, regen, poison (Bend-owned) ---
 function flatBlocks(width, height, depth, fill) {
-  let list = { $: "Nil" };
-  for (let index = width * height * depth - 1; index >= 0; index -= 1) {
-    const y = Math.floor(index / (width * depth));
-    list = { $: "Con", head: y === 0 ? fill : 0, tail: list };
+  const values = [];
+  for (let index = 0; index < width * height * depth; index += 1) {
+    values.push(Math.floor(index / (width * depth)) === 0 ? fill : 0);
   }
-  return list;
+  return bendPlanes(values, width * depth);
 }
 const airBlocks = flatBlocks(5, 6, 5, 1);
 // Fall 6 blocks onto stone must hurt; water landing must not.
@@ -100,8 +111,7 @@ assert.ok(Number(landedHard.health) < 20, `fall damage expected, got ${Number(la
 assert.equal(Player.water_contact(airBlocks), false);
 let waterList = { $: "Nil" };
 for (let i = 0; i < 5 * 6 * 5; i += 1) waterList = { $: "Con", head: 7, tail: waterList };
-assert.equal(Player.water_contact(waterList), true);
-assert.equal(Player.is_water(7), true);
+assert.equal(Player.water_contact(waterList), true);assert.equal(Player.is_water(7), true);
 assert.equal(Player.is_water(1), false);
 // Head under water drains air and then health.
 const diver = Player.state_full(2.5, 2.0, 2.5, 0.0, 0.0, 0.0, false, 20.0, 20.0, 1.0, 0.0, 0.0);
@@ -134,10 +144,7 @@ for (let y = 0; y < 12; y += 1) {
     }
   }
 }
-let shoreBlocks = { $: "Nil" };
-for (let index = shoreValues.length - 1; index >= 0; index -= 1) {
-  shoreBlocks = { $: "Con", head: shoreValues[index], tail: shoreBlocks };
-}
+const shoreBlocks = bendPlanes(shoreValues, 6 * 6);
 let shoreSwimmer = Player.state_full(2.5, 7.5, 2.5, 0.0, 0.0, 0.0, false, 20.0, 20.0, 10.0, 0.0, 0.0);
 let exitedShore = false;
 for (let index = 0; index < 240; index += 1) {

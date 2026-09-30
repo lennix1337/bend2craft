@@ -45,7 +45,7 @@ def drop_item(+kind: U32) -> U32:
         Bool.pick(U32, U32.is_eq(kind, 6), 50, 13))))
 
 type Region is Data:
-  Region{blocks: List<&2, U32>, origin_x: Nat, origin_y: Nat, origin_z: Nat, width: Nat, height: Nat, depth: Nat}
+  Region{blocks: List<&2, List<&2, U32>>, origin_x: Nat, origin_y: Nat, origin_z: Nat, width: Nat, height: Nat, depth: Nat}
 
 type Drop is Data:
   Drop{id: Nat, item: U32, x: F32, y: F32, z: F32, amount: U32, velocity_y: F32, settled: Bool}
@@ -255,7 +255,7 @@ def max_f32(+a: F32, +b: F32) -> F32:
   Bool.pick(F32, F32.is_lt(a, b), b, a)
 
 def mob_support(
-  +blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
+  +blocks: List<&2, List<&2, U32>>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat,
   +x: Nat, +z: Nat, +bottom: Nat, +ceiling: F32, +remaining: Nat
 ) -> F32:
@@ -270,7 +270,7 @@ def mob_support(
       Bool.pick(F32, usable, top, mob_support(blocks, origin_x, origin_y, origin_z, width, height, depth, x, z, bottom, ceiling, p))
 
 def mob_footprint(
-  +blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
+  +blocks: List<&2, List<&2, U32>>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat,
   +x0: Nat, +x1: Nat, +z0: Nat, +z1: Nat,
   +bottom: Nat, +ceiling: F32, +remaining: Nat
@@ -293,7 +293,7 @@ def axis_base(result: AxisStep) -> F32:
   base
 
 def step_rise(
-  +blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
+  +blocks: List<&2, List<&2, U32>>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat, +offset_f: F32,
   +at_x: F32, +at_y: F32, +at_z: F32
 ) -> F32:
@@ -311,7 +311,7 @@ def step_rise(
   Bool.pick(F32, step_up, rise, F32.neg(1000.0))
 
 def step_x(
-  +blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
+  +blocks: List<&2, List<&2, U32>>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat, +offset_f: F32, +alive: Bool,
   +from_x: F32, +from_y: F32, +from_z: F32, +to_x: F32
 ) -> AxisStep:
@@ -326,7 +326,7 @@ def step_x(
   AxisStep{next, base}
 
 def step_z(
-  +blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
+  +blocks: List<&2, List<&2, U32>>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat, +offset_f: F32, +alive: Bool,
   +from_x: F32, +from_y: F32, +from_z: F32, +to_z: F32
 ) -> AxisStep:
@@ -479,7 +479,7 @@ def line_of_sight.crosses_cell(
   Bool.or(Bool.and(dx, Bool.or(dy, dz)), Bool.and(dy, dz))
 
 def line_of_sight.blocked(
-  +blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
+  +blocks: List<&2, List<&2, U32>>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat,
   +cell_x: Nat, +cell_y: Nat, +cell_z: Nat,
   +start_x: Nat, +start_y: Nat, +start_z: Nat,
@@ -497,7 +497,7 @@ def line_of_sight.blocked(
   Bool.and(Bool.not(Bool.or(at_start, at_end)), Player.solid(block))
 
 def line_of_sight.step(
-  +blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
+  +blocks: List<&2, List<&2, U32>>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat,
   +from_x: F32, +from_y: F32, +from_z: F32,
   +delta_x: F32, +delta_y: F32, +delta_z: F32, +denominator: F32, +index: Nat,
@@ -514,7 +514,7 @@ def line_of_sight.step(
   )
 
 def line_of_sight.hit(
-  +blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
+  +blocks: List<&2, List<&2, U32>>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat,
   +from_x: F32, +from_y: F32, +from_z: F32,
   +delta_x: F32, +delta_y: F32, +delta_z: F32, +denominator: F32, +index: Nat,
@@ -527,7 +527,7 @@ def line_of_sight.hit(
 
 def line_of_sight.loop(
   +remaining: Nat, hit: Bool,
-  +blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
+  +blocks: List<&2, List<&2, U32>>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat,
   +from_x: F32, +from_y: F32, +from_z: F32,
   +delta_x: F32, +delta_y: F32, +delta_z: F32, +denominator: F32, +index: Nat,
@@ -553,7 +553,7 @@ def line_of_sight.loop(
 # Eight samples keep the eye ray finer than a single cell across the whole
 # melee radius; the caller passes zero samples to skip the scan entirely.
 def line_of_sight(
-  +blocks: List<&2, U32>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
+  +blocks: List<&2, List<&2, U32>>, +origin_x: Nat, +origin_y: Nat, +origin_z: Nat,
   +width: Nat, +height: Nat, +depth: Nat,
   +mob_x: F32, +mob_y: F32, +mob_z: F32,
   +player_x: F32, +player_y: F32, +player_z: F32,

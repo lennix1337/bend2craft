@@ -363,11 +363,64 @@ def subpixel_face_test() -> IO(Unit):
   +tiles = Face.bucket_faces(faces, Face.cam_eye(camera), Face.cam_right(camera),
     Face.cam_up(camera), Face.cam_forward(camera), half, focal, size)
   +best = Face.face_at_pixel(tiles, 14, 15)
+  +edge = Face.tile_size()
+  +bucket = Face.bucket_at(Face.tiles_rows(tiles), U32.div(14, edge), U32.div(15, edge))
   do IO<Unit>:
-    Unit <- check(U32.is_gt(Face.b_candidates(best), 0),
+    Unit <- check(U32.is_gt(U32.from_nat(List.length(&2, Face.Screen, bucket)), 0),
       "the subpixel fixture did not reach the pixel's conservative candidate box")
     check(U32.is_eq(Face.b_block(best), 0),
       "a subpixel face between sample centres claimed a pixel")
+
+# The two box-test shapes must be the same answer, not two renderers that happen to
+# agree on the fixtures anyone thought to write.
+#
+# `scan_bucket` splits the packed-box test so the second compare is conditional, and
+# `scan_bucket_one` folds the two halves into one `Bool.and` so the reject path makes
+# one call instead of two. The bench measures the two the same over three runs, so the
+# shipped walk keeps the split and there is nothing to collect. That is only safe
+# while the two agree on every pixel of a real grid, which is what this counts. The
+# count is of pixels where the two chose a different block, a different face label, or
+# a different depth, and it must be zero.
+def walk_shape_bad(+px: U32, +py: U32, +tiles: Face.Tiles, +bad: U32) -> U32:
+  +shipped = Face.face_at_pixel(tiles, px, py)
+  +folded = Face.nearest_face_one(tiles, px, py)
+  +same_block = U32.is_eq(Face.b_block(shipped), Face.s_block(folded))
+  +same_dir = U32.is_eq(U32.from_nat(Face.b_dir(shipped)), U32.from_nat(Face.s_dir(folded)))
+  +same_depth = F32.is_eq(Face.b_depth(shipped), Face.s_depth(folded))
+  +same = Bool.and(same_block, Bool.and(same_dir, same_depth))
+  U32.add(Bool.pick(U32, same, 0, 1), bad)
+
+def walk_shape_count(+tiles: Face.Tiles, remaining: Nat, +px: U32, +py: U32,
+  +bad: U32) -> U32:
+  match remaining:
+    case 0n:
+      bad
+    case 1n+r:
+      walk_shape_count(tiles, r, (px + 1 : U32), py, walk_shape_bad(px, py, tiles, bad))
+
+def walk_shape_rows(+tiles: Face.Tiles, rows_left: Nat, +py: U32, +size: U32,
+  +bad: U32) -> U32:
+  match rows_left:
+    case 0n:
+      bad
+    case 1n+r:
+      walk_shape_rows(tiles, r, (py + 1 : U32), size,
+        walk_shape_count(tiles, U32.to_nat(size), 0, py, bad))
+
+def walk_shape_test() -> IO(Unit):
+  +size : U32 = 32
+  +half = Voxel.projection_half(5n)
+  +focal = F32.mul(1.5, half)
+  +camera : Voxel.Camera = Voxel.Camera.look(Voxel.Vec{8.5, 8.5, 0.5}, 3.14159265, 0.0)
+  +tiles = Face.bucket_faces(Face.faces_from_chunk(one_block()), Face.cam_eye(camera),
+    Face.cam_right(camera), Face.cam_up(camera), Face.cam_forward(camera), half, focal, size)
+  +bad = walk_shape_rows(tiles, U32.to_nat(size), 0, size, 0)
+  +covered = solid_count(tiles, size)
+  do IO<Unit>:
+    Unit <- check(U32.is_gt(covered, 0),
+      "the walk-shape fixture covered no pixel, so it would agree vacuously")
+    check(U32.is_eq(bad, 0),
+      "the split box test and the folded box test chose different faces")
 
 # Starting inside a single solid cube means every forward ray exits through one
 # of its exposed faces; the face renderer must not turn that volume into sky.
@@ -570,6 +623,7 @@ def main() -> IO(Unit):
     edge_on : Unit <- edge_on_face_test()
     near_plane : Unit <- near_plane_test()
     subpixel : Unit <- subpixel_face_test()
+    walk_shape : Unit <- walk_shape_test()
     containing : Unit <- containing_block_test()
     views : Unit <- single_block_views()
     extraction : Unit <- extraction_test()

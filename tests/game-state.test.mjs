@@ -36,8 +36,16 @@ const region = mobRegion(world, 2.5, 1.2, 2.5);
 assert.equal(region.width, 5n);
 assert.equal(region.height, 6n);
 assert.equal(region.depth, 5n);
+// The region is a list of y-planes, so the cell count is the sum over the planes.
+// Both numbers are asserted: 6 planes is the layout `Player.region_block` reads, and
+// 150 cells is the window those planes have to cover between them.
+let regionPlanes = 0;
 let regionCells = 0;
-for (let node = region.blocks; node?.$ === "Con"; node = node.tail) regionCells += 1;
+for (let plane = region.blocks; plane?.$ === "Con"; plane = plane.tail) {
+  regionPlanes += 1;
+  for (let cell = plane.head; cell?.$ === "Con"; cell = cell.tail) regionCells += 1;
+}
+assert.equal(regionPlanes, 6);
 assert.equal(regionCells, 150);
 player.health = 0;
 movePlayer(world, player, new Set(), 0.016, [2, 2], 1);

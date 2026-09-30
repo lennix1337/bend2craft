@@ -20,7 +20,8 @@ world cell nothing else reads.
 - `from_bulk(chunk, chunk_x, chunk_z) -> Region` and
   `from_world_state(seed, chunk_x, chunk_z, edits) -> Region` keep their
   signatures and still build a one-chunk region. A single bulk export already
-  sits in `Player.region_index` order, so that path copies no cell.
+  sits in the region's cell order, so that path copies no cell; it is split into
+  y-planes on the way in, which copies no cell either.
 - `step(state, keys, dt, region, spawn_x, spawn_z, spawn_height) ->
   Player.State` is unchanged, and `checked_step` is the same tick behind the
   guard: a player outside the encoded window or below the world floor is refused
@@ -35,7 +36,9 @@ Grid materialization is bulk end to end: one `WorldState.chunk` call per chunk
 array, then one array-to-list conversion. `World.block` is never called per
 cell. A chunk export is read once in its own cell order, so the copy is a
 forward walk; the target index is `x + width * (z + depth * y)`, the order
-`Player.region_index` and `Player.list_at` already assume.
+`Player.region_block` reads. The flat list is then cut into y-planes of
+`width * depth` cells, which is the shape `Player.region_block` indexes: `plane_at`
+for the height, `list_at` for the cell within the plane.
 
 ## The storage guard
 
@@ -82,23 +85,33 @@ Medians with the range over the seven samples:
 
 | phase | what it times | median ms | range ms | per tick |
 | --- | --- | --- | --- | --- |
-| `one_chunk_every_tick` | 1 bulk chunk + 1-chunk region + 32 ticks (the recorded baseline) | 16 | 16–18 | 0.50 ms |
-| `one_chunk_cached` | 32 ticks against a one-chunk region | 7 | 7–8 | 0.22 ms |
-| `four_chunk_frame` | 4 bulk chunks + 2×2 region + 32 ticks | 31 | 31–33 | 0.97 ms |
+| `one_chunk_every_tick` | 1 bulk chunk + 1-chunk region + 32 ticks (the recorded baseline) | 12 | 12–13 | 0.38 ms |
+| `one_chunk_cached` | 32 ticks against a one-chunk region | 0 | 0–1 | 0.02 ms |
+| `four_chunk_frame` | 4 bulk chunks + 2×2 region + 32 ticks | 2 | 2–2 | 0.06 ms |
 | `four_chunk_materialize` | 4 bulk chunks + 2×2 region, no ticks | 2 | 1–2 | — |
 
 `one_chunk_every_tick` is the phase the client plan recorded as
-`world_state_chunk_to_player_step` (16 ms median there; 16–17 ms here on the same
-host across three invocations), so the two numbers are comparable.
-`four_chunk_frame` measured 31–32 ms median across those same invocations.
+`world_state_chunk_to_player_step`, so the two numbers are comparable.
 
-The multi-chunk frame costs 31 ms for the same 32 ticks against 16 ms for the
-one-chunk path, and only 2 ms of that is materialization. The rest is the tick
-itself: `Player.list_at` walks the region list from its head to the cell index,
-so a 32×20×32 region is four times as long as a 16×20×16 one and every collision
-probe pays for it (`one_chunk_cached` is 7 ms for the same 32 ticks). This is a
-property of `Player.region_block`, which this probe does not own; the numbers
-are reported, not fixed.
+The multi-chunk frame used to cost 31 ms for the same 32 ticks against 7 ms for the
+one-chunk path, and only 2 ms of that was materialization. The rest was the tick
+itself, and it was the index rather than the work: `Player.region_block` read a cell
+out of a flat `List<&2, U32>` of the whole region by walking to the cell's index, so
+a lookup cost the cell's position, a 32×20×32 region was four times as long as a
+16×20×16 one, and every collision probe paid for it. Four times the cells gave four
+times the cost at the same number of lookups.
+
+The region is now one list of y-planes, each holding `width * depth` cells in the
+region's own cell order, and a lookup is `plane_at` then `list_at`. That is
+`height + width * depth` in the worst case and about `height / 2 + width * depth / 2`
+in practice — 522 cells against 6,272 for the flat walk on the 2×2 region — and
+`four_chunk_frame` fell from 31 ms to 2 ms, 16 times off the tick. A lookup outside
+the region got cheaper too, because it runs off the end of twenty planes and finds an
+empty one where the flat walk ran off the end of 20,480 cells.
+
+`one_chunk_every_tick` is now dominated by the bulk chunk export the tick re-reads,
+not by the collision probes, which is why the recorded baseline moved 16 ms to 12 ms
+rather than to 2.
 
 ## Limits
 

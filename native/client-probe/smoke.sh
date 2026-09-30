@@ -130,12 +130,24 @@ xdotool windowfocus --sync "$WINDOW" 2>/dev/null || true
 xdotool mousemove --window "$WINDOW" 64 64 2>/dev/null || true
 sleep 0.2
 
-# The window is 64x64, the size `native/client.bend` chooses, placed by the window
-# manager inside the 256x256 screen.
+# The window is the size `native/client.bend` chooses, read from its own source rather
+# than restated here, so a resolution change does not leave this check asserting a size
+# the client no longer uses — which is exactly what happened when the window went from
+# 64x64 to 128x128 and the check failed on a stale 64. It is read, not run: the client
+# has no flag that prints it, and running it to ask would open a second window.
+EXPECTED_SIZE=$(awk '/^def window_width\(\)/ { getline; print $1; exit }' \
+  "$ROOT/native/client.bend")
+case "$EXPECTED_SIZE" in
+  ''|*[!0-9]*)
+    printf 'Could not read a numeric window_width from native/client.bend\n' >&2
+    exit 1
+    ;;
+esac
 WINDOW_GEOMETRY=$(xdotool getwindowgeometry --shell "$WINDOW")
 eval "$WINDOW_GEOMETRY"
-if [ "$WIDTH" -ne 64 ] || [ "$HEIGHT" -ne 64 ]; then
-  printf 'Unexpected client window size: %sx%s\n' "$WIDTH" "$HEIGHT" >&2
+if [ "$WIDTH" -ne "$EXPECTED_SIZE" ] || [ "$HEIGHT" -ne "$EXPECTED_SIZE" ]; then
+  printf 'Unexpected client window size: %sx%s, expected %sx%s\n' \
+    "$WIDTH" "$HEIGHT" "$EXPECTED_SIZE" "$EXPECTED_SIZE" >&2
   exit 1
 fi
 

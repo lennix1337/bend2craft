@@ -1,4 +1,5 @@
 import { Player as PlayerDomain, Fluids as FluidsDomain } from "./bend-modules.js";
+import { bendList, bendPlanes } from "./bend-list.js";
 
 export const PLAYER_RADIUS = 0.3;
 export const PLAYER_HEIGHT = 1.8;
@@ -108,12 +109,13 @@ export function clampPlayer(player, width = 48, depth = 48) {
   return player;
 }
 
-function blockList(values) {
-  let list = { $: "Nil" };
-  for (let index = values.length - 1; index >= 0; index -= 1) {
-    list = { $: "Con", head: values[index], tail: list };
-  }
-  return list;
+// A Bend region is a list of y-planes, each holding `width * depth` cells in the
+// region's own cell order, because `Player.region_block` indexes the region with a
+// list walk and a flat list makes every cell lookup cost the cell's position. Every
+// builder below fills `values` in y-major order, so the plane at height `y` is
+// exactly the slice starting at `y * width * depth`.
+function blockPlanes(values, width, depth) {
+  return bendPlanes(values, width * depth);
 }
 
 function collisionRegion(world, x, y, z) {
@@ -129,7 +131,11 @@ function collisionRegion(world, x, y, z) {
     }
   }
   return {
-    blocks: blockList(values),
+    // `blocks` is what `Player.region_block` indexes, so it is the plane list.
+    // `cells` is the same window flattened, for the rules that ask whether the window
+    // holds any block at all and so have no cell to index by.
+    blocks: blockPlanes(values, COLLISION_WIDTH, COLLISION_DEPTH),
+    cells: bendList(values),
     originX: originX + DOMAIN_COORDINATE_OFFSET,
     originY,
     originZ: originZ + DOMAIN_COORDINATE_OFFSET,
@@ -159,7 +165,7 @@ export function mobRegion(world, x, y, z) {
     }
   }
   return {
-    blocks: blockList(values),
+    blocks: blockPlanes(values, MOB_REGION_WIDTH, MOB_REGION_DEPTH),
     originX: BigInt(originX + DOMAIN_COORDINATE_OFFSET),
     originY: BigInt(originY),
     originZ: BigInt(originZ + DOMAIN_COORDINATE_OFFSET),
@@ -188,12 +194,12 @@ export function collidesAt(world, player, x, y, z) {
 
 export function lavaContact(world, player) {
   const region = collisionRegion(world, player.x, player.y, player.z);
-  return PlayerDomain.lava_contact(region.blocks);
+  return PlayerDomain.lava_contact(region.cells);
 }
 
 export function waterContact(world, player) {
   const region = collisionRegion(world, player.x, player.y, player.z);
-  return PlayerDomain.water_contact(region.blocks);
+  return PlayerDomain.water_contact(region.cells);
 }
 
 export function isHeadUnderwater(world, player) {
@@ -278,7 +284,7 @@ export function raycast(world, player) {
   }
   const result = PlayerDomain.raycast(
     stateRaw(player),
-    blockList(values),
+    blockPlanes(values, rayWidth, rayDepth),
     BigInt(originX + DOMAIN_COORDINATE_OFFSET),
     0n,
     BigInt(originZ + DOMAIN_COORDINATE_OFFSET),

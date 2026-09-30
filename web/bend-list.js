@@ -27,3 +27,21 @@ export function listLength(list) {
   for (let node = list; node?.$ === "Con"; node = node.tail) count += 1;
   return count;
 }
+
+/**
+ * Split a flat cell array into the region's y-plane list, the shape
+ * `Player.region_block` reads: one list per height, each holding `perPlane` cells in
+ * the array's own order.
+ *
+ * The region is indexed by a list walk, so a flat list makes every cell lookup cost
+ * the cell's position in the region. Splitting by height bounds a lookup at
+ * `height + perPlane` and leaves the contents of each array untouched, so a fixture
+ * written as `for y, for z, for x` keeps meaning the same cells.
+ */
+export function bendPlanes(values, perPlane) {
+  const planes = [];
+  for (let start = 0; start + perPlane <= values.length; start += perPlane) {
+    planes.push(bendList(values.slice(start, start + perPlane)));
+  }
+  return bendList(planes);
+}

@@ -15,8 +15,14 @@ production default remains edge 8 pending a target-thread choice.
 
 1. `faces_from_chunk` walks all 5,120 cells in y/z/x order and emits every
    exposed face. Neighbor values come from carried rows, not per-cell lookups.
+   `render_faces_at_with_tile_size` takes that list from the caller, so a client
+   that extracts once and then only renders is not paying for a world that did
+   not move.
 2. `bucket_faces` projects the four face corners to a conservative screen box
-   and inserts each face into every overlapping tile. If a face crosses the
+   and inserts each face into every overlapping tile. The box is stored packed,
+   `low = x0 | y0 << 16` and `high = x1 | y1 << 16`, because the per-pixel walk
+   is the whole frame and two unsigned compares on the packed words decide the
+   box where four compares on four numbers used to. If a face crosses the
    near plane, its candidate box covers the frame; wholly-behind faces are
    discarded. Screen-coordinate conversion is clamped before integer conversion.
 3. At each pixel, the renderer builds the same normalized ray as the reference,
@@ -143,6 +149,108 @@ At edge 8, source-level bucket list-cell counts (not allocator/GC metadata) are:
 Row-major uses fewer list cells but its tile-by-face containment scans remain a
 measured alternative; scatter remains the selected builder.
 
+## What the per-pixel walk actually costs
+
+The tables above are one chunk at one camera. The client renders a 2x2 chunk
+region from inside a village, and the cost model there is different enough to
+be worth stating on its own. Measured at the client's own spawn camera, 64x64,
+edge 16, native C, eight threads, seven samples:
+
+| term | steps | note |
+| --- | ---: | --- |
+| faces in the region | 1,654 | 2x2 chunks, 20,480 cells |
+| candidates the walk visits | 695,808 | 170 per pixel |
+| same at edge 8 | 488,640 | 119 per pixel |
+| same at edge 2 | 400,128 | 98 per pixel |
+| live pixels the boxes cover | 390,799 | 236 per face, 5.8% of the frame |
+| same at focal scale 24 | 666,624 | 96x the focal length, 4% fewer steps |
+
+Three things follow, and each one closed off an option that had looked open.
+
+**Rasterising loses on allocation count, not on step count.** It needs 390,799
+steps against the walk's 695,808, so it wins on count by 1.78x — the ratio being
+the tile quantisation, a box that straddles a tile boundary being placed in up
+to four tiles. It loses because its depth test is against a persistent quadtree,
+and each test rebuilds a six-level path: about 2.3M node allocations per frame
+against the 5,461 the frame allocates today. For it to win, its per-pair cost
+would have to come in under 1.78 x 25 ns = 44.5 ns, and the 1.78 is the whole
+margin.
+
+An earlier version of this table put the rasteriser figure at 3,094,159 and
+concluded the walk won by 4.4x. The fold was summing the dead faces, whose
+clipped box has `x0 > x1`, so the width underflowed and one term wrapped the
+total. `frame_bench`'s `clip_area` now skips them on the liveness flag, which is
+the only way to sum a box whose corners are inverted. The corrected figure has an
+independent check: at edge 2 a tile is 2x2 pixels, so a face's placements
+approach its covered pixels one for one, and edge 2 measures 400,128 against
+390,799 — 2.4% apart, where the old figure was 7.9x out.
+
+**The field of view is not a lever.** A face's projected box scales with the
+focal length, and the walk's step count is the sum of the boxes, so a wider or
+narrower view should change the frame. It does not: 96x of focal length moves the
+count by 4.4%, because the faces near this camera are small enough that shrinking
+them shrinks tiles they already fit inside rather than the number of tiles they
+occupy. There is no frame rate in the field of view, and so no reason to change
+what the player sees.
+
+**The tile edge is set by the builder, not the walk.** The walk is cheaper at a
+smaller edge and the scatter builder is dearer, and only the walk is parallel.
+The builder's cost is `2 * across * placements` list steps, because a placement
+costs two `List.set` calls and `List.set` is linear in the grid's width: 21,744
+steps at edge 16, 134,976 at edge 8. Edge 8 measured 9.50 ms of render against
+7.75 at edge 16 — the walk saves 4.0 ms and the builder spends 2.5 ms of it
+back.
+
+The alternative builder is measured too, not just modelled. Row-major fills one
+tile row at a time, so every placement is a cons and the grid is never indexed at
+random — the thing that makes the scatter builder dear. In exchange it tests every
+face's box once per row, so its cost is `across` box tests per face plus a cons per
+placement. The prediction was that this is cheaper, because the walk's saving at
+edge 8 is larger than the scatter builder's penalty, and the measurement is that it
+is not: 2.90 ms for the scatter builder at edge 16, 3.00 for row-major at edge 16,
+and 5.15 for row-major at edge 8, all building the grid inside the timed loop so the
+three are like for like.
+
+The model was wrong by a factor of about eight on the row-major term, and the reason
+is worth keeping: it counted "one visit per face per row" as one step, and a visit is
+a `project_screens` field read, two integer divisions by the edge, a `place` call and
+its `match`. **A builder's cost is not its placement count; it is its placement count
+times the work of reaching a placement.** The scatter builder reaches a placement in a
+short walk and the row-major builder reaches it by re-deciding it, and the second is
+dearer however few list steps it spends.
+
+**The walk is the runtime's list step, not the arithmetic.** Four walks over the
+same 695,808 candidates, timed by `native/client-probe` at 64x64, edge 16, eight
+threads, seven samples:
+
+| phase | what the reject path does | ms | ns per candidate |
+| --- | --- | ---: | ---: |
+| `bare` | one cons cell and a tail call, nothing else | 16.05 | 23.1 |
+| `step` | the same, plus the seven-field destructure | 16.00 | 23.0 |
+| `pixel` | the shipped walk: split box test, two calls | 18.20 | 26.2 |
+| `one` | the box test folded into one `Bool.and`, one call | 18.40 | 26.5 |
+
+Three things fall out of that table, and each one closes an option.
+
+**There is nothing left to win in the walk's body.** The bare iteration is 88%
+of it. The whole of the box test, the branch and the call structure is 2.2 ms of
+18.2, and the runtime's cons-cell step is the other 16.
+
+**Splitting `Screen` to avoid the destructure would gain nothing.** `bare` and
+`step` are within noise of each other, and `step` is the one that reads all seven
+record fields, because a pattern must list every field of a constructor. The five
+the walk never reads are free. That was the last idea for the step cost, and it is
+now measured dead rather than argued.
+
+**The split box test is kept, and the folded one buys nothing.** Collapsing the two
+halves into one `Bool.and` does make the reject path a single call instead of two,
+and it measures the same: 18.40, 18.30 and 18.25 ms against the shipped walk's 18.20,
+18.15 and 18.25 over three runs. The saving is real in dispatch count and lost in the
+second compare, which is then paid on every candidate instead of only on the ones the
+first admits. There is no case for churning a measured path, so the shipped walk keeps
+the split. `face_probe_test` holds the two shapes to the same answer on every pixel of
+a real grid, so the comparison is a measurement and not an opinion.
+
 ## Budget verdict and limits
 
 - With the configured edge 8, **128² does not fit 16.7 ms** at one or eight
@@ -154,4 +262,8 @@ measured alternative; scatter remains the selected builder.
   pose. This remains a single-chunk opaque renderer with no streaming,
   transparency, texture, or lighting model. Near-plane-crossing faces use a
   conservative full-frame candidate box, so other camera poses may have
-  different performance even though exact per-pixel coverage is retained.
+  different performance even though exact per-pixel coverage is retained. At the
+  client's own camera those faces are most of the walk: 98 candidates per pixel
+  survive at edge 2, where a bucket holds only the faces whose box contains the
+  pixel, so the floor is set by the near-plane fallback rather than by the tile
+  size.

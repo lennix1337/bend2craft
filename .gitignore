@@ -9,6 +9,8 @@ node_modules/
 .playwright-cli/
 # Single scratch folder for throwaway artifacts: captures, probe output, logs.
 scratchpad/
+# Local agent state (goal tracking), not source.
+.opencode/
 # The local multiplayer server's saved world.
 worlds/
 # The native client's own world, written by its save key.

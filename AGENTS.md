@@ -55,6 +55,36 @@ npm run build        # static browser bundle
 
 For browser behavior, run `npm run browser:smoke` when a local Playwright browser binary is available, then validate the canvas at `http://localhost:3000/`. Use `npm run smoke:dev` for a bounded server/readiness check. Test movement, collision, inventory selection, block removal/placement, and tree rendering when those features exist.
 
+## Bend 2 authoring rules (pinned 2.0.32)
+
+These were established by experiment against the pinned compiler. They are not
+obvious from the guide and each one costs a failed check to rediscover, so keep
+new `world/`, `native/` and test code consistent with them.
+
+- **No forward references.** A `def` must be written before any `def` that calls
+  it. Calling a later definition is reported as "expected: a filled definition
+  (an unfilled law is a dead claim)". A helper cycle is therefore impossible;
+  only direct self-recursion is available.
+- **`do` blocks take binds and one final term.** No tuple-destructuring
+  statement (`(a, b) = pair`), no `match`, no bare constructor and no two
+  consecutive actions. Return a built value with `return <value>`; hand a bound
+  pair to a helper that destructures it in a plain `def`.
+- **A `match` scrutinizes a parameter or a field only.** Not a computed value,
+  not a local binder, not a closure binder and not an affine (`+`) parameter. To
+  branch on a computed result, pass it to a `def` whose parameter is matched.
+- **Every value is consumed once.** A `U32` local, a data record and a frame all
+  support exactly one use, so a room or frame cannot be read and then stored.
+  Thread linear state through records and recompute what a second use needs.
+- **Products are binary.** Use `A & B`; there is no `A & B & C`. Give multi-field
+  state a `type ... is Type` record instead of a tuple.
+- **A generic type argument cannot be a product.** `def f(-A: Type, ...)` may be
+  instantiated with `Socket` or a record, but not with `Socket & String`; give
+  that shape its own failure helper.
+- **Patterns list every field** of the constructor (`Record{a, b, c}`), and a
+  `case` body is a single term.
+- **Match usage annotations to the producer.** A value typed `Maybe<&2, T>` must
+  be received as `Maybe<&2, T>`.
+
 ## Implementation rules
 
 - Keep world generation pure and typed in Bend.

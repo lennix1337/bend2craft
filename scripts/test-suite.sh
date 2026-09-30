@@ -155,4 +155,31 @@ for index in "${!TESTS[@]}"; do
   printf '[%02d/%02d] %s\n' "$((index + 1))" "${#TESTS[@]}" "$test_file"
   bash "$ROOT/scripts/run-bun.sh" "$ROOT/$test_file"
 done
-printf 'All %d tests passed.\n' "${#TESTS[@]}"
+
+# Native Bend probes write disposable save files relative to their working
+# directory. Run them away from the real local save without changing imports.
+BEND_TESTS=(
+  tests/native-world.bend
+  tests/native-input.bend
+  native/render-probe/render_probe_test.bend
+  native/save-probe/snapshot_test.bend
+  native/bench-probe/bench_probe_test.bend
+  native/protocol-probe/protocol_test.bend
+  native/player-probe/player_probe_test.bend
+  native/voxel-probe/voxel_probe_test.bend
+  native/tcp-probe/transport_test.bend
+  native/save-migration/save_migration_test.bend
+  native/face-probe/face_probe_test.bend
+  native/face-probe/extraction_pins_test.bend
+  native/frame-probe/frame_probe_test.bend
+  native/client_test.bend
+)
+mkdir -p "$ROOT/scratchpad"
+native_test_dir="$(mktemp -d "$ROOT/scratchpad/native-tests.XXXXXX")"
+trap 'rm -rf "$native_test_dir"' EXIT
+mkdir "$native_test_dir/native"
+for test_file in "${BEND_TESTS[@]}"; do
+  printf '[bend] %s\n' "$test_file"
+  (cd "$native_test_dir" && BEND_NO_TELEMETRY=1 bash "$ROOT/scripts/check-bend.sh" "$test_file")
+done
+printf 'All %d JavaScript tests and %d native Bend probes passed.\n' "${#TESTS[@]}" "${#BEND_TESTS[@]}"

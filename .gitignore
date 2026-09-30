@@ -11,5 +11,7 @@ node_modules/
 scratchpad/
 # The local multiplayer server's saved world.
 worlds/
+# The native client's own world, written by its save key.
+native/client-world.b2cw
 # Local Cloudflare Wrangler state.
 .wrangler/

@@ -18,7 +18,10 @@ The current browser slice is not fully migrated yet: `web/inventory.js` still ow
 
 Bend2Craft is a small Minecraft-inspired voxel sandbox. The canonical repository is https://github.com/lennix1337/bend2craft.
 
-The game model is authored in Bend 2 under `world/`. The browser layer in `web/` is an adapter: it materializes Bend contracts, captures camera/input, maintains derived caches, and renders with WebGL. Do not duplicate domain formulas or authoritative transitions in JavaScript.
+The game model is authored in Bend 2 under `world/`. Two targets consume it:
+
+- **Browser** — `web/` is an adapter: it materializes Bend contracts, captures camera/input, maintains derived caches, and renders with WebGL. Do not duplicate domain formulas or authoritative transitions in JavaScript.
+- **Native** — `native/` is a Bend 2 program with its own window, compiled by the pinned CLI to a native executable. It is not a port of the browser: it reuses `world/` and owns its own renderer, player region and save codec.
 
 Start here:
 
@@ -30,14 +33,103 @@ Start here:
 - Chunk cache/streaming adapter: `web/chunk-world.js`
 - Pure player/world state: `web/game-state.js`
 - Browser entry router/menu: `web/main.js`; WebGL/game runtime: `web/game.js`
+- Native client: `native/client.bend`; its modules are `native/voxel.bend`,
+  `native/face.bend`, `native/frame.bend`, `native/player.bend`,
+  `native/save.bend`
+- Native experiments and their measurements: `lab/native/`
 - Multiplayer (room, server simulation, protocol): `docs/MULTIPLAYER.md`
 - Regression tests: `tests/`
+
+## The two targets run one engine
+
+The browser and the native client are the same Bend 2 program on two lanes:
+`vendor/bend/bend2/main.ts` under Bun for the bundle, and the same vendored
+sources compiled by the pinned CLI to C for the executable. The rules are
+`world/*.bend` either way, so a rule cannot mean one thing in the browser and
+another natively.
+
+Keep it that way, and prove it rather than assume it:
+
+- **One vendored compiler.** `vendor/bend` is pinned, and the native CLI is
+  built from that exact commit by `scripts/bootstrap-native-bend.sh`. If the
+  pin moves, both lanes move together or the comparison is meaningless.
+- **Cross-lane equality is already a check.**
+  `benchmarks/bend-native-parallel.bend` is run by `npm run check:bend` through
+  Bun and by `npm run bench:bend-native` as a native binary, and both must
+  print `549755289600`. Any change to `world/` that moves one lane and not the
+  other fails one of them.
+- **Never fork a rule per target.** If the native client needs behaviour the
+  browser does not, put it in `world/` or in `native/`, not in a copy.
+- The JS lane and the native lane are not interchangeable at the margins. The
+  JS lane refuses a negative `Nat`, and the native target's `Nat` is
+  unsigned for the same reason. Benchmarks taken in one lane are not evidence
+  about the other unless the script says which lane it ran in.
+
+## Native target
+
+`native/` is the target that ships. `lab/native/` is everything that was tried
+or measured. **Nothing in `native/` imports from `lab/native/`**, and the
+dependency only runs that way: a lab module that stopped matching its client
+would be measuring a different program.
+
+- `native/client.bend` is the entry point. It wires the world, the camera, the
+  input fold, the tick and the save; it owns no game rule.
+- Each `lab/native/<module>/` holds the benchmarks and the recorded numbers for
+  the `native/<module>.bend` beside it. The module ships; the measurement does
+  not.
+- `native/main.bend` and `native/world.bend` are the 16x16 feasibility slice,
+  kept as the smallest thing that opens a window. Their two-byte save is not
+  compatible with `native/save.bend` or with browser saves.
+- The native save is `B2CW:1` in `native/save.bend`, which also migrates the
+  legacy browser and multiplayer snapshots. `native/client-world.b2cw` is
+  gitignored and written by the save key.
+- Two lab probes fail and are not in the gate:
+  `lab/native/voxel/voxel_probe_parallel_test.bend` (fails at the pinned commit
+  too) and `lab/native/client-probe/span_probe.bend` (passes its assertions,
+  then overflows the stack in a walk that follows). Do not treat either as a
+  regression signal, and do not quietly delete the assertion that caught it.
+
+### Frame budget
+
+The pinned runtime's `window_pace` sleeps every presented frame to a hardcoded
+16666667 ns interval, so **60 Hz is a ceiling, not a budget** and no renderer
+here can present faster. What is ours is the frame cost, and therefore how large
+a window fits inside the cap. Measured at the client's own spawn camera, native
+C, `--gpu off`, eight threads. The numbers live above `window_width` in
+`native/client.bend`; `bash lab/native/client-probe/run-fps.sh` re-measures the
+live presented rate and `run-bench.sh` re-measures the stages:
+
+| size | render ms | fits 60 Hz |
+| --- | ---: | --- |
+| 32 | 3.21 | yes, capped |
+| 64 | 5.83 | yes, capped |
+| 128 | 13.95 render, 14.20 frame | yes, 2.5 ms slack |
+| 256 | 49.00 | no, about 20 Hz |
+
+The native client picks its size from `--size=32|64|128|256` and prints that
+table before the window opens, so a player chooses against the cost instead of
+guessing. Bend 2.0.32 has no stdin, so the choice is a flag and not a prompt.
+Quote the numbers as measured on the machine named in
+`lab/native/2026-09-30-native-renderer-investigation.md`, never as a property of
+the renderer. Re-run the benchmark before changing any of them, and never widen
+the window on an extrapolation. `native/client_test.bend` divides the rate back
+out of each cost field rather than reading it from a table, so a drifted
+measurement fails the gate.
+
+### Bend 2.0.32 has no stdin
+
+`IO` offers `print`, `args`, `get_env`, `sleep`, `now`, `thread_count` and
+`random_u32`, and there is no way to read a key from a terminal. Anything that
+must be chosen before the window opens is chosen from `IO.args()` or an
+environment variable, and the choice is echoed to stdout. Do not design a
+console prompt and discover this at the end.
 
 ## Toolchain
 
 - Bend 2 is pinned as the `vendor/bend` submodule.
 - On Windows, run the toolchain inside WSL. On macOS and Linux it runs natively; keep scripts portable to the bash 3.2 that macOS ships, so no bash 4+ builtin (`declare -A`, `mapfile`, `readarray`) and no Linux-only binary such as `setsid`.
 - Bun is preferred from `.tools/bun/bin/bun`; `scripts/run-bun.sh` selects it automatically.
+- The native CLI lives in the ignored `.tools/bend-local/`, built once by `scripts/bootstrap-native-bend.sh`. It refuses to overwrite an existing compiler, so delete that directory deliberately if a rebuild is what you mean.
 - `vendor/bend` is upstream code. Do not edit it for application features.
 
 ## Required checks
@@ -49,11 +141,25 @@ or Linux:
 npm run verify       # all Bend, proof, test, build and diff checks
 npm run check:bend   # focused Bend checker
 npm run proof        # focused law/proof check
-npm run test         # world, inventory and game-state regressions
+npm run test         # world, inventory and game-state regressions, then the native Bend regressions
 npm run build        # static browser bundle
 ```
 
+`npm run test` runs the `native/*_test.bend` regressions in a throwaway working
+directory under `scratchpad/`, because the native tests write save files
+relative to it.
+
 For browser behavior, run `npm run browser:smoke` when a local Playwright browser binary is available, then validate the canvas at `http://localhost:3000/`. Use `npm run smoke:dev` for a bounded server/readiness check. Test movement, collision, inventory selection, block removal/placement, and tree rendering when those features exist.
+
+To play, run `Jogar-Bend2Craft.bat` on Windows or `Play-Bend2Craft.command` on
+macOS: it rebuilds the bundle in WSL and serves `dist/` on port 8080.
+
+For the native client, compile and run it inside WSL with WSLg:
+
+```bash
+.tools/bend-local/bin/bend native/client.bend -o .tools/bend-local/bin/bend2craft-client
+.tools/bend-local/bin/bend2craft-client
+```
 
 ## Bend 2 authoring rules (pinned 2.0.32)
 
@@ -81,7 +187,8 @@ new `world/`, `native/` and test code consistent with them.
   instantiated with `Socket` or a record, but not with `Socket & String`; give
   that shape its own failure helper.
 - **Patterns list every field** of the constructor (`Record{a, b, c}`), and a
-  `case` body is a single term.
+  `case` body is a single term. Adding a field to a record is a change to every
+  construction and every pattern of it, in the tests too.
 - **Match usage annotations to the producer.** A value typed `Maybe<&2, T>` must
   be received as `Maybe<&2, T>`.
 
@@ -105,6 +212,9 @@ new `world/`, `native/` and test code consistent with them.
 - Keep block IDs and their meanings synchronized through one explicit contract. Current IDs are documented in `world/world.bend` and `web/inventory.js`.
 - Preserve affine/termination guarantees in Bend. Do not use `@unsafe` to hide a failed proof.
 - Prefer focused changes over broad refactors. Do not add a dependency when WebGL or the existing runtime is enough.
+- When moving a file, move its callers with it in the same change: every `import`,
+  every shell script path, every `scripts/test-suite.sh` entry and every prose
+  reference. Then run `npm run verify`, which is what catches the ones missed.
 - Never commit credentials, generated `dist/`, `.tools/`, or local caches.
 
 ## GitHub

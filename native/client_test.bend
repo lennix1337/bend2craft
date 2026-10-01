@@ -2,11 +2,11 @@ import Base
 import ../world/player.bend as Player
 import ../world/world.bend as World
 import ../world/world_state.bend as WorldState
-import ./voxel-probe/voxel_probe.bend as Voxel
-import ./player-probe/player_probe.bend as PlayerProbe
-import ./frame-probe/frame_probe.bend as Frame
-import ./face-probe/face_probe.bend as Face
-import ./save-migration/save_migration.bend as Migration
+import ./voxel.bend as Voxel
+import ./player.bend as PlayerProbe
+import ./frame.bend as Frame
+import ./face.bend as Face
+import ./save.bend as Migration
 import ./client.bend as Client
 
 # The client's own contracts, headless. Every game rule it leans on is already
@@ -231,8 +231,16 @@ type Tally is Type:
 type Two is Data:
   Two{first: U32, second: U32}
 
+# The client's entry point now takes the size the selector chose. The tests below
+# are about the tick, the frame, the dig and the save rather than about the
+# selector, so they all start at the shipped size and the selector has its own
+# section. Going through one helper is what keeps that choice in one place: five
+# call sites spelling `128` would be five places to change when the default moves.
+def started() -> IO(Client.Client):
+  Client.start(Client.size_of_width((128 : U32)))
+
 def peek(state: Client.Client) -> Peek:
-  Client.Client{player, +pose, keys, +edits, region, path, world} = state
+  Client.Client{player, +pose, keys, +edits, region, path, world, size} = state
   Peek{Frame.eye_z(Frame.eye_of(pose)), edits}
 
 def eye_z_of(peeked: Peek) -> F32:
@@ -244,7 +252,7 @@ def edits_of(+peeked: Peek) -> List<&2, WorldState.Edit>:
   edits
 
 def aim_of_state(+state: Client.Client) -> Aim:
-  Client.Client{player, +pose, keys, edits, +region, path, world} = state
+  Client.Client{player, +pose, keys, edits, +region, path, world, size} = state
   aim_of(Client.aimed(pose, region))
 
 # The tick's own answer, read through the same question the loop asks, so the test and
@@ -301,7 +309,7 @@ def two(first: U32, second: U32) -> Two:
 # window's per-frame `App.run` loop depends on.
 def two_frames() -> IO(Two):
   do IO<Two>:
-    +state : Client.Client <- Client.start()
+    +state : Client.Client <- started()
     first : U32 <- IO.pure(U32, frame_of(state))
     second : U32 <- IO.pure(U32, frame_of(state))
     IO.pure(Two, two(first, second))
@@ -327,7 +335,7 @@ def tally(before: Peek, after: Peek, released: Maybe<&1, Client.Client>,
 
 def walk_ticks() -> IO(Tally):
   do IO<Tally>:
-    +state : Client.Client <- Client.start()
+    +state : Client.Client <- started()
     walked : Maybe<&1, Client.Client> <- Client.tick.events([Key{119, True{}}], state)
     walked_state : Client.Client <- client_or_die(walked)
     released : Maybe<&1, Client.Client> <- Client.tick.events([Key{119, False{}}], state)
@@ -399,7 +407,7 @@ def check_save(saved_value: Saved) -> IO(Unit):
     text : String <- Client.load_text.at(Client.path())
     reloaded : List<&2, WorldState.Edit> <- IO.pure(List<&2, WorldState.Edit>,
       Client.edits_from(text))
-    restarted : Client.Client <- Client.start()
+    restarted : Client.Client <- started()
     Unit <- require(dug_solid(edits_of(kept), aim, edits_of(before)),
       "the saved world did not carry the dug cell")
     Unit <- require(dug_solid(reloaded, aim, edits_of(before)),
@@ -410,7 +418,7 @@ def check_save(saved_value: Saved) -> IO(Unit):
 def verify_save() -> IO(Unit):
   do IO<Unit>:
     Unit <- empty_world()
-    +state : Client.Client <- Client.start()
+    +state : Client.Client <- started()
     +aimed_state : Client.Client <- looked_down(state)
     +aim : Aim <- IO.pure(Aim, aim_of_state(aimed_state))
     Unit <- require(reached(aim),
@@ -441,13 +449,13 @@ type Cache is Data:
 # assertions read off what it handed back.
 def viewed(drawn: Client.Client & Image) -> Viewed:
   (next, image) = drawn
-  Client.Client{player, pose, keys, +edits, region, path, +world} = next
+  Client.Client{player, pose, keys, +edits, region, path, +world, size} = next
   Viewed{Face.face_total(Client.w_faces(world)),
     Client.same_edits(Client.w_edits(world), edits), Voxel.fingerprint(image)}
 
 def cache_views() -> IO(Cache):
   do IO<Cache>:
-    +state : Client.Client <- Client.start()
+    +state : Client.Client <- started()
     +before : Viewed = viewed(Client.view(state))
     +again : Viewed = viewed(Client.view(state))
     +looked : Client.Client <- looked_down(state)
@@ -490,6 +498,100 @@ def verify_cache() -> IO(Unit):
     cache : Cache <- cache_views()
     check_cache(cache)
 
+# --- the resolution selector -------------------------------------------------
+#
+# The selector is the one part of the client that decides something a player chose
+# rather than something a rule answered, so it is tested like a rule: each size's
+# cost, the rate the pacing turns that into, the depth the renderer is asked for,
+# and the flag each size answers to.
+#
+# The rate is divided from the cost field rather than read out of a table, so a
+# cost that drifts fails the test instead of quietly disagreeing with a comment.
+
+def tenths_of(size: Client.Size) -> U32:
+  Client.Size{label, width, depth, tenths, note} = size
+  tenths
+
+def depth_of(size: Client.Size) -> Nat:
+  Client.depth_of(size)
+
+def width_of(size: Client.Size) -> U32:
+  Client.width_of(size)
+
+def fits_tick(size: Client.Size) -> Bool:
+  U32.is_lt(tenths_of(size), Client.tick_tenths())
+
+# 10000 tenths of a millisecond is 1000 ms, so a frame of `t` tenths allows
+# 10000 / t frames a second before the runtime's pacing is considered at all. The
+# 60 is that pacing: `window_pace` holds every frame to a 16.666667 ms tick.
+def verify_costs.at(+size: Client.Size, want_tenths: U32, want_fps: U32) -> IO(Unit):
+  do IO<Unit>:
+    Unit <- require(U32.is_eq(tenths_of(size), want_tenths),
+      "a size's cost is not the measured one")
+    check(U32.is_eq(Client.rate(tenths_of(size)), want_fps),
+      "a size's estimated FPS is not 10000 over its cost, capped at the pacing")
+
+# 256 misses the tick, so it is the one row the "fits" claim must not make.
+def verify_misses(+size: Client.Size) -> IO(Unit):
+  do IO<Unit>:
+    Unit <- require(U32.is_eq(Client.rate(tenths_of(size)), (20 : U32)),
+      "256x256 is not estimated at 20 FPS from its measured cost")
+    check(Bool.not(fits_tick(size)), "256x256 fits the 16.67 ms tick, which the measurement contradicts")
+
+def verify_depths() -> IO(Unit):
+  do IO<Unit>:
+    Unit <- require(Nat.is_eq(depth_of(Client.size_32()), 5n), "32x32 is not depth 5")
+    Unit <- require(Nat.is_eq(depth_of(Client.size_64()), 6n), "64x64 is not depth 6")
+    Unit <- require(Nat.is_eq(depth_of(Client.size_128()), 7n), "128x128 is not depth 7")
+    check(Nat.is_eq(depth_of(Client.size_256()), 8n), "256x256 is not depth 8")
+
+# The flag is the bare width. Built from the label it would be `--size=256x256`,
+# which is what this pins: the label is padded for the table and neither the pad
+# nor the x belongs in something a player types.
+def verify_flags() -> IO(Unit):
+  do IO<Unit>:
+    Unit <- require(String.eq(Client.flag_of(Client.size_32()), "--size=32"), "the 32 flag is wrong")
+    Unit <- require(String.eq(Client.flag_of(Client.size_64()), "--size=64"), "the 64 flag is wrong")
+    Unit <- require(String.eq(Client.flag_of(Client.size_128()), "--size=128"), "the 128 flag is wrong")
+    check(String.eq(Client.flag_of(Client.size_256()), "--size=256"), "the 256 flag is wrong")
+
+# A width the client does not offer falls back to the shipped size rather than to
+# nothing, so a typo cannot open a window nobody asked for.
+def verify_fallback() -> IO(Unit):
+  do IO<Unit>:
+    Unit <- require(U32.is_eq(width_of(Client.size_of_width((32 : U32))), (32 : U32)),
+      "32 did not reach its own size")
+    Unit <- require(U32.is_eq(width_of(Client.size_of_width((256 : U32))), (256 : U32)),
+      "a known width did not reach its own size")
+    check(U32.is_eq(width_of(Client.size_of_width((999 : U32))), (128 : U32)),
+      "an unknown width did not fall back to 128")
+
+# The table is what the player reads, so the measured costs have to be in it and
+# the chosen row has to be the one marked.
+def verify_table.at(+chosen: U32) -> IO(Unit):
+  do IO<Unit>:
+    +rows : String = Client.rows(chosen)
+    Unit <- require(String.contains(rows, "14.2 ms"),
+      "the table does not show the measured 128x128 frame cost")
+    Unit <- require(String.contains(rows, "49.9 ms"),
+      "the table does not show the measured 256x256 render cost")
+    marked : String = Client.row(Client.size_of_width(chosen), chosen)
+    check(String.contains(marked, "* "), "the chosen row is not the one marked")
+
+def verify_selector() -> IO(Unit):
+  do IO<Unit>:
+    Unit <- verify_costs.at(Client.size_32(), (41 : U32), (60 : U32))
+    Unit <- verify_costs.at(Client.size_64(), (67 : U32), (60 : U32))
+    Unit <- verify_costs.at(Client.size_128(), (142 : U32), (60 : U32))
+    Unit <- verify_misses(Client.size_256())
+    Unit <- verify_depths()
+    Unit <- verify_flags()
+    Unit <- verify_fallback()
+    Unit <- verify_table.at((128 : U32))
+    Unit <- verify_table.at((32 : U32))
+    verify_table.at((256 : U32))
+
+
 def main() -> IO(Unit):
   do IO<Unit>:
     Unit <- verify_stored_cell()
@@ -499,6 +601,7 @@ def main() -> IO(Unit):
     Unit <- verify_frame()
     Unit <- verify_cache()
     Unit <- verify_save()
-    IO.print("client: fold, key edges, targeting, tick, frame, world cache and save passed")
+    Unit <- verify_selector()
+    IO.print("client: fold, key edges, targeting, tick, frame, world cache, save and resolution passed")
 
-#|client: fold, key edges, targeting, tick, frame and save passed
+#|client: fold, key edges, targeting, tick, frame, world cache, save and resolution passed

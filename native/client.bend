@@ -2,10 +2,10 @@ import Base
 import ../world/player.bend as Player
 import ../world/world.bend as World
 import ../world/world_state.bend as WorldState
-import ./player-probe/player_probe.bend as PlayerProbe
-import ./face-probe/face_probe.bend as Face
-import ./frame-probe/frame_probe.bend as Frame
-import ./save-migration/save_migration.bend as Migration
+import ./player.bend as PlayerProbe
+import ./face.bend as Face
+import ./frame.bend as Frame
+import ./save.bend as Migration
 
 # The native client. It owns no game rule: the player transition is
 # `Player.step`, the targeted cell is `Player.raycast`, the world is
@@ -14,8 +14,10 @@ import ./save-migration/save_migration.bend as Migration
 # face renderer's, and the save format is the same `B2CW:1` the legacy importer
 # reads and writes. What is here is the wiring, and only the wiring.
 #
-# The window is 64x64: the largest square whose measured frame cost leaves room in the
-# pinned runtime's own 60 Hz pacing on this machine. See `window_width` for the numbers.
+# The window is chosen before it opens, from `--size`, and `size_128` is the
+# default: the largest square whose measured frame cost leaves room in the pinned
+# runtime's own 60 Hz pacing on this machine. See the selector below for the table
+# and `window_width` for the numbers behind it.
 type Client is Data:
   Client{
     player: Player.State,
@@ -24,7 +26,8 @@ type Client is Data:
     edits: List<&2, WorldState.Edit>,
     region: PlayerProbe.Region,
     path: String,
-    world: World
+    world: World,
+    size: Size
   }
 
 # The view region's exposed faces, and the edit log they were extracted from.
@@ -89,7 +92,7 @@ def same_edits(+a: List<&2, WorldState.Edit>, +b: List<&2, WorldState.Edit>) -> 
 # with 2.5 ms of slack, and it is what ships: 256x256 at 49.00 ms is 20 Hz and is not a
 # choice, and a smaller window is a smaller picture for the same 60 frames.
 #
-# `native/client-probe/run-fps.sh` measures the live loop rather than the stages, and it
+# `lab/native/client-probe/run-fps.sh` measures the live loop rather than the stages, and it
 # is the number this comment is really about: 59.98, 60.00 and 59.99 presented frames a
 # second over 600-frame runs at 128x128, which is the ceiling rather than a budget
 # beside it. 64x64 remains the size to fall back to.
@@ -100,6 +103,11 @@ def same_edits(+a: List<&2, WorldState.Edit>, +b: List<&2, WorldState.Edit>) -> 
 # there by not building the air rows and air layers the extraction asks for on every row
 # of every layer and uses on one — `Maybe.default` builds its default before the call.
 # 64x64 remains the size to fall back to, at four times the margin.
+#
+# These two are the *benchmarked* size, and they are what `lab/native/client-probe`
+# measures and what its scripts read, so they are constants rather than a reading of
+# the selector. They are the default for the same reason, so a benchmark and the
+# client agree on what shipped.
 def window_width() -> U32:
   128
 
@@ -151,7 +159,212 @@ def path() -> String:
 def place_block() -> U32:
   2
 
-# --- coordinates -------------------------------------------------------------
+# --- the resolution selector -------------------------------------------------
+#
+# The size is chosen before the window opens, and the cost of every choice is
+# printed before it, so nobody has to open four windows to find out which one
+# holds 60 Hz.
+#
+# Bend 2.0.32 cannot read a key from a terminal. `IO` offers `print`, `args`,
+# `get_env`, `sleep`, `now`, `thread_count` and `random_u32`, and nothing that
+# reads stdin, so a selector that waited for a keystroke would wait forever. The
+# choice therefore comes from `IO.args()` as `--size=<n>`, and it is echoed to
+# stdout before the window opens.
+#
+# `tenths` is a whole frame in tenths of a millisecond: the precision the
+# measurement has, and the only one Bend can hold without a float. 128 is the
+# measured `frame` row of the table above; 32, 64 and 256 are the measured
+# `render` plus the measured 0.88 ms tick, and `note` says which is which rather
+# than presenting four numbers as one uniform measurement.
+#
+# `window_pace` in the pinned runtime sleeps every presented frame to a 16.67 ms
+# tick, so 60 is a ceiling and not a budget. `rate` divides out the rate the work
+# allows and then caps it at what the pacing allows, so a 4.1 ms frame reads as
+# 60 and not as 244: the cap is what a player actually sees.
+
+# The label is padded to a fixed column so the costs line up, which is why the
+# four are not the same string. `flag_of` builds the flag from the width rather
+# than from this, so neither the pad nor the x reaches something a player types.
+type Size is Data:
+  Size{label: String, width: U32, depth: Nat, tenths: U32, note: String}
+
+def size_32() -> Size:
+  # render 3.21 ms measured at the client's own spawn camera, plus the 0.88 ms tick.
+  Size{" 32x32", (32 : U32), 5n, (41 : U32), "render + tick, derived"}
+
+def size_64() -> Size:
+  # render 5.83 ms measured, plus the 0.88 ms tick.
+  Size{" 64x64", (64 : U32), 6n, (67 : U32), "render + tick, derived"}
+
+def size_128() -> Size:
+  # the measured `frame` row: 14.20 ms against a 16.67 ms tick.
+  Size{"128x128", (128 : U32), 7n, (142 : U32), "measured frame, 2.5 ms of slack"}
+
+def size_256() -> Size:
+  # render 49.00 ms measured, plus the 0.88 ms tick. This one misses the tick.
+  Size{"256x256", (256 : U32), 8n, (499 : U32), "render + tick, misses 60 Hz"}
+
+# The two things the rest of the client needs out of a size. The frame's quadtree
+# depth is part of the size rather than a second lookup, so the window and the image
+# it is asked for cannot disagree about how big they are.
+def width_of(+size: Size) -> U32:
+  Size{label, width, depth, tenths, note} = size
+  width
+
+def depth_of(size: Size) -> Nat:
+  Size{label, width, depth, tenths, note} = size
+  depth
+
+# Smallest first: the bill gets worse as the window grows, so a reader scanning
+# down the table sees the cost rise.
+def sizes() -> List<&2, Size>:
+  [size_32(), size_64(), size_128(), size_256()]
+
+def tick_tenths() -> U32:
+  167
+
+# 16.666667 ms is the runtime's own pacing interval, and 1000 ms over it is 60
+# frames a second. The literal is the ceiling rather than a division because
+# 10000 / 167 truncates to 59, and quoting the pacing a player actually gets is
+# better than quoting the floor of a rounded interval.
+def fps_ceiling() -> U32:
+  60
+
+# 1000 ms in a second over tenths of a millisecond is 10000 / tenths: the rate the
+# work allows. The pacing then holds the frame to the tick, so the rate a player
+# sees is the smaller of the two, and a 4.1 ms frame reads as 60 rather than 244.
+def rate(tenths: U32) -> U32:
+  U32.min(U32.div((10000 : U32), tenths), fps_ceiling())
+
+def ms_text.at(whole: U32, tenth: U32) -> String:
+  U32.show(whole) ++ "." ++ U32.show(tenth)
+
+# `tenths` is shared rather than linear because the figure needs both halves of
+# the division and a value is spent once. There is no `U32.divmod` to read it in
+# one go: the prelude only exposes `U32.div` and `U32.mod`, and each of those
+# spends its argument.
+def ms_text(+tenths: U32) -> String:
+  ms_text.at(U32.div(tenths, (10 : U32)), U32.mod(tenths, (10 : U32)))
+
+def row.at(chosen: Bool, label: String, ms: String, fps: U32, note: String) -> String:
+  Bool.pick(String, chosen, "  * ", "    ") ++ label ++ "   " ++ ms ++ " ms   ~"
+    ++ U32.show(fps) ++ " FPS   " ++ note ++ "\n"
+
+# The chosen row is marked in place rather than moved to the top, so the table a
+# player reads is the table the measurement produced. Whether a size fits the tick
+# is in its note rather than computed here: the notes are the measured rows, and a
+# second arithmetic path to the same claim would be a second thing to keep true.
+def row(size: Size, chosen: U32) -> String:
+  Size{label, width, _, +tenths, note} = size
+  row.at(U32.is_eq(width, chosen), label, ms_text(tenths), rate(tenths), note)
+
+def rows.at(sizes: List<&2, Size>, +chosen: U32) -> String:
+  match sizes:
+    case Nil{}:
+      ""
+    case size <> rest:
+      row(size, chosen) ++ rows.at(rest, chosen)
+
+def rows(chosen: U32) -> String:
+  rows.at(sizes(), chosen)
+
+def headline() -> String:
+  "Bend2Craft native - resolution\n"
+    ++ "  The runtime paces every presented frame to a 16.67 ms tick, so 60 FPS is the\n"
+    ++ "  ceiling and not a budget. Costs are measured at the client's own spawn\n"
+    ++ "  camera, native C target, --gpu off, 8 threads.\n\n"
+
+def epilogue() -> String:
+  "\n  Pass --size=32, --size=64, --size=128 or --size=256. Default 128.\n"
+
+def report(chosen: U32) -> IO(Unit):
+  IO.print(headline() ++ rows(chosen) ++ epilogue())
+
+# --- choosing the size -------------------------------------------------------
+#
+# The set of valid sizes is closed, so a flag is recognised by being exactly one
+# of the four rather than by parsing a number and range-checking it. A closed set
+# has no invalid member to reject, and comparing a string is exact where a
+# hand-written digit parser is one more thing to get wrong.
+
+# The flag is the bare width, not the label: the label is `256x256` and padded
+# for the table, and neither belongs in something a player types.
+def flag_of(size: Size) -> String:
+  Size{_, width, depth, tenths, note} = size
+  "--size=" ++ U32.show(width)
+
+def mentions(args: List<&1, String>, +flag: String) -> Bool:
+  match args:
+    case Nil{}:
+      False{}
+    case arg <> rest:
+      Bool.or(String.eq(arg, flag), mentions(rest, flag))
+
+# `IO.args` hands out a fresh `List<&1, String>` per call and an element of a
+# `&1` list is spent once, so one search per candidate over its own list is the
+# shape that fits rather than one search over a shared list.
+#
+# The four steps are written largest-first because there are no forward references:
+# each one answers its own flag and otherwise hands the rest down a level, so the
+# chain has to be built from the bottom up. The chain is four defs rather than a
+# list fold because a `match` may not scrutinise a computed value, and the flag
+# being tested is one.
+def chosen_width.at256(w256: Bool) -> U32:
+  match w256:
+    case True{}:
+      (256 : U32)
+    case False{}:
+      (128 : U32)
+
+def chosen_width.at128(w128: Bool, w256: Bool) -> U32:
+  match w128:
+    case True{}:
+      (128 : U32)
+    case False{}:
+      chosen_width.at256(w256)
+
+def chosen_width.at64(w64: Bool, w128: Bool, w256: Bool) -> U32:
+  match w64:
+    case True{}:
+      (64 : U32)
+    case False{}:
+      chosen_width.at128(w128, w256)
+
+def chosen_width.at(w32: Bool, w64: Bool, w128: Bool, w256: Bool) -> U32:
+  match w32:
+    case True{}:
+      (32 : U32)
+    case False{}:
+      chosen_width.at64(w64, w128, w256)
+
+# A width with no size here is 128: the shipped size, and the only one measured as
+# a whole frame rather than as a render plus a tick.
+def size_of_width(width: U32) -> Size:
+  match width:
+    case 32:
+      size_32()
+    case 64:
+      size_64()
+    case 256:
+      size_256()
+    case _:
+      size_128()
+
+# More than one flag is a mistake rather than a request, and the smallest match
+# wins because a window that misses the tick is the one a player cannot un-choose
+# once the window is up.
+def mentioned_sizes.at(a32: List<&1, String>, a64: List<&1, String>,
+  a128: List<&1, String>, a256: List<&1, String>) -> U32:
+  chosen_width.at(mentions(a32, flag_of(size_32())), mentions(a64, flag_of(size_64())),
+    mentions(a128, flag_of(size_128())), mentions(a256, flag_of(size_256())))
+
+def width_arg() -> IO(Size):
+  do IO<Size>:
+    a32 : List<&1, String> <- IO.args()
+    a64 : List<&1, String> <- IO.args()
+    a128 : List<&1, String> <- IO.args()
+    a256 : List<&1, String> <- IO.args()
+    return size_of_width(mentioned_sizes.at(a32, a64, a128, a256))
 
 # The inverse of `PlayerProbe.domain_cell`. The player and the raycast speak the
 # encoded window while `WorldState` edits and the renderer speak stored cells, so
@@ -447,8 +660,8 @@ def image_at_depth(world: World, +pose: Frame.Pose, +depth: Nat) -> Image:
   Face.render_faces_at_with_tile_size(w_faces(world), eye, Frame.yaw_of(pose),
     Frame.pitch_of(pose), depth, tile_edge_at(depth))
 
-def image_of(world: World, +pose: Frame.Pose) -> Image:
-  image_at_depth(world, pose, frame_depth())
+def image_of(world: World, +pose: Frame.Pose, size: Size) -> Image:
+  image_at_depth(world, pose, depth_of(size))
 
 # The frame and the state that goes with it.
 #
@@ -457,10 +670,14 @@ def image_of(world: World, +pose: Frame.Pose) -> Image:
 # the tick runs after the draw either way, and putting the refresh here rather than in
 # the tick costs the same frame and keeps the world's lifetime with the thing that
 # reads it.
+#
+# The width rides in the state rather than closing over the view, because a Bend
+# closure is affine and `App.loop` calls this once per frame: a closure could be
+# called exactly once, and the loop would end after one frame.
 def view(state: Client) -> Client & Image:
-  Client{player, +pose, keys, +edits, region, path, +world} = state
+  Client{player, +pose, keys, +edits, region, path, +world, +size} = state
   +next : World = world_for(world, edits)
-  (Client{player, pose, keys, edits, region, path, next}, image_of(next, pose))
+  (Client{player, pose, keys, edits, region, path, next, size}, image_of(next, pose, size))
 
 # --- the tick ----------------------------------------------------------------
 #
@@ -474,30 +691,30 @@ def view(state: Client) -> Client & Image:
 
 def tick.acting(player: Player.State, pose: Frame.Pose, +mask: U32,
   +edits: List<&2, WorldState.Edit>, region: PlayerProbe.Region, +path: String,
-  +world: World, saving: Bool) -> IO(Maybe<Client>):
+  +world: World, +size: Size, saving: Bool) -> IO(Maybe<Client>):
   match saving:
     case True{}:
       do IO<Maybe<Client>>:
         written : Unit <- save_text.at(path, Migration.encode(Migration.Snapshot{Frame.seed(), edits}))
-        return Some{Client{player, pose, mask, edits, region, path, world}}
+        return Some{Client{player, pose, mask, edits, region, path, world, size}}
     case False{}:
-      IO.pure(Maybe<Client>, Some{Client{player, pose, mask, edits, region, path, world}})
+      IO.pure(Maybe<Client>, Some{Client{player, pose, mask, edits, region, path, world, size}})
 
 def tick.quitting(quitting: Bool, player: Player.State, pose: Frame.Pose, +mask: U32,
   edits: List<&2, WorldState.Edit>, region: PlayerProbe.Region, path: String,
-  +world: World, saving: Bool) -> IO(Maybe<Client>):
+  +world: World, +size: Size, saving: Bool) -> IO(Maybe<Client>):
   match quitting:
     case True{}:
       IO.pure(Maybe<Client>, None{})
     case False{}:
-      tick.acting(player, pose, mask, edits, region, path, world, saving)
+      tick.acting(player, pose, mask, edits, region, path, world, size, saving)
 
 def tick.decided(next_edits: List<&2, WorldState.Edit>, staged: Frame.Staged, +mask: U32,
-  region: PlayerProbe.Region, path: String, +world: World, saving: Bool,
+  region: PlayerProbe.Region, path: String, +world: World, +size: Size, saving: Bool,
   closing: Bool) -> IO(Maybe<Client>):
   Frame.Staged{player, pose, changed} = staged
   quitting = quitting_from(closing, mask)
-  tick.quitting(quitting, player, pose, mask, next_edits, region, path, world, saving)
+  tick.quitting(quitting, player, pose, mask, next_edits, region, path, world, size, saving)
 
 # `App` hands the tick a `List<&1, Event>` and the frame probe folds a
 # `List<&2, Event>`. This is the whole bridge: one pass that shares each event
@@ -533,38 +750,38 @@ def share_events(events: List<&1, Event>) -> Folded:
 # and the pose come from the probe's own `advance`, so no rule is asked twice.
 def tick.folded(folded: Folded, player: Player.State, +pose: Frame.Pose, +keys: U32,
   edits: List<&2, WorldState.Edit>, +region: PlayerProbe.Region, path: String,
-  +world: World) -> IO(Maybe<Client>):
+  +world: World, +size: Size) -> IO(Maybe<Client>):
   Folded{+shared, closing} = folded
   +mask : U32 = Frame.keys_mask(Frame.input(shared))
   +staged : Frame.Staged = Frame.advance(player, shared, Frame.tick_dt(), region,
     Frame.origin_x(), Frame.origin_z(), pose)
   next_edits = edited(edits, pose, region, wants_dig(keys, mask), wants_place(keys, mask))
-  tick.decided(next_edits, staged, mask, region, path, world, wants_save(keys, mask),
-    closing)
+  tick.decided(next_edits, staged, mask, region, path, world, size,
+    wants_save(keys, mask), closing)
 
 def tick.events(events: List<&1, Event>, state: Client) -> IO(Maybe<Client>):
-  Client{player, +pose, +keys, edits, +region, path, +world} = state
-  tick.folded(share_events(events), player, pose, keys, edits, region, path, world)
+  Client{player, +pose, +keys, edits, +region, path, +world, +size} = state
+  tick.folded(share_events(events), player, pose, keys, edits, region, path, world, size)
 
 # --- start -------------------------------------------------------------------
 
 def start.readied(player: Player.State, +pose: Frame.Pose, +region: PlayerProbe.Region,
-  +edits: List<&2, WorldState.Edit>, +path: String) -> IO(Client):
+  +edits: List<&2, WorldState.Edit>, +path: String, +size: Size) -> IO(Client):
   # The world is built once here, from the edits the save carried, and every later
   # frame reads it back unless the tick changed the log.
   +world : World = world_built(edits)
-  IO.pure(Client, Client{player, pose, 0, edits, region, path, world})
+  IO.pure(Client, Client{player, pose, 0, edits, region, path, world, size})
 
 def start.placed(+player: Player.State, region: PlayerProbe.Region,
-  +edits: List<&2, WorldState.Edit>, +path: String) -> IO(Client):
+  +edits: List<&2, WorldState.Edit>, +path: String, +size: Size) -> IO(Client):
   pose = Frame.pose(player, Frame.origin_x(), Frame.origin_z())
-  start.readied(player, pose, region, edits, path)
+  start.readied(player, pose, region, edits, path, size)
 
 def start.spawned(maybe: Maybe<&1, Player.State>, region: PlayerProbe.Region,
-  +edits: List<&2, WorldState.Edit>, +path: String) -> IO(Client):
+  +edits: List<&2, WorldState.Edit>, +path: String, +size: Size) -> IO(Client):
   match maybe:
     case Some{player}:
-      start.placed(player, region, edits, path)
+      start.placed(player, region, edits, path, size)
     case None{}:
       IO.die(Client, 1, "native-client: the spawn cell was refused")
 
@@ -585,26 +802,26 @@ def start.spawned(maybe: Maybe<&1, Player.State>, region: PlayerProbe.Region,
 # machine stack overflowed, so the view region and the collision region have to be
 # sized apart. That is the remaining work, and it is a region change, not a spawn swap.
 def start.player(region: PlayerProbe.Region, +edits: List<&2, WorldState.Edit>,
-  +path: String) -> IO(Client):
+  +path: String, +size: Size) -> IO(Client):
   maybe = PlayerProbe.checked_create_player(25n, 25n, 9n)
-  start.spawned(maybe, region, edits, path)
+  start.spawned(maybe, region, edits, path, size)
 
 def start.region(maybe: Maybe<&1, PlayerProbe.Region>, +edits: List<&2, WorldState.Edit>,
-  +path: String) -> IO(Client):
+  +path: String, +size: Size) -> IO(Client):
   match maybe:
     case Some{region}:
-      start.player(region, edits, path)
+      start.player(region, edits, path, size)
     case None{}:
       IO.die(Client, 1, "native-client: the collision region was refused")
 
-def start.grid(+edits: List<&2, WorldState.Edit>) -> IO(Client):
+def start.grid(+edits: List<&2, WorldState.Edit>, +size: Size) -> IO(Client):
   region = PlayerProbe.checked_from_world_state(Frame.seed(), Frame.chunk_x(),
     Frame.chunk_z(), Frame.columns(), Frame.rows(), edits)
-  start.region(region, edits, path())
+  start.region(region, edits, path(), size)
 
-def start.edits_of(text: String) -> IO(Client):
+def start.edits_of(text: String, +size: Size) -> IO(Client):
   edits = edits_from(text)
-  start.grid(edits)
+  start.grid(edits, size)
 
 # A save that does not fit the read cap is refused rather than truncated. A
 # truncated snapshot fails to decode, which would silently start a new world over
@@ -612,20 +829,20 @@ def start.edits_of(text: String) -> IO(Client):
 def oversized(cap: Nat, text: String) -> Bool:
   Nat.is_ge(String.length(text), cap)
 
-def start.whole(too_large: Bool, text: String) -> IO(Client):
+def start.whole(too_large: Bool, text: String, +size: Size) -> IO(Client):
   match too_large:
     case True{}:
       IO.die(Client, 1, "native-client: the saved world is too large to read")
     case False{}:
-      start.edits_of(text)
+      start.edits_of(text, size)
 
-def start.fits(+text: String) -> IO(Client):
-  start.whole(oversized(load_cap(), text), text)
+def start.fits(+text: String, +size: Size) -> IO(Client):
+  start.whole(oversized(load_cap(), text), text, size)
 
-def start() -> IO(Client):
+def start(+size: Size) -> IO(Client):
   do IO<Client>:
     text : String <- load_text.at(path())
-    start.fits(text)
+    start.fits(text, size)
 
 # The window is opened and driven by hand rather than through `App.run`, because
 # `App.run` has nowhere to put the pointer grab. The grab is not optional: the
@@ -655,15 +872,26 @@ def grab_wait_ms() -> U32:
 def app() -> App<Client>:
   App{view, tick.events}
 
-def run(state: Client) -> IO(Unit):
+# The window is opened at the size the selector chose, and the table is printed
+# first so the choice is made against its cost rather than guessed.
+def opened(+width: U32) -> IO(Window):
+  IO.try(Window, Window.open(title(), width, width))
+
+def run(+width: U32, state: Client) -> IO(Unit):
   do IO<Unit>:
-    window : Window <- IO.try(Window, Window.open(title(), window_width(), window_width()))
+    shown : Unit <- report(width)
+    window : Window <- opened(width)
     early : Window <- grabbed(window)
     pause : Unit <- IO.sleep(grab_wait_ms())
     held : Window <- grabbed(early)
     App.loop(Client, app(), 4294967295n, held, state)
 
+# A bound value is spent once, and the width is wanted twice: once for the client
+# and once for the window. `width_arg` is a pure function of the arguments, so it
+# is asked twice rather than shared, and the two answers cannot disagree.
 def main() -> IO(Unit):
   do IO<Unit>:
-    state : Client <- start()
-    run(state)
+    for_client : Size <- width_arg()
+    state : Client <- start(for_client)
+    for_window : Size <- width_arg()
+    run(width_of(for_window), state)

@@ -161,17 +161,17 @@ done
 BEND_TESTS=(
   tests/native-world.bend
   tests/native-input.bend
-  native/render-probe/render_probe_test.bend
-  native/save-probe/snapshot_test.bend
-  native/bench-probe/bench_probe_test.bend
-  native/protocol-probe/protocol_test.bend
-  native/player-probe/player_probe_test.bend
-  native/voxel-probe/voxel_probe_test.bend
-  native/tcp-probe/transport_test.bend
-  native/save-migration/save_migration_test.bend
-  native/face-probe/face_probe_test.bend
-  native/face-probe/extraction_pins_test.bend
-  native/frame-probe/frame_probe_test.bend
+  lab/native/render-probe/render_probe_test.bend
+  lab/native/save-probe/snapshot_test.bend
+  lab/native/bench-probe/bench_probe_test.bend
+  lab/native/protocol-probe/protocol_test.bend
+  native/player_test.bend
+  native/voxel_test.bend
+  lab/native/tcp-probe/transport_test.bend
+  native/save_test.bend
+  native/face_test.bend
+  native/face_extraction_test.bend
+  native/frame_test.bend
   native/client_test.bend
 )
 mkdir -p "$ROOT/scratchpad"

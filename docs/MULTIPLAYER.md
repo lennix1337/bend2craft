@@ -4,6 +4,108 @@ How a shared Bend2Craft world works, where each rule lives, and how to extend
 it. The short version for players is in the README; this is for changing the
 code.
 
+## Two kinds of player
+
+A browser and the native client can be in the same room. The room cannot tell them apart:
+both are a `room.connect(send, close)` and both submit edits through
+`world/multiplayer.bend`. What differs is the wire.
+
+- **A browser** speaks JSON over a WebSocket on `/multiplayer` (`web/multiplayer-protocol.js`).
+- **The native client** speaks one ASCII line per message over a plain TCP port,
+  `server/native-bridge.mjs`, which `scripts/play-server.mjs` opens beside the HTTP port
+  (`NATIVE_PORT`, by default the HTTP port plus one; `0` closes it). The bridge turns each
+  line into the JSON message a browser would have sent and each of the room's messages
+  into lines. `native/net.bend` is the other end. The pinned Bend's sockets carry text and
+  it has no JSON, no SHA-1 and no HTTP, which is why the bridge is on the server's side
+  and not a WebSocket client written in Bend.
+
+```
+H <version> <name>                  client: join the room          (version 1)
+E <x> <y> <z> <block>               client: this cell is now this block
+P <x> <y> <z> <yaw> <pitch>         client: this is where I am
+A <mob> <damage>                    client: I hit that mob, this hard
+K <drop>                            client: I pick that item up
+CD <x> <y> <z> <item> <count> <wear>  client: put this in that chest
+CW <x> <y> <z> <slot> <amount>      client: take this many from that slot of it
+FI <x> <y> <z> <item>               client: put one of this in that furnace to smelt
+FF <x> <y> <z> <item>               client: put one of this in it to burn
+FO <x> <y> <z>                      client: take what it made
+W <id> <seed>                       server: joined; the player's id and the world's seed
+B <x> <y> <z> <block>               server: this cell is this block
+P <id> <x> <y> <z> <yaw> <pitch>    server: this is where that player is
+J <id> <name>                       server: that player is in the room, by that name
+L <id>                              server: that player left
+C <x> <y> <z>                       server: that move was refused; stand here
+T <turn> <day>                      server: the hour; how far round the day, and a day's length
+M <id> <kind> <x> <y> <z> <yaw>     server: a mob of that kind stands there, facing that way
+D <id> <item> <amount> <x> <y> <z>  server: that many of that item lie there
+V <profession> <x> <y> <z>          server: a villager of that profession stands there
+N                                   server: and those are all of them
+U <amount>                          server: you were hurt by that much
+G <item> <amount>                   server: the item you asked for is yours
+S <x> <y> <z> <slots>               server: that chest holds this; none: it is gone
+O <x> <y> <z> <eight numbers>       server: that furnace is this; none: it is gone
+R <ok> <item> <amount> <wear>       server: the answer to a chest or furnace request
+X <reason>                          server: refused; the connection ends
+```
+
+A cell's coordinates are the stored ones the browser's wire uses. A `B` is every way the
+room tells a client about a cell — its log on joining, an accepted batch from anyone, a
+revert — because the client does the same thing with each.
+
+A pose is what a browser's `pose` message carries — world coordinates, feet first, and
+radians — as whole thousandths with a sign (`25.5` is `25500`), because the pinned Bend
+reads and writes no decimal. A `P` from the server is every way the room says where a
+player is: the players already there on joining, and each move. A `C` is the room's
+`correct`.
+
+The hour is the room's clock as the angle of its day — thousandths of a radian from the
+morning the day starts on, a quarter turn being noon — and the length of a day in
+milliseconds, both from `web/daylight.js`. The room says it on joining and when a player
+calls the morning; the client runs the day on from there by its own reading of the time
+(`Client.Hour`, `Sky.clock_after`).
+
+What the room simulates is the room's `entities` message, five times a second and whole:
+one line for each living mob, each item on the ground and each villager, in the units of a
+pose, and an `N` after the last. The client shows the last list it was told all of.
+
+A hit and a pickup are the room's `attack` and `pickup` requests; the bridge numbers them,
+as a browser numbers its own. Damage is thousandths. The answer to a hit is the next list
+and is not sent; the answer to a pickup is a `G`, and only when the room gave the item. A
+`U` is the room's `hurt`.
+
+A chest and a furnace are the room's `chest` and `furnace` requests and its `chest`,
+`furnace` and `furnaces` messages. The room says what each holds on joining and whenever
+one changes; a request is answered with an `R`, one for one and in order, because the
+native client waits for each answer before it asks again.
+
+**What a native player shares today is blocks, where it is, the hour, what the room
+simulates — it sees it, hits it, is hurt by it and picks its items up — and the room's
+chests and furnaces.** It joins by name, the
+browsers are told it joined and left, every dig and placing goes both ways, and so does
+every move: a browser draws the native player like any other, the server's movement checks
+and mobs know where it is, and the native client draws the other players
+(`native/body.bend`) with their names over them (`native/tag.bend`), under the room's sun, and the room's mobs,
+villagers and dropped items where the room says they are. The dig key on a mob is a hit,
+an item on the ground beside the player is picked up, and a mob's blow takes health; a
+native player it kills starts again at the spawn. It has no bow, its sword does not wear
+and a kill earns it nothing. The place key on a room's chest or furnace opens its screen, and each
+click on it is a request the room answers. Its bag is its own. Each
+of those is a line to add to this table and a rule already in `world/` to wire on the
+native side.
+
+The native client plays in the room's world: it starts from the room's log, not its own
+save, refuses a room whose seed is not its own, and `T` writes
+`native/client-room.b2cw`, so a room never overwrites a single-player world.
+
+`tests/native-bridge.test.mjs` holds the bridge against a real room and a real socket,
+`native/net_test.bend` holds the lines on the Bend side, and `tests/native-join.test.mjs`
+runs the native client's own session code (`lab/native/net/join_probe.bend`, compiled by
+the pinned Bend) against a room with a browser player in it: blocks and poses, both ways, the hour, the room's mobs, an item picked up, and a stack
+taken out of a room's chest.
+`native/body_test.bend` holds how another player is painted and `native/tag_test.bend` how
+its name is written.
+
 ## Shape
 
 ```

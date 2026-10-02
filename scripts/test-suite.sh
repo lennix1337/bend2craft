@@ -11,6 +11,8 @@ TESTS=(
   tests/multiplayer-mobs-bend.test.mjs
   tests/multiplayer-room.test.mjs
   tests/multiplayer-transport.test.mjs
+  tests/native-bridge.test.mjs
+  tests/native-join.test.mjs
   tests/multiplayer-client.test.mjs
   tests/multiplayer-mob-world.test.mjs
   tests/multiplayer-server-world.test.mjs
@@ -170,8 +172,22 @@ BEND_TESTS=(
   lab/native/tcp-probe/transport_test.bend
   native/save_test.bend
   native/face_test.bend
+  native/paint_test.bend
   native/face_extraction_test.bend
   native/frame_test.bend
+  native/pointer_test.bend
+  native/bag_test.bend
+  native/hud_test.bend
+  native/texture_test.bend
+  native/net_test.bend
+  native/body_test.bend
+  native/tag_test.bend
+  native/screen_test.bend
+  native/stores_test.bend
+  native/stash_test.bend
+  native/shade_test.bend
+  native/sky_test.bend
+  native/scenery_test.bend
   native/client_test.bend
 )
 mkdir -p "$ROOT/scratchpad"

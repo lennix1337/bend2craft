@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { Entities, World } from "../web/bend-modules.js";
 import { bendList, bendPlanes, listValues } from "../web/bend-list.js";
+import { mobBox, rayHitBox } from "../web/aim.js";
+import { mobHeight } from "../web/mob-kinds.js";
 
 // The Region record is a Bend ADT, so it can only be built field by field. Three
 // builders below need it, and one list fold serves all of them, so the shape lives
@@ -882,3 +884,28 @@ const keptBurning = Entities.despawn(
 );
 assert.equal(keptBurning.head.burning, true, "despawn must not clear the fire on a mob it keeps");
 console.log('sunlight burning flag ok');
+
+// The aim rule: Bend's is the one the native client asks, and the browser still asks
+// web/aim.js. Until the browser migrates, the two answer the same for the same ray.
+for (const kind of [1, 2, 3, 4, 5, 6, 9]) {
+  assert.ok(Math.abs(Number(Entities.body_height(kind)) - mobHeight(kind)) < 1e-6, `kind ${kind} is as tall in Bend as in the roster`);
+}
+const aimRays = [
+  { origin: [10.5, 11.62, 8.5], direction: [0, 0, -1] },
+  { origin: [10.5, 11.62, 8.5], direction: [0, -0.6, -0.8] },
+  { origin: [10.5, 11.62, 8.5], direction: [0.6, 0, -0.8] },
+  { origin: [10.5, 11.62, 8.5], direction: [0, 0, 1] },
+  { origin: [10.5, 13.5, 8.5], direction: [0, 0, -1] },
+  { origin: [10.5, 10.5, 5.5], direction: [0, 1, 0] },
+  { origin: [14.5, 11.0, 5.5], direction: [-1, 0, 0] },
+];
+for (const kind of [1, 2, 6]) {
+  const mob = { x: 10.5, y: 10, z: 5.5, kind };
+  for (const { origin, direction } of aimRays) {
+    const want = rayHitBox(origin, direction, mobBox(mob), 4);
+    const got = Number(Entities.aim_distance(...origin, ...direction, mob.x, mob.y, mob.z, mobHeight(kind), 4));
+    if (want === null) assert.ok(got < 0, `a ray web/aim.js misses kind ${kind} with is a miss in Bend`);
+    else assert.ok(Math.abs(got - want) < 1e-4, `kind ${kind}: Bend's distance ${got} is web/aim.js's ${want}`);
+  }
+}
+console.log('aim rule ok');

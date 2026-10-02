@@ -21,9 +21,11 @@ itself is **not** here; it ships in `native/`.
 | `voxel/` | `native/voxel.bend` - the camera, the region grid and the per-pixel DDA reference raycaster |
 | `face/` | `native/face.bend` - the visible-face renderer: extraction, bucketing, projection |
 | `frame/` | `native/frame.bend` - frame assembly, the camera basis and the dirty check |
+| `paint/` | `native/paint.bend` - the two painters at every window size and thread count, held to the same picture |
+| `pointer/` | `native/pointer.bend` - what a display delivers for the mouse, and the client's look end to end on the runtime's grab and on the Windows host |
 | `player/` | `native/player.bend` - the player region, collision and the chunk seam |
 | `save/` | `native/save.bend` - the `B2CW` snapshot codec and the legacy migration |
-| `client-probe/` | `native/client.bend` end to end: the live presented frame rate, the painter's-algorithm alternative, and the output/array costs underneath it |
+| `client-probe/` | `native/client.bend` end to end: the live presented frame rate, every frame's pacing while the player walks, the painter's-algorithm alternative, and the output/array costs underneath it |
 | `bench-probe/` | the 16x16 CPU baseline and startup cost |
 | `render-probe/` | a 16x16 world-derived image, the smallest thing that renders at all |
 | `save-probe/` | the old two-byte `B2CS` cursor codec, superseded by `native/save.bend` |

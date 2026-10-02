@@ -78,6 +78,13 @@ def weapon_damage(+item: U32) -> U32:
 def hand_damage() -> U32:
   4
 
+# What a hit with an item in hand does: a sword its own damage, anything else the hand's.
+def is_sword(+item: U32) -> Bool:
+  Bool.and(U32.is_ge(item, 33), U32.is_le(item, 36))
+
+def melee_damage(+item: U32) -> U32:
+  Bool.pick(U32, is_sword(item), weapon_damage(item), hand_damage())
+
 def slot_count() -> Nat:
   36n
 
@@ -687,6 +694,121 @@ def craft.if(slots: List<&2, Slot>, +index: Nat, valid: Bool) -> InventoryResult
 def craft(slots: List<&2, Slot>, +index: Nat) -> InventoryResult:
   craft.if(slots, index, Nat.is_lt(index, 25n))
 
+# --- a stack on the cursor ------------------------------------------------------
+#
+# An inventory screen moves items with a stack held on the cursor, and a click is a
+# transition on two stacks: the slot's and the cursor's. These are the clicks of the game
+# this one is modelled on.
+#
+# The left button takes the whole slot onto an empty cursor, puts the whole cursor into an
+# empty slot, tops the slot up from the cursor when both hold the same item, and swaps the
+# two otherwise. The right button takes the larger half of the slot onto an empty cursor,
+# and puts one item from the cursor into a slot that is empty or holds the same item with
+# room; onto a different item it swaps, and onto a full stack of the same it does nothing.
+# A tool wears, so two of them are never one stack: they swap.
+type Clicked is Data:
+  Clicked{slot: Slot, held: Slot}
+
+def clicked_slot(state: Clicked) -> Slot:
+  Clicked{slot, held} = state
+  slot
+
+def clicked_held(state: Clicked) -> Slot:
+  Clicked{slot, held} = state
+  held
+
+def stackable(+item: U32) -> Bool:
+  U32.is_eq(tool_max_durability(item), 0)
+
+# A stack of nothing is the empty slot, whatever item it was a stack of.
+def stack(+item: U32, +count: U32, +durability: U32) -> Slot:
+  Bool.pick(Slot, U32.is_eq(count, 0), make_slot(0, 0, 0), make_slot(item, count, durability))
+
+def click.left(+si: U32, +sc: U32, +sd: U32, +hi: U32, +hc: U32, +hd: U32) -> Clicked:
+  +same = Bool.and(Bool.and(U32.is_ne(sc, 0), U32.is_ne(hc, 0)), Bool.and(U32.is_eq(si, hi), stackable(si)))
+  +moved = U32.min(hc, U32.sub(max_stack(), U32.min(sc, max_stack())))
+  Bool.pick(Clicked, same,
+    Clicked{stack(si, U32.add(sc, moved), sd), stack(hi, U32.sub(hc, moved), hd)},
+    Clicked{stack(hi, hc, hd), stack(si, sc, sd)})
+
+def click.right(+si: U32, +sc: U32, +sd: U32, +hi: U32, +hc: U32, +hd: U32) -> Clicked:
+  +free = U32.is_eq(sc, 0)
+  +alike = Bool.and(Bool.not(free), U32.is_eq(si, hi))
+  +room = Bool.or(free, Bool.and(alike, Bool.and(stackable(si), U32.is_lt(sc, max_stack()))))
+  +take = U32.div(U32.add(sc, 1), 2)
+  Bool.pick(Clicked, U32.is_eq(hc, 0),
+    Clicked{stack(si, U32.sub(sc, take), sd), stack(si, take, sd)},
+    Bool.pick(Clicked, room,
+      Clicked{stack(hi, U32.add(sc, 1), Bool.pick(U32, free, hd, sd)), stack(hi, U32.sub(hc, U32.min(hc, 1)), hd)},
+      Bool.pick(Clicked, alike,
+        Clicked{stack(si, sc, sd), stack(hi, hc, hd)},
+        Clicked{stack(hi, hc, hd), stack(si, sc, sd)})))
+
+# One click on a slot with `held` on the cursor: the slot and the cursor after it.
+def click(slot: Slot, held: Slot, right: Bool) -> Clicked:
+  Slot{+si, +sc, +sd} = slot
+  Slot{+hi, +hc, +hd} = held
+  Bool.pick(Clicked, right, click.right(si, sc, sd, hi, hc, hd), click.left(si, sc, sd, hi, hc, hd))
+
+# --- crafting from a grid, onto the cursor --------------------------------------
+#
+# A crafting grid shows what it would make before anything is taken. The recipe a grid
+# matches is the first whose shape it is, and 25 when it is none of them.
+def craft_index.go(remaining: Nat, +index: Nat, +grid: List<&2, Slot>) -> Nat:
+  match remaining:
+    case 0n:
+      25n
+    case 1n+rest:
+      Bool.pick(Nat, grid_matches(grid, shape_pattern(index)), index,
+        craft_index.go(rest, Nat.add(index, 1n), grid))
+
+def craft_index(+grid: List<&2, Slot>) -> Nat:
+  craft_index.go(25n, 0n, grid)
+
+# What the grid would make: the stack that comes out, or the empty slot.
+def craft_preview.at(+found: Bool, spec: Recipe) -> Slot:
+  Recipe{item_a, count_a, item_b, count_b, +output, +output_count} = spec
+  Bool.pick(Slot, found, make_slot(output, output_count, tool_max_durability(output)), make_slot(0, 0, 0))
+
+def craft_preview(+grid: List<&2, Slot>) -> Slot:
+  craft_preview.at(Nat.is_lt(craft_index(grid), 25n), recipe(craft_index(grid)))
+
+type Crafted is Data:
+  Crafted{grid: List<&2, Slot>, held: Slot, ok: Bool}
+
+def crafted_grid(state: Crafted) -> List<&2, Slot>:
+  Crafted{grid, held, ok} = state
+  grid
+
+def crafted_held(state: Crafted) -> Slot:
+  Crafted{grid, held, ok} = state
+  held
+
+def crafted_ok(state: Crafted) -> Bool:
+  Crafted{grid, held, ok} = state
+  ok
+
+def craft_take.at(taken: Bool, +grid: List<&2, Slot>, +made: Slot, +held: Slot) -> Crafted:
+  match taken:
+    case True{}:
+      Crafted{consume_grid(grid),
+        make_slot(slot_item(made), U32.add(slot_count_value(made), slot_count_value(held)), slot_durability(made)),
+        True{}}
+    case False{}:
+      Crafted{grid, held, False{}}
+
+# Taking what the grid makes onto the cursor: one of each ingredient is spent and the
+# result is on the cursor. It is refused, and nothing is spent, when the grid makes nothing
+# or the cursor holds something the result cannot join.
+def craft_take.made(+grid: List<&2, Slot>, +made: Slot, +held: Slot) -> Crafted:
+  +free = U32.is_eq(slot_count_value(held), 0)
+  +joins = Bool.and(Bool.and(U32.is_eq(slot_item(held), slot_item(made)), stackable(slot_item(made))),
+    U32.is_le(U32.add(slot_count_value(held), slot_count_value(made)), max_stack()))
+  craft_take.at(Bool.and(U32.is_ne(slot_count_value(made), 0), Bool.or(free, joins)), grid, made, held)
+
+def craft_take(+grid: List<&2, Slot>, +held: Slot) -> Crafted:
+  craft_take.made(grid, craft_preview(grid), held)
+
 def can_collect_block(+block: U32, +y: Nat) -> Bool:
   +utility = Bool.or(Bool.or(U32.is_eq(block, 25), U32.is_eq(block, 26)), U32.is_eq(block, 27))
   Bool.and(Bool.or(utility, Bool.or(Bool.or(Bool.or(is_block_item(block), U32.is_eq(block, 11)), U32.is_eq(block, 13)), Bool.or(Bool.or(U32.is_eq(block, 14), U32.is_eq(block, 15)), Bool.or(U32.is_eq(block, 22), U32.is_eq(block, 23))))), Nat.is_gt(y, 0n))
@@ -694,6 +816,22 @@ def can_collect_block(+block: U32, +y: Nat) -> Bool:
 def is_placeable(+item: U32) -> Bool:
   +utility = Bool.or(Bool.or(U32.is_eq(item, 10), U32.is_eq(item, 40)), U32.is_eq(item, 43))
   Bool.or(utility, Bool.or(Bool.or(Bool.or(Bool.or(is_block_item(item), U32.is_eq(item, 21)), U32.is_eq(item, 22)), U32.is_eq(item, 23)), U32.is_eq(item, 24)))
+
+# The block an item puts in the world, or 0 for an item that places none. For the
+# terrain blocks the item id is the block id; the rest are `mining_item.base` read the
+# other way. The redstone items answer 0 here: `world/redstone.bend` owns the ids
+# they place.
+def placed_block(+item: U32) -> U32:
+  Bool.pick(U32, Bool.and(U32.is_ne(item, 0), U32.is_lt(item, 7)), item,
+    Bool.pick(U32, U32.is_eq(item, 10), 27,
+      Bool.pick(U32, U32.is_eq(item, 40), 25,
+        Bool.pick(U32, U32.is_eq(item, 43), 26,
+          Bool.pick(U32, U32.is_eq(item, 31), 22,
+            Bool.pick(U32, U32.is_eq(item, 32), 23,
+              Bool.pick(U32, U32.is_eq(item, 21), 11,
+                Bool.pick(U32, U32.is_eq(item, 22), 12,
+                  Bool.pick(U32, U32.is_eq(item, 23), 13,
+                    Bool.pick(U32, U32.is_eq(item, 24), 14, 0))))))))))
 
 def can_place(
   +item: U32, target_empty: Bool, inside: Bool, overlaps_player: Bool

@@ -13,7 +13,10 @@ scratchpad/
 .opencode/
 # The local multiplayer server's saved world.
 worlds/
-# The native client's own world, written by its save key.
+# The native client's own world, its world in a room, and what the player carries, written
+# by its save key.
 native/client-world.b2cw
+native/client-room.b2cw
+native/*.b2cw.bag
 # Local Cloudflare Wrangler state.
 .wrangler/

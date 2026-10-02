@@ -161,7 +161,10 @@ const BASE_TYPES = new Set([
   "Nat", "U32", "U8", "U16", "U64", "I32", "I64", "F32", "F64", "Bool", "String",
   "Char", "List", "Maybe", "Map", "IO", "Data", "Empty", "Word", "Pair", "Array",
 ]);
-const files = readdirSync(worldDir).filter((name) => name.endsWith(".bend"));
+// LAWS.bend and PROOF.bend are read by the checker only: their defs are lemmas whose
+// "types" are propositions, and nothing in them crosses into the JS lane.
+const PROOF_FILES = new Set(["LAWS.bend", "PROOF.bend"]);
+const files = readdirSync(worldDir).filter((name) => name.endsWith(".bend") && !PROOF_FILES.has(name));
 const sources = new Map();
 const defines = new Map();
 const aliasToFile = new Map();

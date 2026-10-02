@@ -228,6 +228,20 @@ def village_palette_test() -> IO(Unit):
       "bed and door share a colour")
     IO.print("voxel_probe=village palette pass furnace, bed and door are distinct")
 
+# The ids past 20 are the world's, not the texture atlas's. `world/world.bend` says 21 is
+# lava, 22 cobblestone, 23 obsidian, 25 glass, 26 chest and 27 the crafting table; the
+# palette once had them in the atlas's order, four ids out of step, and painted a crafting
+# table as glass.
+def world_palette_test() -> IO(Unit):
+  do IO<Unit>:
+    Unit <- check(U32.is_eq(Voxel.block_color(21), Voxel.rgb(224, 86, 26)), "block 21 is not lava's colour")
+    Unit <- check(U32.is_eq(Voxel.block_color(22), Voxel.rgb(122, 126, 127)), "block 22 is not cobblestone's colour")
+    Unit <- check(U32.is_eq(Voxel.block_color(23), Voxel.rgb(29, 21, 48)), "block 23 is not obsidian's colour")
+    Unit <- check(U32.is_eq(Voxel.block_color(25), Voxel.rgb(191, 224, 234)), "block 25 is not glass's colour")
+    Unit <- check(U32.is_eq(Voxel.block_color(26), Voxel.rgb(154, 106, 60)), "block 26 is not a chest's colour")
+    Unit <- check(U32.is_eq(Voxel.block_color(27), Voxel.rgb(148, 100, 58)), "block 27 is not a crafting table's colour")
+    IO.print("voxel_probe=world palette pass ids 21-27 are the world's")
+
 def main() -> IO(Unit):
   do IO<Unit>:
     +front : U32 = Voxel.fingerprint(Voxel.render_chunk(World.chunk(1337n, 0n, 0n), 0.0))
@@ -247,6 +261,7 @@ def main() -> IO(Unit):
     outside_check : Unit <- outside_eye_test()
     palette_check : Unit <- palette_walk(30n, 0)
     village_check : Unit <- village_palette_test()
+    world_check : Unit <- world_palette_test()
     IO.print("voxel_probe=pass image=32x32 occlusion=pass basis=pass screen=pass eye=pass turn=pass outside=pass palette=pass")
 
 #|golden yaw=0 fingerprint=2451398749 yaw=0.7 fingerprint=3646106801

@@ -53,14 +53,9 @@ def report(+elapsed_ms: Nat) -> IO(Unit):
     ++ " ms_per_frame=" ++ Nat.show(ms_per_frame)
     ++ " fps=" ++ Nat.show(whole) ++ "." ++ pad(hundredths) ++ Nat.show(hundredths))
 
-def main() -> IO(Unit):
+def run_at(+state: Client.Client, +width: U32) -> IO(Unit):
   do IO<Unit>:
-    # The client's entry point takes the size the selector chose, and this probe
-    # measures the default rather than the flag, so it asks for `window_width` -
-    # the size the benchmarks measure, and the one the client picks with no flag.
-    state : Client.Client <- Client.start(Client.size_of_width(Client.window_width()))
-    window : Window <- IO.try(Window, Window.open(Client.title(),
-      Client.window_width(), Client.window_width()))
+    window : Window <- IO.try(Window, Window.open(Client.title(), width, width))
     grabbed : Window <- Client.grabbed(window)
     # The grab refuses to engage until the window holds input focus, and focus arrives
     # after the window is mapped, so grabbing and looping immediately loses that race —
@@ -73,3 +68,26 @@ def main() -> IO(Unit):
     App.loop(Client.Client, Client.app(), frames(), held, state)
     finished : Nat <- IO.now()
     report(Nat.sub(finished, started))
+
+def start_at(+chosen: Client.Size) -> IO(Unit):
+  do IO<Unit>:
+    state : Client.Client <- Client.start(chosen)
+    run_at(state, Client.width_of(chosen))
+
+def chosen() -> IO(Unit):
+  do IO<Unit>:
+    for_client : Client.Size <- Client.width_arg()
+    start_at(for_client)
+
+def main() -> IO(Unit):
+  chosen()
+
+
+
+
+
+# The client's entry point takes the size the selector chose. This probe measures
+# whichever size it is asked for, so a resolution that has just become affordable can be
+# measured live instead of only in the harness: `--size=256` opens a 256x256 window and
+# counts its frames, and with no argument it measures `window_width` — the size the
+# benchmarks measure, and the one the client picks with no flag.

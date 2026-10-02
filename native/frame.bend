@@ -56,20 +56,117 @@ def columns() -> Nat:
 def rows() -> Nat:
   2n
 
-# The renderer reads this many chunks per axis. Measured at 8 threads, 7 samples, the
-# client's own spawn camera, per call: a one-chunk view costs 9.45 ms to render at
-# 64x64, a two-by-two region costs 19.10 ms at the same 64x64 and 21.41 ms even at
-# 32x32. The region's extra cost is the cell walk and the list plumbing that lays four
-# chunks out as one array, and it barely moves with the output size, so it is a fixed
-# per-frame cost rather than a per-pixel one. Two per axis therefore misses the 16.7 ms
-# budget at every resolution, and the shipped view is one chunk until that fixed cost
-# comes down. The region renderer itself is kept and tested: `faces_from_chunks` is the
-# same walk as `faces_from_chunk` over a wider extent, and the agreement gate covers both.
+# The view region: the chunks the renderer reads and the player collides with.
+#
+# It is five chunks per axis, and it **follows the player**. `Home` is its first chunk, and
+# the region is the twenty-five chunks from there. It starts two chunks before `chunk_x`,
+# the chunk the pose is counted from, so the chunk the player spawns in is the middle one
+# and there are two chunks of world on every side of it.
+#
+# `Home` is in **window chunks**: chunks of the player's own movement window, which counts
+# from 32768 cells before the world's origin (`PlayerProbe.window_origin_chunk` is world
+# chunk 0). A window chunk is a plain number on both sides of the origin, so the region can
+# follow the player west and north of it. Storage spells a chunk before the origin from
+# `World.negative_origin` instead, and `PlayerProbe.stored_chunk` is the one place a window
+# chunk becomes that spelling.
+#
+# The view was one chunk while the ray walk drew the window, because a two-by-two region
+# cost 19.10 ms a frame there. The painter's cost per face is small enough that the region
+# is no longer what the frame is spent on; `lab/native/paint/README.md` has the numbers.
+type Home is Data:
+  Home{x: Nat, z: Nat}
+
+# The view region is five chunks by five, eighty cells a side, with the player in the middle
+# chunk: there are at least thirty-two cells of world in every direction, which is as far as
+# the air lets a player see (`native/sky.bend`). It was three by three, and the world ended
+# sixteen cells away.
 def view_columns() -> Nat:
-  1n
+  5n
 
 def view_rows() -> Nat:
-  1n
+  5n
+
+# How many chunks come before the middle one, on either axis.
+def view_middle() -> Nat:
+  Nat.div(view_columns(), 2n)
+
+# The region at the start: the spawn chunk is world chunk 1, and it is the middle one.
+def home_start() -> Home:
+  Home{Nat.sub(Nat.add(PlayerProbe.window_origin_chunk(), 1n), view_middle()),
+    Nat.sub(Nat.add(PlayerProbe.window_origin_chunk(), 1n), view_middle())}
+
+def home_x(home: Home) -> Nat:
+  Home{x, z} = home
+  x
+
+def home_z(home: Home) -> Nat:
+  Home{x, z} = home
+  z
+
+def same_home(a: Home, b: Home) -> Bool:
+  Home{ax, az} = a
+  Home{bx, bz} = b
+  Bool.and(Nat.is_eq(ax, bx), Nat.is_eq(az, bz))
+
+# How far past the middle chunk's edge the player walks before the region moves. Without
+# it a player standing on a chunk boundary would move the region on every step back and
+# forth across it, and moving the region rebuilds it.
+def home_margin() -> Nat:
+  4n
+
+# The region's first window chunk on one axis, for a player in window cell `cell`. While
+# the player is inside the middle chunk, or within the margin of it, the region stays where
+# it is; past that it moves so the player's chunk is the middle one again.
+def home_axis(+origin: Nat, +cell: Nat) -> Nat:
+  +size = World.chunk_size()
+  +low = Nat.mul(size, Nat.add(origin, view_middle()))
+  +high = Nat.mul(size, Nat.add(Nat.add(origin, view_middle()), 1n))
+  Bool.pick(Nat, Bool.and(Nat.is_ge(Nat.add(cell, home_margin()), low),
+      Nat.is_lt(cell, Nat.add(high, home_margin()))),
+    origin, Nat.sub(Nat.div(cell, size), view_middle()))
+
+# The collision region's first window chunk on one axis. It is two chunks per axis, not
+# three: the player only collides with, and reaches, what is within a few cells, and a
+# region rebuilt in half the time is a shorter frame every time a block is dug. It is placed
+# so the player is at least six cells inside it on every side: it stays while the player is
+# between the sixth and the twenty-sixth of its thirty-two cells, and past that it moves so
+# the player is in its middle sixteen again.
+def den_axis(+origin: Nat, +cell: Nat) -> Nat:
+  +size = World.chunk_size()
+  +low = Nat.mul(size, origin)
+  Bool.pick(Nat, Bool.and(Nat.is_ge(cell, Nat.add(low, 6n)), Nat.is_lt(cell, Nat.add(low, 26n))),
+    origin, Nat.div(Nat.sub(cell, 8n), size))
+
+# A player coordinate as the window cell it is in. The player's own coordinates are
+# already in the window.
+def window_cell_of(+coordinate: F32) -> Nat:
+  U32.to_nat(F32.to_u32(F32.floor(F32.max(coordinate, 0.0))))
+
+def home_at(home: Home, +x: F32, +z: F32) -> Home:
+  Home{hx, hz} = home
+  Home{home_axis(hx, window_cell_of(x)), home_axis(hz, window_cell_of(z))}
+
+def den_at(den: Home, +x: F32, +z: F32) -> Home:
+  Home{dx, dz} = den
+  Home{den_axis(dx, window_cell_of(x)), den_axis(dz, window_cell_of(z))}
+
+# `den` is the collision region's first chunk, as `Home` is the view region's.
+def den_for(den: Home, player: Player.State) -> Home:
+  Player.State{x, y, z, yaw, pitch, velocity_y, grounded, health, hunger, air, fall,
+    poison} = player
+  den_at(den, x, z)
+
+def home_for(home: Home, player: Player.State) -> Home:
+  Player.State{x, y, z, yaw, pitch, velocity_y, grounded, health, hunger, air, fall,
+    poison} = player
+  home_at(home, x, z)
+
+# The eye in the view region's own cells. The pose counts the eye from `origin` — the
+# window cell of chunk (`chunk_x`, `chunk_z`) — and the region starts at `home`, so the
+# difference between the two, in cells, is what the renderer adds. It is signed: a region
+# that has followed the player past the pose's chunk starts after it.
+def view_shift(+origin: Nat, +home_chunk: Nat) -> F32:
+  F32.sub(F32.from_nat(origin), F32.from_nat(Nat.mul(home_chunk, World.chunk_size())))
 
 def spawn() -> Spawn:
   Spawn{25n, 25n, 9n}
@@ -91,28 +188,130 @@ def eye_height() -> F32:
 def pitch_limit() -> F32:
   1.5533
 
+# Radians of turn per pixel of pointer movement.
+#
+# The value is chosen against the field of view: `projection_half` with `focal = 1.5 * half`
+# puts the horizontal field of view near 67 degrees, so 0.0012 turns 35 degrees per 512
+# pixels of mouse travel.
 def look_sensitivity() -> F32:
-  0.0025
+  0.0012
+
+# --- looking by key ------------------------------------------------------------
+#
+# The arrow keys turn the camera too, and they are the look that needs nothing from the
+# pointer: not the runtime's grab, not the host script `native/pointer.bend` starts under
+# WSL. They were the only look that reached the client under WSLg while the pointer was read
+# from the display, which delivers no relative motion there.
+#
+# The keys are the runtime's own translation of the arrow keysyms (`window.c:507`), not raw
+# X keycodes: 63232 up, 63233 down, 63234 left, 63235 right. Those four are stable across
+# keyboard layouts in a way a hardware keycode is not, and the runtime is what chose them.
+#
+# Turning is a **rate**, not a per-press jump, so holding a key sweeps at a constant pace
+# and a tap moves a little. 1.6 rad/s is 92 degrees a second — a full sweep of the 67-degree
+# field of view in about two thirds of a second, which is the pace a held key needs to feel
+# like a held key. Pitch is half that, because a sweep of the horizon is a much larger change
+# to where you are looking than the same angle of yaw.
+def turn_rate() -> F32:
+  1.6
+
+def tilt_rate() -> F32:
+  0.8
+
+def arrow_up() -> U32:
+  63232
+
+def arrow_down() -> U32:
+  63233
+
+def arrow_left() -> U32:
+  63234
+
+def arrow_right() -> U32:
+  63235
+
+# Signed contribution of one axis, in radians per second: `+1` when the positive key is held,
+# `-1` when the negative one is, and `0` for both or neither. Both or neither is `0` rather
+# than a sum, because a player who rolls their fingers onto left and right means "hold still",
+# and a sum would leave them drifting.
+# Both held is `0` and not a sum: `1.6 + 1.6` would be 3.2 radians a second, a spin, when
+# what a player rolling both fingers onto Left and Right means is hold still.
+def axis_one(both: Bool, positive: Bool, negative: Bool) -> F32:
+  Bool.pick(F32, both, 0.0, Bool.pick(F32, positive, 1.0,
+    Bool.pick(F32, negative, F32.neg(1.0), 0.0)))
+
+def axis_way(+negative: Bool, +positive: Bool) -> F32:
+  axis_one(Bool.and(negative, positive), positive, negative)
+
+def axis.at(way: F32, +rate: F32) -> F32:
+  F32.mul(way, rate)
+
+def axis(negative: Bool, positive: Bool, +rate: F32) -> F32:
+  axis.at(axis_way(negative, positive), rate)
+
+def held(keys: U32, +code: U32) -> Bool:
+  U32.is_eq(U32.and(keys, code), code)
 
 # `Player.step` reads these masks through `Player.held`, so the fold below maps a
 # key code onto the bit the player transition tests rather than onto a key name.
+#
+# The bit numbers are a contract with `world/player.bend`, not a local choice: the strafe is
+# `input_axis(held(keys, 8), held(keys, 2))`, so 8 is the positive strafe, which is the
+# player's right at yaw 0 where forward is -z. `web/game-state.js:326` spells the same two
+# keys the same way round. The first version of this table had A on 8 and D on 2, which is
+# a strafe that goes left when the player presses right -- noticed by playing, not by a test.
 # A code that is not in the table reads as 0, which is "no key held", so every key
 # a client reacts to has to be in the table: the dig, place, save and quit keys are
 # read from the same mask as the movement keys, and a code missing from here would
 # read as always down.
 
+#
+# Control and Shift arrive as the runtime's own codes for them (`window.c:511`: 65595 and
+# 65598 for the two Controls, 65592 and 65596 for the two Shifts), not as 17 and 16. They
+# hold the sprint bit and the sneak bit, as in the game this one is modelled on, and a
+# screen reads the sneak bit as Shift.
+def shift_bit() -> U32:
+  64
+
 def key_bit(+code: U32) -> U32:
   Bool.pick(U32, U32.is_eq(code, 119), 1,
     Bool.pick(U32, U32.is_eq(code, 115), 4,
-      Bool.pick(U32, U32.is_eq(code, 97), 8,
-        Bool.pick(U32, U32.is_eq(code, 100), 2,
+      Bool.pick(U32, U32.is_eq(code, 97), 2,
+        Bool.pick(U32, U32.is_eq(code, 100), 8,
           Bool.pick(U32, U32.is_eq(code, 32), 16,
             Bool.pick(U32, U32.is_eq(code, 16), 32,
               Bool.pick(U32, U32.is_eq(code, 17), 64,
                 Bool.pick(U32, U32.is_eq(code, 27), 128,
                   Bool.pick(U32, U32.is_eq(code, 101), 256,
                     Bool.pick(U32, U32.is_eq(code, 114), 512,
-                      Bool.pick(U32, U32.is_eq(code, 116), 1024, 0)))))))))))
+                      Bool.pick(U32, U32.is_eq(code, 116), 1024,
+                        Bool.pick(U32, U32.is_eq(code, arrow_up()), 2048,
+                          Bool.pick(U32, U32.is_eq(code, arrow_down()), 4096,
+                            Bool.pick(U32, U32.is_eq(code, arrow_left()), 8192,
+                              Bool.pick(U32, U32.is_eq(code, arrow_right()), 16384,
+                                Bool.pick(U32, U32.is_eq(code, 102), 131072,
+                                  Bool.pick(U32, Bool.or(U32.is_eq(code, 65595), U32.is_eq(code, 65598)), 32,
+                                    Bool.pick(U32, Bool.or(U32.is_eq(code, 65592), U32.is_eq(code, 65596)), 64,
+                                      0))))))))))))))))))
+
+def key_turn(+keys: U32) -> F32:
+  axis(held(keys, key_bit(arrow_left())), held(keys, key_bit(arrow_right())), turn_rate())
+
+# The pitch sign is the mouse's, not a guess: the mouse reports y growing downward and a
+# downward pitch must spend, so the Down arrow — which points the view down — is the negative
+# key. This is the convention `fold_tilt` states, measured against the picture.
+def key_tilt(+keys: U32) -> F32:
+  axis(held(keys, key_bit(arrow_down())), held(keys, key_bit(arrow_up())), tilt_rate())
+
+# The turn a key look adds over a tick: the rate scaled by the tick's own length, so the
+# sweep is the same number of degrees per second whether the frame took 8 ms or 16 ms. It is
+# applied to the yaw the fold produced rather than folded in beside it, because the fold sums
+# per-event deltas and a rate is not a delta.
+def key_look_turn(+keys: U32, +dt: F32) -> F32:
+  F32.mul(key_turn(keys), dt)
+
+def key_look_tilt(+keys: U32, +dt: F32) -> F32:
+  F32.mul(key_tilt(keys), dt)
 
 def key_set(+keys: U32, +code: U32, down: Bool) -> U32:
   +bit = key_bit(code)
@@ -122,13 +321,48 @@ def key_set(+keys: U32, +code: U32, down: Bool) -> U32:
 # A `match` may only scrutinize a parameter or a field, and `event` is a list
 # binder, so each event is routed by a def that receives it as its parameter.
 
+# The mouse buttons are two more held keys, on bits of their own. The runtime numbers them
+# 0 for the left, 1 for the right and 2 for the middle (`window.c:569`), and the middle does
+# nothing. Being bits of the mask is what makes a button an edge like a key: the client
+# digs on the press and not on every frame the button is held.
+#
+# They used to share the bits of `E` and `R`. `E` now opens the inventory, as in the game
+# this one is modelled on, so the left button has to be told from it: the left button digs
+# and clicks, `F` digs from the keyboard, and the right button and `R` both place.
+def left_bit() -> U32:
+  32768
+
+def right_bit() -> U32:
+  65536
+
+def button_bit(+button: U32) -> U32:
+  Bool.pick(U32, U32.is_eq(button, 0), left_bit(),
+    Bool.pick(U32, U32.is_eq(button, 1), right_bit(), 0))
+
+def button_set(+keys: U32, +button: U32, down: Bool) -> U32:
+  +bit = button_bit(button)
+  +cleared = U32.and(keys, U32.xor(keys, bit))
+  Bool.pick(U32, down, U32.or(cleared, bit), cleared)
+
 def fold_keys(event: Event, +keys: U32) -> U32:
   match event:
     case Key{code, down}:
       key_set(keys, code, down)
+    case Mouse{x, y, button, down}:
+      button_set(keys, button, down)
     case _:
       keys
 
+# A `Look` is this frame's pointer movement, in pixels.
+#
+# `window.c:591` pushes `Look{x - cx, y - cy}` and `window.c:594` warps the pointer back to
+# the centre, so on a display where the warp works the event is a delta, and
+# `lab/native/pointer/census-xvfb.sh` measures that it is: eight relative steps of ten pixels
+# arrive as eight `Look{10 0}`. Under WSLg the display delivers no relative motion at all, so
+# `native/pointer.bend` takes the delta from the Windows host instead and hands it to this
+# fold as the same event. Either way the fold sums deltas and never differences them.
+#
+# A `Move` is the ungrabbed pointer's position and is not read: a position is not a movement.
 def fold_turn(event: Event, +turn: F32) -> F32:
   match event:
     case Look{dx, dy}:
@@ -136,10 +370,15 @@ def fold_turn(event: Event, +turn: F32) -> F32:
     case _:
       turn
 
+# Spent rather than added: the runtime reports y growing downward, so the mouse travelling
+# down arrives with a positive dy, and the pitch is positive up — `Player.direction` and
+# `Camera.look` both put `sin(pitch)` in the forward y. That convention is measured rather than
+# assumed: rendering the spawn scene from one eye at pitch +1 gives 16311 sky pixels and at
+# pitch -1 gives 8, so positive pitch is up in the picture.
 def fold_tilt(event: Event, +tilt: F32) -> F32:
   match event:
     case Look{dx, dy}:
-      F32.add(tilt, F32.mul(dy, look_sensitivity()))
+      F32.sub(tilt, F32.mul(dy, look_sensitivity()))
     case _:
       tilt
 
@@ -148,14 +387,29 @@ def input.go(events: List<&2, Event>, +keys: U32, +turn: F32, +tilt: F32) -> Key
     case Nil{}:
       Keys{keys, turn, tilt}
     case +event <> rest:
-      input.go(rest, fold_keys(event, keys), fold_turn(event, turn),
-        fold_tilt(event, tilt))
+      input.go(rest, fold_keys(event, keys), fold_turn(event, turn), fold_tilt(event, tilt))
 
 # The input stage: one tick's events into the held-key mask and the two look
-# deltas. A client reads this once per tick, before the player transition.
+# deltas, seeded with the mask the player already holds.
+#
+# The mask is a level and not a per-frame reading, which is what the seed is for.
+# `Window.frame` hands a tick only the events that arrived during that frame, so a
+# frame carrying no key event is the ordinary frame of a key the player is still
+# holding down. Folding those frames from zero makes the mask a function of
+# X11's auto-repeat rather than of the loop: a delay before the first step, one step
+# per repeat instead of one per tick, and a diagonal that breaks up because the two
+# repeats rarely land in the same frame.
+#
+# The look deltas do not carry a seed, for the opposite reason. A `Look` is already this
+# frame's movement, so summing it into the previous frame's would turn one flick into a
+# drift.
+def input_from(events: List<&2, Event>, held: U32) -> Keys:
+  input.go(events, held, 0.0, 0.0)
 
+# The fold with nothing held, which is the state before the first key event and what
+# a headless reader wants: this frame's events and no memory of an earlier one.
 def input(events: List<&2, Event>) -> Keys:
-  input.go(events, 0, 0.0, 0.0)
+  input_from(events, 0)
 
 # A `match` may not scrutinize a `let`-bound local, so the folded record is read
 # through three projections. Each is a field read, not a second fold.
@@ -163,6 +417,16 @@ def input(events: List<&2, Event>) -> Keys:
 def keys_mask(keys: Keys) -> U32:
   Keys{mask, _, _} = keys
   mask
+
+# How far the pointer moved over the events the fold read, in pixels: the two look deltas
+# before the sensitivity made angles of them. A screen moves its own arrow by this.
+def look_dx(keys: Keys) -> F32:
+  Keys{_, turn, _} = keys
+  F32.div(turn, look_sensitivity())
+
+def look_dy(keys: Keys) -> F32:
+  Keys{_, _, tilt} = keys
+  F32.neg(F32.div(tilt, look_sensitivity()))
 
 def turn_delta(keys: Keys) -> F32:
   Keys{_, turn, _} = keys
@@ -326,19 +590,29 @@ def origin_z() -> Nat:
 def initial_player() -> Player.State:
   PlayerProbe.create_player(25n, 25n, 9n)
 
-def ready(state: Player.State, events: List<&2, Event>) -> Player.State & U32:
+# `held` is the mask the player already holds, which the client's own tick carries
+# between frames. `ready_holding` is the version that reads it; `ready` is this frame
+# alone, which is what a headless reader wants.
+def ready_holding(state: Player.State, events: List<&2, Event>, held: U32,
+  +dt: F32) -> Player.State & U32:
   # Every parameter is destructured before the first `let`: a `let` turns the
   # remaining binders into computed values and a `match` may only scrutinize a
   # parameter or a field.
   Player.State{+x, +y, +z, +yaw, +pitch, +velocity_y, grounded, +health, +hunger,
     +air, +fall, +poison} = state
-  +folded : Keys = input(events)
-  +keys = keys_mask(folded)
-  +next_yaw = F32.add(yaw, turn_delta(folded))
-  +next_pitch = F32.clamp(F32.add(pitch, tilt_delta(folded)),
+  +folded : Keys = input_from(events, held)
+  +mask = keys_mask(folded)
+  # Both looks land here: the fold's per-event deltas and the arrow keys' rate over this
+  # tick. They add, so a player can hold Right and sweep with the mouse at the same time.
+  +next_yaw = F32.add(F32.add(yaw, turn_delta(folded)), key_look_turn(mask, dt))
+  +next_pitch = F32.clamp(
+    F32.add(F32.add(pitch, tilt_delta(folded)), key_look_tilt(mask, dt)),
     F32.neg(pitch_limit()), pitch_limit())
   (Player.State{x, y, z, next_yaw, next_pitch, velocity_y, grounded, health, hunger,
-    air, fall, poison}, keys)
+    air, fall, poison}, mask)
+
+def ready(state: Player.State, events: List<&2, Event>) -> Player.State & U32:
+  ready_holding(state, events, 0, 0.0)
 
 def ready_keys(ready: Player.State & U32) -> U32:
   (state, keys) = ready
@@ -359,14 +633,31 @@ def tick(ready: Player.State & U32, +dt: F32,
 
 # Input and the player transition, up to but not including the camera. A frame
 # that skips the render still does exactly this, which is the dirty-frame cost.
+#
+# `held` is the mask carried in from the previous tick; see `input_from` for why it
+# is one. `advance_holding` is the version that reads it and `advance` is this frame
+# alone.
+
+def advance_holding(state: Player.State, events: List<&2, Event>, held: U32, +dt: F32,
+  +region: PlayerProbe.Region, +origin_x: Nat, +origin_z: Nat, previous: Pose) -> Staged:
+  prepared : Player.State & U32 = ready_holding(state, events, held, dt)
+  +moved : Player.State = tick(prepared, dt, region)
+  +next : Pose = pose(moved, origin_x, origin_z)
+  Staged{moved, next, pose_changed(previous, next)}
+
+def staged_player(staged: Staged) -> Player.State:
+  Staged{player, pose, changed} = staged
+  player
+
+def view_eye(eye: Voxel.Vec, home: Home) -> Voxel.Vec:
+  Voxel.Vec{x, y, z} = eye
+  Home{hx, hz} = home
+  Voxel.Vec{F32.add(x, view_shift(origin_x(), hx)), y, F32.add(z, view_shift(origin_z(), hz))}
 
 def advance(state: Player.State, events: List<&2, Event>, +dt: F32,
   +region: PlayerProbe.Region, +origin_x: Nat, +origin_z: Nat,
   previous: Pose) -> Staged:
-  prepared : Player.State & U32 = ready(state, events)
-  +moved : Player.State = tick(prepared, dt, region)
-  +next : Pose = pose(moved, origin_x, origin_z)
-  Staged{moved, next, pose_changed(previous, next)}
+  advance_holding(state, events, 0, dt, region, origin_x, origin_z, previous)
 
 def rebuild.painted(+player: Player.State, +pose: Pose, chunk: Array<U32>,
   depth: Nat, +previous: U32) -> Frame:

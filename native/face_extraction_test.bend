@@ -2,6 +2,7 @@ import Base
 import ../world/world.bend as World
 import ./voxel.bend as Voxel
 import ./face.bend as Face
+import ../world/world_state.bend as WorldState
 
 # Pins how many faces a real chunk must expose.
 #
@@ -113,9 +114,54 @@ def checked(pinned: Reference, +extracted: U32) -> IO(Unit):
     probe : Unit <- report(extracted_ok, "the probe must extract 1298 faces, not fewer")
     IO.print("face-extraction=pass solid=2102 exposed=1298 extracted=1298")
 
+# --- a region of chunks is the world, cell for cell ----------------------------
+#
+# `Face.region_flat` lays several chunks out as one array, x fastest, then z, then y, and
+# the face walk reads it as rows `width` cells wide. The first layout concatenated each
+# chunk's whole layer, which is the right order for one chunk and a scramble for more: row z
+# of the region then held three rows of one chunk side by side. The picture it drew was
+# plausible terrain that was not the world, which is how a player came to walk through walls
+# they could see and into walls they could not — the collision region was right and the
+# picture was not.
+#
+# So the region is held to the cell rule itself. `World.block` is what a cell is; a region
+# two chunks by two starting at chunk (1, 1) must say the same for every cell it holds.
+# The cells checked are every 103rd of the 20,480, which is coprime to the width and so
+# visits every column, every row and every layer.
+def region_width() -> U32:
+  32
+
+def region_chunk(+x: Nat, +z: Nat) -> List<&2, U32>:
+  Face.chunk_blocks(WorldState.chunk(1337n, x, z, WorldState.empty()))
+
+def region_flat() -> List<&2, U32>:
+  Face.region_flat([region_chunk(1n, 1n), region_chunk(2n, 1n), region_chunk(1n, 2n),
+    region_chunk(2n, 2n)], 2n, 2n)
+
+def region_wrong(remaining: Nat, +index: U32, +flat: List<&2, U32>, +wrong: U32) -> U32:
+  match remaining:
+    case 0n:
+      wrong
+    case 1n+p:
+      +x = U32.mod(index, region_width())
+      +z = U32.mod(U32.div(index, region_width()), region_width())
+      +y = U32.div(index, U32.mul(region_width(), region_width()))
+      +stored = Maybe.default(&2, U32, List.get(&2, U32, flat, U32.to_nat(index)), 4294967295)
+      +ruled = World.block(1337n, U32.to_nat(U32.add(16, x)), U32.to_nat(y),
+        U32.to_nat(U32.add(16, z)))
+      region_wrong(p, U32.mod(U32.add(index, 103), 20480), flat,
+        U32.add(wrong, Bool.pick(U32, U32.is_eq(stored, ruled), 0, 1)))
+
+def region_is_the_world() -> IO(Unit):
+  +wrong : U32 = region_wrong(400n, 0, region_flat(), 0)
+  do IO<Unit>:
+    said : Unit <- IO.print("region cells checked=400 wrong=" ++ U32.show(wrong))
+    report(U32.is_eq(wrong, 0), "a two-by-two region does not hold the world's own cells")
+
 def main() -> IO(Unit):
   +extracted : U32 = U32.from_nat(List.length(&2, Face.Face,
     Face.faces_from_chunk(World.chunk(1337n, 0n, 0n))))
   do IO<Unit>:
     pinned : Reference <- reference()
-    checked(pinned, extracted)
+    one : Unit <- checked(pinned, extracted)
+    region_is_the_world()

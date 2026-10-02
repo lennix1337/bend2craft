@@ -173,3 +173,60 @@ const wrongShape = Inventory.craft_grid(Inventory.create(), listFrom([
 ]), 0n);
 assert.equal(wrongShape.ok, false);
 console.log("bend inventory ok");
+
+// A hit does a sword's damage with a sword in hand and the hand's with anything else.
+{
+  const { Inventory: Rules } = await import("../web/bend-modules.js");
+  assert.equal(Number(Rules.melee_damage(36)), 7, "a diamond sword hits for seven");
+  assert.equal(Number(Rules.melee_damage(33)), 4, "a wooden sword hits for four");
+  assert.equal(Number(Rules.melee_damage(19)), Number(Rules.hand_damage()), "a pickaxe hits like a hand");
+  assert.equal(Number(Rules.melee_damage(0)), Number(Rules.hand_damage()), "an empty hand hits like a hand");
+  console.log("melee damage ok");
+}
+
+// A click is a transition on two stacks: the slot's and the cursor's.
+{
+  const { Inventory: Rules } = await import("../web/bend-modules.js");
+  const slot = (item, count, durability = 0) => Rules.make_slot(item, count, durability);
+  const seen = (state) => [
+    [Number(state.slot.item), Number(state.slot.count)],
+    [Number(state.held.item), Number(state.held.count)],
+  ];
+  const left = (a, b) => seen(Rules.click(a, b, false));
+  const right = (a, b) => seen(Rules.click(a, b, true));
+  assert.deepEqual(left(slot(1, 32), slot(0, 0)), [[0, 0], [1, 32]], "a left click takes the whole stack");
+  assert.deepEqual(left(slot(0, 0), slot(1, 32)), [[1, 32], [0, 0]], "and puts the whole stack down");
+  assert.deepEqual(left(slot(1, 60), slot(1, 10)), [[1, 64], [1, 6]], "onto the same item it tops the slot up");
+  assert.deepEqual(left(slot(1, 5), slot(2, 7)), [[2, 7], [1, 5]], "onto another item it swaps");
+  assert.deepEqual(left(slot(19, 1, 100), slot(19, 1, 50)), [[19, 1], [19, 1]], "two tools are never one stack");
+  assert.equal(Number(Rules.click(slot(19, 1, 100), slot(19, 1, 50), false).slot.durability), 50, "they swap, each with its own wear");
+  assert.deepEqual(right(slot(1, 7), slot(0, 0)), [[1, 3], [1, 4]], "a right click takes the larger half");
+  assert.deepEqual(right(slot(1, 1), slot(0, 0)), [[0, 0], [1, 1]], "half of one is the one");
+  assert.deepEqual(right(slot(0, 0), slot(1, 5)), [[1, 1], [1, 4]], "and puts one down");
+  assert.deepEqual(right(slot(1, 3), slot(1, 1)), [[1, 4], [0, 0]], "the last one empties the cursor");
+  assert.deepEqual(right(slot(1, 64), slot(1, 5)), [[1, 64], [1, 5]], "a full stack takes no more");
+  assert.deepEqual(right(slot(2, 3), slot(1, 5)), [[1, 5], [2, 3]], "onto another item it swaps");
+  assert.deepEqual(right(slot(0, 0), slot(0, 0)), [[0, 0], [0, 0]], "nothing onto nothing is nothing");
+
+  // A grid shows what it would make, and taking it spends one of each ingredient.
+  const grid = (...cells) => cells.reduceRight((tail, head) => Rules.cons_slot(head, tail), { $: "Nil" });
+  const none = slot(0, 0);
+  const logs = grid(slot(5, 3), none, none, none, none, none, none, none, none);
+  assert.equal(Number(Rules.craft_index(logs)), 0, "one log is the first recipe");
+  assert.equal(Number(Rules.craft_index(Rules.empty_grid())), 25, "an empty grid is no recipe");
+  assert.equal(Number(Rules.craft_preview(logs).item), 8, "a log would make planks");
+  assert.equal(Number(Rules.craft_preview(logs).count), 4, "four of them");
+  assert.equal(Number(Rules.craft_preview(Rules.empty_grid()).count), 0, "an empty grid would make nothing");
+  const taken = Rules.craft_take(logs, none);
+  assert.equal(taken.ok, true);
+  assert.deepEqual([Number(taken.held.item), Number(taken.held.count)], [8, 4], "the planks are on the cursor");
+  assert.equal(Number(taken.grid.head.count), 2, "and one log is spent");
+  const again = Rules.craft_take(taken.grid, taken.held);
+  assert.equal(Number(again.held.count), 8, "a second take joins the first");
+  const blocked = Rules.craft_take(logs, slot(1, 5));
+  assert.equal(blocked.ok, false, "a cursor holding something else takes nothing");
+  assert.equal(Number(blocked.grid.head.count), 3, "and nothing is spent");
+  assert.equal(Rules.craft_take(logs, slot(8, 62)).ok, false, "a stack with no room for the result takes nothing");
+  assert.equal(Rules.craft_take(Rules.empty_grid(), none).ok, false, "an empty grid makes nothing");
+  console.log("clicks and grid crafting ok");
+}

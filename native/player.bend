@@ -159,6 +159,24 @@ def copy_chunk(
     share_blocks(Array.to_list(~U32, WorldState.chunk(seed, chunk_x, chunk_z, edits))),
     region, width, depth, base_x, base_z, 0)
 
+# The chunk of the movement window that holds world chunk 0. The window is 32768 cells
+# either side of the origin, so it is 2048 chunks in.
+def window_origin_chunk() -> Nat:
+  Nat.div(32768n, World.chunk_size())
+
+# A chunk of the movement window as storage spells it. The window counts chunks from its
+# own first one, so a window chunk is always a plain number and a run of them is
+# consecutive across the world's origin. Storage does not: a chunk before the origin is
+# spelled from `negative_origin`, as its cells are, so the chunk just west of chunk 0 is
+# nowhere near 0. A grid is laid out in window chunks and each one is spelled on its way
+# to `WorldState.chunk`.
+def stored_chunk(+window: Nat) -> Nat:
+  Bool.pick(Nat, Nat.is_ge(window, window_origin_chunk()),
+    Nat.sub(window, window_origin_chunk()),
+    Nat.sub(Nat.add(Nat.div(World.negative_origin(), World.chunk_size()), window),
+      window_origin_chunk()))
+
+# `chunk_x` and `chunk_z` are window chunks.
 def copy_grid.go(
   +remaining: Nat, +index: Nat, +seed: Nat, +chunk_x: Nat, +chunk_z: Nat, +columns: Nat,
   +edits: List<&2, WorldState.Edit>, region: Array<U32>, +width: U32, +depth: U32
@@ -169,7 +187,8 @@ def copy_grid.go(
     case 1n+p:
       +local_x = Nat.mod(index, columns)
       +local_z = Nat.div(index, columns)
-      copied = copy_chunk(seed, Nat.add(chunk_x, local_x), Nat.add(chunk_z, local_z),
+      copied = copy_chunk(seed, stored_chunk(Nat.add(chunk_x, local_x)),
+        stored_chunk(Nat.add(chunk_z, local_z)),
         U32.mul(U32.from_nat(local_x), U32.from_nat(World.chunk_size())),
         U32.mul(U32.from_nat(local_z), U32.from_nat(World.chunk_size())),
         width, depth, edits, region)
@@ -194,15 +213,26 @@ def plane_blocks(remaining: Nat, +source: List<&2, U32>, +per_plane: Nat,
       plane_blocks(p, List.drop(&2, U32, source, per_plane), per_plane,
         List.take(&2, U32, source, per_plane) <> acc)
 
+# The first `remaining` cells of the region's list, shared. One loop that carries what it
+# has taken, rather than `List.take` under `share_blocks`: each of those recurses once per
+# cell before it returns anything, and a region of three chunks by three is 46,080 cells,
+# which is deeper than the JS lane's stack.
+def shared_cells(remaining: Nat, blocks: List<&1, U32>, acc: List<&2, U32>) -> List<&2, U32>:
+  match remaining blocks:
+    case 1n+r +block <> rest:
+      shared_cells(r, rest, block <> acc)
+    case _ _:
+      List.reverse(&2, U32, acc)
+
 def region_planes(+cells: Nat, +height: Nat, region: Array<U32>) ->
   List<&2, List<&2, U32>>:
-  plane_blocks(height, share_blocks(List.take(&1, U32, Array.to_list(~U32, region), cells)),
+  plane_blocks(height, shared_cells(cells, Array.to_list(~U32, region), []),
     Nat.div(cells, height), [])
 
-# A `columns` x `rows` grid of bulk chunks with (chunk_x, chunk_z) at its
-# minimum corner. Requires cells the guard accepts; the checked entry point
-# below is the one to call.
-def region_grid(
+# A `columns` x `rows` grid of bulk chunks whose first chunk is window chunk
+# (chunk_x, chunk_z). Requires a grid the window holds; the checked entry points below are
+# the ones to call.
+def window_grid(
   +seed: Nat, +chunk_x: Nat, +chunk_z: Nat, +columns: Nat, +rows: Nat,
   edits: List<&2, WorldState.Edit>
 ) -> Region:
@@ -212,8 +242,16 @@ def region_grid(
   +cells = region_cells(columns, rows)
   filled = copy_grid.go(Nat.mul(columns, rows), 0n, seed, chunk_x, chunk_z, columns,
     edits, Array.new(U32, region_depth(cells), 0), U32.from_nat(width), U32.from_nat(depth))
-  Region{region_planes(cells, World.max_y(), filled), domain_cell(Nat.mul(chunk_x, size)), 0n,
-    domain_cell(Nat.mul(chunk_z, size)), width, World.max_y(), depth}
+  Region{region_planes(cells, World.max_y(), filled), Nat.mul(chunk_x, size), 0n,
+    Nat.mul(chunk_z, size), width, World.max_y(), depth}
+
+# The same grid named by its first chunk as storage spells it, at or after the origin.
+def region_grid(
+  +seed: Nat, +chunk_x: Nat, +chunk_z: Nat, +columns: Nat, +rows: Nat,
+  edits: List<&2, WorldState.Edit>
+) -> Region:
+  window_grid(seed, Nat.add(window_origin_chunk(), chunk_x),
+    Nat.add(window_origin_chunk(), chunk_z), columns, rows, edits)
 
 # One bulk export already sits in the region's cell order, so a one-chunk region
 # is the export itself: no cell is copied. It is split into planes on the way in,
@@ -248,6 +286,30 @@ def checked_from_world_state(
   edits: List<&2, WorldState.Edit>
 ) -> Maybe<&1, Region>:
   checked_from_world_state.at(region_is_sound(chunk_x, chunk_z, columns, rows),
+    seed, chunk_x, chunk_z, columns, rows, edits)
+
+# A grid anywhere in the movement window, on either side of the origin, named by its first
+# window chunk. This is the region a client that follows the player builds: a grid that
+# would run past the window's last chunk is refused.
+def window_is_sound(+chunk: Nat, +chunks: Nat) -> Bool:
+  Nat.is_le(Nat.mul(Nat.add(chunk, chunks), World.chunk_size()), movement_window())
+
+def checked_window_region.at(
+  +sound: Bool, +seed: Nat, +chunk_x: Nat, +chunk_z: Nat, +columns: Nat, +rows: Nat,
+  edits: List<&2, WorldState.Edit>
+) -> Maybe<&1, Region>:
+  match sound:
+    case True{}:
+      Some{window_grid(seed, chunk_x, chunk_z, columns, rows, edits)}
+    case False{}:
+      None{}
+
+def checked_window_region(
+  +seed: Nat, +chunk_x: Nat, +chunk_z: Nat, +columns: Nat, +rows: Nat,
+  edits: List<&2, WorldState.Edit>
+) -> Maybe<&1, Region>:
+  checked_window_region.at(Bool.and(grid_is_sound(columns, rows),
+      Bool.and(window_is_sound(chunk_x, columns), window_is_sound(chunk_z, rows))),
     seed, chunk_x, chunk_z, columns, rows, edits)
 
 def create_player(+world_x: Nat, +world_z: Nat, +spawn_height: Nat) -> Player.State:

@@ -6,7 +6,456 @@ looks like at a glance. Every number below was measured on the machine named in
 each table; none is extrapolated unless it says so.
 
 Platform: WSL2 on an AMD Ryzen 7 9800X3D (8 cores visible to WSL), Bend 2.0.32
-pinned, native C target, `--gpu off`, 8 threads, 7-9 samples, per-call medians.
+pinned, native C target, `--gpu off`, 7-9 samples, per-call medians. **The thread count is
+per-section**: session seven measured at eight because the client launched that way, and
+session eight found that eight is the wrong number for a frame, and session ten found that
+it was the wrong number for *that painter* and is the right one for the one that replaced it.
+
+## Session ten: 1024x1024 at 60 Hz, and a mouse that is read where it moves
+
+2026-10-01. Two things were left: 1024x1024 presented at 20.73 FPS, and the mouse did not
+turn the camera under WSLg. Both are closed, and both turned on something the earlier
+sessions had already written down and not acted on.
+
+### The frame: partition the writes, and stop forking the fold
+
+Session eight ended on "1024x1024 is reachable only by making that work partitionable
+rather than shared". `native/paint.bend` now does that. The faces are sorted and projected
+once into a flat list of quads; a fork tree deals the list down to 64-pixel tiles; each tile
+paints its quads into an array of its own and folds that array into its quadtree in the same
+task. A region no quad reaches answers its sky without an array.
+
+`bash lab/native/paint/run.sh`, medians of seven, milliseconds per draw:
+
+| size | whole-frame, 1 thread | whole-frame, 8 | tiles, 1 thread | tiles, 8 |
+| --- | ---: | ---: | ---: | ---: |
+| 128 | 1.20 | 2.35 | 0.70 | 1.18 |
+| 256 | 3.52 | 6.25 | 1.40 | 1.30 |
+| 512 | 12.47 | 21.52 | 3.77 | 1.77 |
+| 1024 | 47.65 | 81.90 | 11.65 | 3.20 |
+
+The one-thread column is the surprise: 4.1x at 1024 with no parallelism at all. The cost
+was never the span fill. It was `fold.go`, which forks an array handle and four tasks at
+every node of the quadtree — about 350,000 interior nodes at 1024 — where a tile's fold is
+one task threading one handle. The eight-thread column is the partitioning: 3.6x on top.
+
+The two painters print the same digest at every size and every thread count, and
+`native/paint_test.bend` holds them to the same quadtree on four cameras, so this is the
+same picture and the tallies against the walk are unchanged.
+
+Live, `bash lab/native/client-probe/run-fps.sh --size=1024`, 600 frames under Xvfb: 60.06
+on the default pool and 59.89 on one thread. It was 20.73.
+
+`lab/native/paint/README.md` has the full tables, the tile-edge sweep and a defect both
+painters share (a one-pixel write in the last column).
+
+### The mouse: the display has nothing to give, so ask the host
+
+Session nine measured one `Look` in a whole WSLg session and concluded the fault was
+upstream. It is further upstream than `window.c`. WSLg carries the window over RDP with
+FreeRDP 2.4.0, which has no relative pointer input, so no X client can be told how far the
+mouse moved; `window.c` is also byte-identical through 2.0.34, so a newer pin changes
+nothing.
+
+Two measurements decided the design:
+
+- `bash lab/native/pointer/census-xvfb.sh`: on a real X server the grab works and a `Look`
+  is a delta. Eight relative steps of ten pixels are eight `Look{10 0}`.
+- The fold session nine left differenced each `Look` against the previous one. For that
+  travel it turns once and then reads a steady sweep as a still mouse — and in the client
+  it differenced each frame's `Look` against that same frame's, so it turned by nothing on
+  any display.
+
+So the fold sums deltas again, and under WSL the delta comes from Windows.
+`native/pointer.bend` starts `native/pointer-host.ps1` through interop; the script holds the
+Windows cursor at the centre of the client's window and writes each displacement as a line;
+the client reads the lines each tick, sums them in Bend and gives the fold one `Look`.
+
+Both paths were run end to end through the client's own tick, with the yaw printed every
+frame, for 80 px of travel and back: `0 120 240 359 480 600 720 840 960 840 720 600 480 359
+239 119 -0` ten-thousandths of a radian on the runtime's grab under Xvfb, and the same
+sequence through the host script with the real Windows cursor, which it pulled back to the
+centre on 16 of 16 steps. `lab/native/pointer/README.md` has both runs and what is still
+unmeasured in a live WSLg window.
+
+### What went wrong on the way
+
+- WSLg's compositor died mid-session and would not restart: `WSLGd` exits with
+  `Input/output error @main.cpp:324`, the `chmod` of its virtiofs shared-memory mount,
+  every time the distro starts. It began when the idle distro restarted between two
+  commands. It needs `wsl --shutdown`, which also stops Docker Desktop's distro, so it was
+  left. Everything after that was measured under Xvfb and on the Windows desktop.
+- Under WSL `/tmp/.X11-unix` is a read-only mount, so Xvfb has to be started with
+  `-nolisten unix -listen local`, on the abstract socket only.
+- `lab/native/client-probe/run-fps.sh` resolved the repository root one level short since
+  the lab was split out; it is fixed. The other `lab/native/*/run*.sh` scripts still have
+  the same `../..`, and `client-probe/frame_bench.bend` builds a `Client` with the wrong
+  number of fields. Neither was touched.
+
+## Session eight: the painter ships, and one thread beats eight
+
+Session seven ended with the painter correct to within 0.5-0.8% wrong blocks on the two
+hardest cameras and 0 on the one the client ships from, still sitting in `lab/` as a probe.
+This session promotes it to `native/paint.bend`, wires the client to it, gates it against the
+walk, and finds that the thread pool — not the renderer — was the last limit.
+
+### What shipped
+
+`native/paint.bend` draws the window: it sorts the faces back to front on one depth key,
+resolves each face's quad to an integer span per scanline, and lets the last write win. The
+client's render call changed and nothing else did:
+
+```python
+# before
+Face.render_faces_at_with_tile_size(w_faces(world), eye, yaw, pitch, depth, tile_edge_at(depth))
+# after
+Paint.paint_faces_at(w_faces(world), eye, yaw, pitch, depth)
+```
+
+`Face` still answers the pointer's ray and is what the painter is held against.
+`native/paint_test.bend` compares the two on colours, which is the question — "do they draw
+the same pixel" — rather than on a shared internal encoding, and applies the same three 1%
+limits `native/face_test.bend` applies to the walk:
+
+| camera | size | same | wrong_block | spurious | missing | face_only |
+|---|---:|---:|---:|---:|---:|---:|
+| `spawn` | 128 | 16128 | **0** | 0 | 0 | 256 |
+| `level` | 128 | 16220 | 83 | 0 | 0 | 81 |
+| `down` | 128 | 16384 | **0** | 0 | 0 | 0 |
+| `inside` | 128 | 15863 | 131 | 0 | 0 | 390 |
+| `spawn` | 256 | 65024 | **0** | 0 | 0 | 512 |
+| `level` | 256 | 65212 | 163 | 0 | 0 | 161 |
+| `spawn` | 512 | 261117 | **3** | 0 | 0 | 1024 |
+| `down` | 512 | 262144 | **0** | 0 | 0 | 0 |
+
+Limits are 163, 163, 163, 163, 655, 655, 2621 and 2621. Every gated class is inside every
+limit at every size. `face_only` is the class `face_test.bend` measures and does not limit,
+and it is printed rather than hidden: it is the honest measure of how much the two renderers
+differ visibly, and on the spawn camera it is 1.6% of the frame at 128.
+
+### The measured costs, and on how many threads
+
+The client's own stages, at its own spawn camera over its own region, native C, `--gpu off`,
+`lab/native/client-probe/run-bench.sh`:
+
+| size | walk (8 threads) | painter, 1 thread | painter, 8 threads |
+|---|---:|---:|---:|
+| 32 | 3.21 | **0.64** | — |
+| 64 | 5.83 | **0.81** | — |
+| 128 | 13.95 | **1.38** | 2.48 |
+| 256 | 49.00 | **3.60** | 6.40 |
+| 512 | 152.50 | **12.40** | 21.70 |
+| 1024 | — | **48.00** | 82.25 |
+
+Every painter row is the same phase — `draw_*`, medians of seven samples, reading one pixel
+down the quadtree's left spine so the render cannot be optimised away. The 32 and 64 rows were
+originally taken from `span_probe`'s own copy of the painter on a single chunk, which is not
+the client's region and not the same measurement; `draw_32` and `draw_64` were added so all six
+rows come from one phase.
+
+`frame_held` at 128 falls from 14.05 ms to 1.35 ms and `frame_edited` from 16.05 ms to
+3.35 ms.
+
+### **One thread draws a frame faster than eight, by 1.75x at every size**
+
+That ratio is flat from 128 to 1024, which is the signature of contention rather than of a
+workload that parallelises: the sort and the per-face projection do parallelise, and the
+writes into the one shared frame array do not, and every thread that touches the same array
+node pays for it. More threads make it monotonically worse, not merely no better:
+
+| threads | `draw_256` | `draw_512` | `frame_held` |
+|---|---:|---:|---:|
+| **1** | **3.60** | **12.40** | **1.35** |
+| 2 | 5.60 | 20.30 | 1.95 |
+| 3 | 5.90 | 20.90 | 2.15 |
+| 4 | 5.95 | 21.00 | 2.25 |
+| 8 | 6.40 | 21.70 | 2.48 |
+
+The thread count is a launch flag the runtime reads before `main`, so the client cannot set
+it. It can read it, so it prints a warning when it is above one, and the epilogue says how to
+launch it right.
+
+This is also why 512 became affordable at all: at eight threads it measured 21.30 ms and
+missed the tick by 4.6 ms, and on one thread it is 12.20 ms with 4.4 ms of slack.
+
+### Live, under a real X server
+
+`lab/native/client-probe/run-fps.sh --size=N --threads 1`, 600 presented frames each, Xvfb,
+`window_pace` capping at 60:
+
+| size | frames | elapsed | FPS |
+|---|---|---|---|
+| 128 | 600 | 9986 ms | **60.08** |
+| 256 | 600 | 9988 ms | **60.07** |
+| 512 | 600 | 9998 ms | **60.01** |
+| 1024 | 600 | 28933 ms | 20.73 |
+
+The 1024 live number cross-checks the harness: the table's 480 tenths is 48.03 ms, which is
+10000 / 480 = 20.8 FPS, against 20.73 measured.
+
+### 1024 is the open one, and three attempts to close it that did not work
+
+48.00 ms against a 16.67 ms tick, so 2.9x away. The obvious suspect was the two costs that
+scale with `size * size` — the quadtree fold and the sky pre-fill, a million operations each
+— and the sky pre-fill is not one of them: `sky_1024` is **0.25 ms**, 0.5% of the frame.
+
+**Back-face culling: implemented, measured, reverted.** `emit_sides` labels the six sides
+0/+x, 1/+y, 2/+z, 3/-x, 4/-y, 5/-z, so a face is back-facing exactly when the eye is on the
+inside of its plane, and its own block's front face covers the same pixels from nearer.
+Dropping those faces before the projection is textbook:
+
+| size | without | with | gain |
+|---|---:|---:|---:|
+| 128 | 1.35 | 0.93 | 1.45x |
+| 256 | 3.55 | 3.05 | 1.16x |
+| 512 | 12.20 | 11.60 | 1.05x |
+| 1024 | 46.25 | 45.75 | **1.01x** |
+
+It is out because of the last row and because of what it costs. Back faces were already nearly
+free — their spans come out empty or a pixel wide — so at the one size anyone would want the
+cull for it buys 1%. And it is *wrong* when the eye is inside a solid block, which culls all
+six faces of the block the camera is standing in: the `inside` gate camera went from 131 wrong
+blocks and 0 missing to 156 and **93 missing**. The assumption that makes it safe is that the
+camera is outside the geometry.
+
+**Reciprocal slopes: implemented, measured, reverted.** `crossing_x` divided by `by - ay` once
+per edge per row, and that divisor is loop-invariant over a face's rows, so the arithmetic was
+rewritten to divide once per face into a `Ramp` of four slopes and multiply per row. On paper
+that is four divides per face instead of four per face-row, which at 1024 over a region of
+about 26000 faces is ~100000 divides instead of ~3 million. The measured medians were
+**identical at every size** (1.38 / 3.60 / 12.40 / 48.00 against 1.35 / 3.55 / 12.20 / 46.25,
+all within run-to-run variance). The C backend had already hoisted the invariant division. An
+operation count is not a cost, and the gate output was byte-identical both ways, so there was
+nothing to gain and a `Ramp` type with four accessors and a parameter through three functions
+to carry.
+
+**What is left is overdraw.** One chunk's spans at 1024 cover 5.46 million pixels
+(`span_probe`'s `spanpixels`) against a frame of 1.05 million, so the painter writes each pixel
+about five times over on one chunk and the region has roughly sixteen times the faces. The
+remaining ~39 ms is the writes, not the arithmetic that finds them — which is consistent with
+both failures above, since neither one reduced the number of writes. Cutting it needs
+occlusion culling rather than painter's-algorithm ordering: a hierarchical depth buffer that a
+whole sub-quad can be rejected against, so distant terrain stops being rasterised behind
+nearer terrain. That is a real piece of work and it is not started. 1024 is recorded here as
+measured and not reached rather than as a target with an estimate attached.
+
+### Two defects found in the measuring harness, again
+
+**`Array.new`'s third argument is a depth, not a count.** `d = 1n + p` builds a tree whose
+halves are `T^p`, so `d = 11n` holds 8192 cells and a 32x32 frame is `5n`, not `1024n`.
+Passing the element count fail-stops with "an array past the deepest block class 31", and
+passing too few wraps *silently*, because both `Array.get.at` and `Array.swap.at` mask the
+index with `n - 1`. The painter measured this the hard way: it produced a plausible picture,
+at the wrong size, with no error.
+
+**Two phases read 0.00 ms** in their first versions, for one reason worth recording: `draw_*`
+because `Image.drop` on an unread image leaves the whole fill as dead code, and `sky_*` because
+the filled array was threaded forward and never read. Reading one pixel is what forces the
+work, and reading one pixel is what the runtime does to present a frame anyway. A phase that
+reads zero has measured nothing, and both of them looked like enormous wins.
+
+## Session seven: the painter was drawing the wrong picture
+
+Session five priced the painter at about 6.5 ms against the walk's 44.33 ms at 256 and
+concluded that the painter was the way to 256. **That conclusion was drawn from timings
+without ever checking that the painter drew the same image as the walk**, which is the
+cheapest available check and was not run. It does not. This session runs that check, finds
+out why, fixes it, and re-prices it.
+
+The gate is `lab/native/client-probe/painter_agree_test.bend`: it scores the painter and the
+walk against the ray renderer on five isolated fixtures and eight scene cameras, and it
+reports rather than dies, so one camera's failure does not hide the next one's numbers.
+
+### It fails totally, and only on some cameras
+
+| camera | painter wrong @128 | walk wrong |
+|---|---:|---:|
+| `down` | **0** | 0 |
+| `level` | 16384 (every pixel) | 0 |
+| `inside` | 16384 | 0 |
+| `ceiling` | 16384 | 0 |
+
+A renderer with a small coverage defect cannot be perfect on one camera and wrong on every
+pixel of another. `phantom=0` throughout, so nothing was being invented where the ray sees
+sky: every wrong pixel was solid-versus-solid, a *different block*.
+
+### Two hypotheses, both wrong
+
+**Overlap.** The obvious explanation is that the painter fails where many faces cover one
+pixel, since `down` looks steeply down where visible faces barely overlap. Counting how many
+faces' spans cover each pixel, per camera, refutes it outright:
+
+| camera | painter wrong | pixels with several faces | deepest pixel |
+|---|---:|---:|---:|
+| `down` | **0** | **954** | 8 |
+| `level` | 16384 | 992 | 6 |
+| `ceiling` | 16384 | 992 | **4** |
+| `inside` | 16384 | 976 | 6 |
+
+`down` is the most overlapped camera and the only perfect one; `ceiling` is the least
+deeply overlapped and totally wrong. Overlap anti-predicts the failure.
+
+**Ordering.** Refuted by printing what each renderer named at the first disagreements. At
+`level`, `py=0`:
+
+```
+px=0  ray=44 walk=44 painter=40
+px=1  ray=44 walk=44 painter=117
+px=2  ray=44 walk=44 painter=117
+```
+
+Keys are `block * 8 + dir`, so the ray and the walk both say **block 5** and the painter
+says block 5 dir 0 at the left edge and **block 14** dir 5 everywhere else. It is not
+choosing the wrong face of the right block; it is stamping a different block, and a
+different one again at the row's first pixel. That is a coordinate error, not an ordering
+one.
+
+### The cause: `project` clamps the near plane instead of clipping against it
+
+`native/face.bend:467`:
+
+```python
++safe_depth = F32.max(depth, 0.0001)
+```
+
+A corner behind the eye has negative depth, so its screen coordinate becomes
+`half + focal * lateral / 0.0001` — tens of millions of pixels. `crossing_x` interpolates
+that against a normal corner, `half_open_bounds` clamps the result into `[0, size-1]`, and
+the span covers **the whole row**. `fill.go` rasterized every face unconditionally, so one
+such face paints a full-width band over everything behind it.
+
+Counting the straddling faces per camera settles it, and the correlation is monotone:
+
+| camera | faces | straddling the eye | painter wrong |
+|---|---:|---:|---:|
+| `cube` | 6 | **0** | 3 of 1024 |
+| `row-8` | 34 | **0** | 12 of 1024 |
+| `down` | 1654 | 91 | **0** |
+| `spawn` | 1654 | 750 | 6400 of 16384 |
+| `level` | 1654 | 932 | 16384 |
+| `inside` | 1654 | 1078 | 16384 |
+| `ceiling` | 1654 | 1415 | 16384 |
+| `cube-away` | 6 | **6** | 1024 |
+
+Zero straddling faces scores 0.3-1.2% at every size. `cube-away` is the pure case: the
+camera faces away from the cube, all six faces straddle, every pixel is wrong.
+
+`down` has 91 straddling faces and is still perfect, so it is not "any straddle fails" — a
+straddling face only corrupts the rows it lands on, and looking steeply down those rows
+fall outside the frame.
+
+### Fixing it: skip, and then what skip costs
+
+Skipping a face whose corner is behind the eye is one line. The walk resolves such a face
+exactly, by intersecting the pixel's ray with the face's plane (`face_contains_hit`), so it
+keeps the sliver that is genuinely visible — which means skipping is not free, and the
+question is whether the sliver is more than 1% of the frame.
+
+The gate answers it by scoring the same disagreement twice, at `block * 8 + dir` and at
+`block` alone. That split is not a convenience: it separates "a wrong block is a hole in
+the image" from "another face of the right block is a shading difference", which need
+different fixes.
+
+| camera | strict wrong | wrong block | face-only | phantom |
+|---|---:|---:|---:|---:|
+| `spawn` 32 / 64 / 128 | 64 / 128 / 256 | **0 / 0 / 0** | 64 / 128 / 256 | 0 |
+| `ceiling` 128 | 256 | **0** | 256 | 0 |
+| `down` 128 | 0 | **0** | 0 | 0 |
+| `cube-away` 32 | 0 | **0** | 0 | 0 |
+| `level` 128 | 205 | **83** | 122 | 0 |
+| `inside` 128 | 521 | **131** | 390 | 0 |
+
+The residual is exactly proportional to `size` (64 / 128 / 256), not to `size * size`, so it
+is a 1-2 pixel ring on the frame border — the visible sliver of the straddling faces.
+
+### The gate the painter is held to
+
+`native/face_test.bend:586-590` limits three classes separately at `pixels / 100` each — the
+wrong-block rate, the spurious-block rate, and the block-difference rate — and deliberately
+does **not** limit `face_only`, the pixels where both renderers name the same block but a
+different face. That omission is deliberate: another face of the right block is a shading
+difference on that block, not a wrong image.
+
+The painter gate originally used the strict `block * 8 + dir` identity, which is the union
+of wrong-block and face-only. That was stricter than the project it was measuring against,
+and it made the painter look broken for pixels where the image is right. It now applies
+`face_test.bend`'s gate, and still prints `face_only` so the residual is visible rather than
+hidden by the choice of gate.
+
+Against that gate the painter passes everywhere except two places, both real:
+
+| camera | size | wrong block | limit | verdict |
+|---|---|---:|---:|---|
+| `spawn` | 32 / 64 / 128 | 0 | 10 / 40 / 163 | pass |
+| `down`, `cube-away`, `ceiling` | 32 / 128 | 0 | 10 / 163 | pass |
+| `level` | 128 | 83 | 163 | pass |
+| `inside` | 128 | 131 | 163 | pass |
+| `row-8` | 32 | 12 | 10 | **fail** |
+| `level` | 32 | 25 | 10 | **fail** |
+| `up` | 128 | 2075 | 163 | **fail**, and unfair: see below |
+
+`up` puts the eye at y=8, inside terrain, so every ray starts in solid and *the walk itself*
+scores 16384 wrong. It is kept and documented rather than hidden.
+
+### The rest of the residual is a per-edge coverage bias, not the span's placement
+
+The `row-8` and `level`-at-32 failures happen with **zero** straddling faces, so they are
+the rasterizer. Three rounding rules for the span's two bounds were measured:
+
+| rule | cube | row-8 | spawn wrong blocks | `inside` |
+|---|---:|---:|---:|---:|
+| `ceil(e4) .. floor(f4)` | 3 | 12 | **0** | **131** |
+| `ceil(e4) .. ceil(f4)` | 7 | 26 | 0 | 521 |
+| `ceil(e4-.5) .. floor(f4-.5)+1` | 3 | 26 | 104 | 199 |
+
+The third is the derived one: `ray_for` samples pixel `px` at `px + 0.5`
+(`native/voxel.bend:81`) while `Face.project` emits `half - 0.5 + focal * lateral / depth`
+(`native/face.bend:468`), so `project.sx` is the walk coordinate plus 0.5 and the span
+should be `[ceil(e4 - 0.5), floor(f4 - 0.5) + 1)`. Deriving it and measuring it disagree.
+The residual is therefore not where the window sits but a fraction-of-a-pixel bias on each of
+a quad's four edges; moving the window trades one edge's loss for another's. The shipped rule
+is the first, which is the best of the three and scores 0.3% on the plain cube.
+
+Clamping each corner into the frame — the same convention `Face.shoelace2` applies to these
+quads, and the cheap half of a near-plane clip — is much worse: `spawn` 0 -> 6344, `ceiling`
+0 -> 16257, `level` 83 -> 16177. The clamped hull of a face the eye is inside of covers
+nearly the whole frame, which is the original defect under another name.
+
+Recovering the sliver properly needs a real clip against the near plane, which yields a
+polygon the four-corner span arithmetic cannot describe. That is the honest remaining
+correctness work and it is not done.
+
+### The painter, priced with the fix
+
+`lab/native/client-probe/span_probe.bend`, the client's own spawn camera and region,
+`--gpu off`, 8 threads:
+
+| size | fill ms per frame | walk render ms | ratio |
+|---|---:|---:|---:|
+| 128 | **0.58** | 14.00 | 24x |
+| 256 | **0.86** | 44.33 | 52x |
+| 512 | **2.17** | 152.50 | 70x |
+| 1024 | **5.80** | not measured | — |
+
+So 256 is not marginal: 0.86 ms of fill inside a 16.67 ms frame. The span arithmetic is
+0.49 ms of it and the rest is the per-pixel writes. Skipping the straddling faces also makes
+the fill cheaper, because at `level` 932 of 1654 faces are skipped.
+
+### Two defects in the measuring harness itself
+
+Recorded because both produced confident wrong readings first.
+
+**`first_bad` overflowed.** It packed `py * 1000 + px` above bit 24, which wraps `U32` for
+any frame larger than 32. `first_bad=3724552704` was a wrapped number, not a coordinate, and
+nothing could be concluded from it. It is now two byte-wide fields plus a flag bit.
+
+**Record patterns bind positionally.** Adding a field to `Tally` and inserting its name at
+the end of the patterns left `tally_walk_same` returning the new field: the sixth name in the
+pattern bound the sixth *field*, not the sixth named field. The symptom was a column reading
+`0` while `wrong=0` on the same line, and it moved in lockstep with the new field's value —
+which is what identified it. The gate's own verdicts read `paint_block` and `paint_only`,
+which landed on the right fields, so the pass/fail results above are unaffected; two printed
+columns were wrong and are now fixed.
 
 ## Session six: how much of the frame is one colour
 
@@ -1533,7 +1982,91 @@ generated one chunk when the client generates the region. A benchmark that measu
 a different program than the one that ships is worse than no benchmark. The client
 now exposes `image_at_depth` and the benchmark calls it.
 
-## Method
+## Session nine — the mouse does not work under WSLg, and that is a measurement
+
+The renderer reached 60 FPS at 128, 256 and 512 (60.08, 60.07, 60.01 presented
+under Xvfb over 600 frames, `--threads 1`; 20.73 at 1024). What was left was the
+mouse, and the mouse turned out to be the more interesting problem.
+
+### What the census said
+
+An instrumented client printing one line per event, for one whole session:
+
+| event | count |
+| --- | ---: |
+| `Key` | hundreds — `w a s d`, escape, alt |
+| `Mouse` (clicks) | 15, **every one at `x=256 y=256`** |
+| `Look` | **1** — `dx=5 dy=217` |
+| `Move` | **0** |
+
+512/2 is 256. Every click landed exactly on the window's centre, which is where
+`window.c:594` warps the pointer. One `Look` in a session of continuous mouse
+movement.
+
+### What that establishes
+
+The grab **does** engage. It is gated on `XGetInputFocus` returning `win->win`
+(`window.c:774`), the window is a plain toplevel created under `RootWindow` with
+no WM to reparent it (`window.c:264`), and it has focus — keys arrive, which is the
+proof, since keys need focus. So `XGrabPointer` succeeded.
+
+The pointer is therefore **confined and warped to the centre, and stays there**.
+A pointer that cannot leave the centre cannot report having moved, so
+`MotionNotify` never carries an off-centre position, and `window.c:591` — which
+pushes `Look` only `if (win->grab && (x != cx || y != cy))` — never fires again.
+That single `Look` is the one frame where X did report an off-centre position.
+
+`Move` is only pushed `if (!win->grab)` (`window.c:578`), so a grabbed pointer
+never produces it. That is why reading `Move` as well as `Look` changed nothing:
+the ungrabbed path is starved by the same fact that makes the grabbed path dead.
+`PointerMotionMask` *is* selected at creation (`window.c:275`), so this is not an
+event-mask problem.
+
+The fault is upstream. `vendor/bend` is pinned and not edited for application
+features, and `Window.grab` is the client's only pointer API. Nothing in `native/`
+can read the Windows host mouse.
+
+### What changed
+
+The arrow keys turn the camera. Not as a fallback — as **the** look under WSLg.
+
+- `Frame.turn_rate` 1.6 rad/s (92 deg/s) for yaw, `Frame.tilt_rate` 0.8 for pitch.
+  A rate scaled by the tick, not a jump per press, so a held key sweeps at a
+  constant pace.
+- Codes 63232/63233/63234/63235 — the runtime's own translation of the arrow
+  keysyms at `window.c:507`, chosen over raw X keycodes because those are stable
+  across layouts and keycodes are not.
+- Applied in `Frame.ready_holding`, so the key rate and the mouse delta add to the
+  same yaw rather than one overwriting the other.
+- Holding both keys of an axis is `0`, not a sum: `1.6 + 1.6` would be 3.2 rad/s.
+
+The mouse path is unchanged and still gated, for a real X server:
+`input_turns_by_the_change_in_the_offset`, `input_ignores_a_repeated_look`,
+`input_reads_move_when_there_is_no_grab`.
+
+### The failures along the way
+
+Four input bugs in this session and in the last, all the same mistake: assuming
+what the runtime does instead of measuring it.
+
+1. The key mask was rebuilt from zero every frame, so movement rode X11
+   auto-repeat instead of the loop.
+2. `fold_tilt` had the pitch sign backwards.
+3. `Client.share_events.go` prepended, reversing the order within a frame so a
+   press and a release in the same frame left the key stuck.
+4. `App.loop` was used instead of `App.step`, so the grab was requested once and
+   never re-asked.
+
+Then two more once instrumented: `3 * half` where the intent was `3/4 * half`,
+putting the edge threshold outside the window; and a `Read` that treated "the two
+yaws are the same" with the assertion meant for "they differ", which passed a spin
+and failed a still camera in the same run.
+
+The lesson is the boring one, and it cost a session: **the census would have found
+three of the six in its first minute.** Print what arrived, then read it.
+
+### Method
+
 
 Three times in this session the intuition about where the render time went was
 wrong: it was assumed to be arithmetic, then candidate count, then the region

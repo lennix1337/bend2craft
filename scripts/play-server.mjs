@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { attachNativeBridge } from "../server/native-bridge.mjs";
 import { attachMultiplayer, lanAddresses } from "../server/node-host.mjs";
 
 // Static file server for the built Bend2Craft bundle in dist/.
@@ -14,6 +15,9 @@ const port = Number(process.env.PORT ?? 8080);
 // --lan listens on every interface so friends on the same network can join.
 const lan = process.argv.includes("--lan");
 const host = process.env.HOST ?? (lan ? "0.0.0.0" : "127.0.0.1");
+// The native client joins the same room through a plain TCP port (server/native-bridge.mjs).
+// NATIVE_PORT=0 closes that door.
+const nativePort = Number(process.env.NATIVE_PORT ?? port + 1);
 const shouldOpenBrowser = process.argv.includes("--open");
 const repositoryRoot = path.resolve(root, "..");
 // The shared multiplayer world lives outside dist/ so rebuilding keeps it.
@@ -28,6 +32,9 @@ if (!/^\d+$/.test(multiplayerSeedText)) {
 
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error(`PORT must be an integer from 1 to 65535; received ${process.env.PORT}`);
+}
+if (!Number.isInteger(nativePort) || nativePort < 0 || nativePort > 65535) {
+  throw new Error(`NATIVE_PORT must be an integer from 0 to 65535; received ${process.env.NATIVE_PORT}`);
 }
 if (!existsSync(path.join(root, "index.html"))) {
   throw new Error(`Built bundle not found at ${root}. Run "npm run build" first.`);
@@ -136,6 +143,10 @@ const multiplayer = attachMultiplayer(server, {
   peaceful: process.env.PEACEFUL === "1",
 });
 
+const nativeBridge = nativePort === 0
+  ? null
+  : attachNativeBridge(multiplayer.room, { host, port: nativePort, log: (text) => console.error(text) });
+
 server.on("error", (error) => {
   if (error.code === "EADDRINUSE") {
     console.error(`Port ${port} is already in use. Close the old Bend2Craft server or set PORT to another port.`);
@@ -153,6 +164,9 @@ server.listen(port, host, () => {
   const multiplayerSeed = multiplayer.seed.toString();
   console.log(`Multiplayer world (seed ${multiplayerSeed}) saved to ${multiplayerFile}.`);
   console.log(`Join it at http://${displayHost}:${port}/?play=1&mp=1`);
+  if (nativeBridge !== null) {
+    console.log(`Native clients join it with: bash scripts/play-native.sh --join=${displayHost === "localhost" ? "127.0.0.1" : displayHost}:${nativePort}`);
+  }
   if (host === "0.0.0.0" || host === "::") {
     for (const address of lanAddresses()) console.log(`Friends on your network: http://${address}:${port}/?play=1&mp=1`);
   } else {
@@ -165,6 +179,7 @@ server.listen(port, host, () => {
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.once(signal, () => {
     multiplayer.flush();
+    nativeBridge?.close();
     server.close(() => process.exit(0));
     server.closeAllConnections?.();
     setTimeout(() => process.exit(0), 1000).unref();

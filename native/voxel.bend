@@ -256,20 +256,25 @@ def rgb(+r: U32, +g: U32, +b: U32) -> U32:
 def unknown_block_color() -> U32:
   rgb(170, 170, 170)
 
-# One colour per block id, in the id order `web/texture-atlas.js` declares:
+# One colour per block id, in the id order `world/world.bend` declares:
 # 0 air, 1 stone, 2 dirt, 3 grass, 4 leaves, 5 wood, 6 sand, 7 water, 8 coal ore,
 # 9 iron ore, 10 diamond ore, 11 furnace, 12 torch, 13 bed, 14 closed door,
-# 15 open door, 16-19 wheat, 20 farmland, 21 grass top, 22 wood top, 23 lava,
-# 24 fire, 25 cobblestone, 26 obsidian, 27 glass, 28 chest, 29 crafting table.
+# 15 open door, 16-19 wheat, 20 farmland, 21 lava, 22 cobblestone, 23 obsidian,
+# 25 glass, 26 chest, 27 crafting table, 28 redstone dust, 29 redstone torch.
 #
 # Ids 0-10 keep the values they always had, so every pinned golden in the probe tests
-# still holds; 11-29 are the base colour of the matching material in the browser's
+# still holds; the rest are the base colour of the matching material in the browser's
 # texture atlas, which is the renderer that has always displayed these correctly.
 #
+# Ids 21-29 were once in the *atlas's* order (grass top, wood top, lava, fire,
+# cobblestone, obsidian, glass, chest, crafting table) instead of the world's, which is
+# four ids out of step: a crafting table painted in glass's pale blue and a chest in
+# obsidian's near-black. A block in another block's colour still renders and still
+# raycasts to the right cell, so only a test that names the colours can see it.
+#
 # `world/structures.bend` builds a village out of ids 11 (furnace), 13 (bed) and
-# 14 (door), so before 11-29 were here every one of those painted as the unknown-block
-# grey and the village read as a flat slab. The face/ray agreement gate could not see
-# it, because that gate compares which block is nearest and never the colour painted.
+# 14 (door), so before 11-20 were here every one of those painted as the unknown-block
+# grey and the village read as a flat slab.
 def block_color(+block: U32) -> U32:
   match block:
     case 0:
@@ -315,23 +320,23 @@ def block_color(+block: U32) -> U32:
     case 20:
       rgb(74, 51, 34)
     case 21:
-      rgb(82, 134, 58)
-    case 22:
-      rgb(184, 137, 90)
-    case 23:
       rgb(224, 86, 26)
+    case 22:
+      rgb(122, 126, 127)
+    case 23:
+      rgb(29, 21, 48)
     case 24:
       rgb(239, 106, 30)
     case 25:
-      rgb(122, 126, 127)
-    case 26:
-      rgb(29, 21, 48)
-    case 27:
       rgb(191, 224, 234)
-    case 28:
+    case 26:
       rgb(154, 106, 60)
-    case 29:
+    case 27:
       rgb(148, 100, 58)
+    case 28:
+      rgb(170, 30, 30)
+    case 29:
+      rgb(214, 62, 44)
     case _:
       unknown_block_color()
 
@@ -346,6 +351,16 @@ def shade_color(+color: U32, +face: U32) -> U32:
 
 def sky_color(+y: U32) -> U32:
   +amount = U32.div(U32.mul(y, 18), 31)
+  +r = (126 + amount : U32)
+  +g = (174 + amount : U32)
+  +b = (224 + amount : U32)
+  U32.or(U32.shln(r, 16n), U32.or(U32.shln(g, 8n), b))
+
+# The same gradient over a frame of `size` rows. `sky_color` is this at 32, the size it was
+# written for: its `y * 18 / 31` runs each channel past 255 from row 54 of a taller frame,
+# and the overflow carries into the channel above, which is a sky of coloured bands.
+def sky_color_at(+y: U32, +size: U32) -> U32:
+  +amount = U32.div(U32.mul(y, 18), U32.sub(size, 1))
   +r = (126 + amount : U32)
   +g = (174 + amount : U32)
   +b = (224 + amount : U32)

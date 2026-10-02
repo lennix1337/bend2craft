@@ -294,6 +294,27 @@ def fill.row(remaining: Nat, +y: U32, +square: Face.Square, +size: U32, +colour:
         fill_row(span_x(square, F32.from_nat(U32.to_nat(y)), size), (y * size : U32), colour,
           frame))
 
+# A face the eye is inside or behind part of. `Face.project` divides by
+# `max(depth, 0.0001)`, so a corner behind the eye projects to a coordinate of tens of
+# millions of pixels; the crossing interpolation then spans the whole row and the face
+# paints a full-width band over everything behind it. Measured on the spawn scene:
+# 0 straddling faces scores 0.3% wrong blocks and 932 scores 100%.
+def q_behind(q: Face.Q) -> Bool:
+  F32.is_le(Face.q_depth(q), 0.0001)
+
+def square_behind(+s: Face.Square) -> Bool:
+  Face.Square{a, b, c, d} = s
+  Bool.or(Bool.or(q_behind(a), q_behind(b)), Bool.or(q_behind(c), q_behind(d)))
+
+def fill.draw(skip: Bool, +square: Face.Square, +size: U32, +colour: U32,
+  frame: Array<U32>) -> Array<U32>:
+  match skip:
+    case True{}:
+      frame
+    case False{}:
+      fill.row(rows_of(span_rows(square, size)), rows_first(span_rows(square, size)), square,
+        size, colour, frame)
+
 # The fill's fold over the whole face list. It is the painter's own work and nothing else:
 # one projection per face, one span per scanline, one array write per pixel, no depth test
 # and no ordering.
@@ -309,9 +330,8 @@ def fill.go(faces: List<&2, Face.Face>, +eye: Voxel.Vec, +right: Voxel.Vec, +up:
       +label : Nat = dir
       +square = Face.square_of(label, U32.to_f32(fx), U32.to_f32(fy), U32.to_f32(fz), eye,
         right, up, forward, half, focal)
-      +rows = span_rows(square, size)
-      fill.go(rest, eye, right, up, forward, half, focal, size, fill.row(rows_of(rows),
-        rows_first(rows), square, size, colour_of(block, label), frame))
+      fill.go(rest, eye, right, up, forward, half, focal, size,
+        fill.draw(square_behind(square), square, size, colour_of(block, label), frame))
 
 # ---------------------------------------------------------------------------
 # How much of the frame is one colour.

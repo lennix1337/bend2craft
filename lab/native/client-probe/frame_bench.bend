@@ -6,6 +6,7 @@ import ../../../native/face.bend as Face
 import ../../../native/voxel.bend as Voxel
 import ../../../native/frame.bend as Frame
 import ../../../native/client.bend as Client
+import ../../../native/paint.bend as Paint
 
 # ---------------------------------------------------------------------------
 # The client's own frame cost
@@ -698,6 +699,116 @@ def render_at_phase(+label: String, +iterations: Nat,
     finished : Nat <- IO.now()
     IO.print(phase_line(label, size_at(depth), iterations, started, finished, digest))
 
+# The render alone, with no fingerprint.
+#
+# `render_at_phase` fingerprints the image, which is a full walk of the quadtree and at 512
+# is most of the phase: the live client's `view` hands the image to `App.loop` and never reads
+# it back, so a number that includes the read-back is not the number the 16.67 ms cap is
+# judged on. `Image.drop` keeps the render from being optimised away without walking it.
+# One pixel down the left spine. Reading it is what stops the render being optimised away:
+# with only `Image.drop` on an unread image the whole fill is dead code and the phase reads
+# 0.00 ms at every size, which is what the first version of this measured. It is also
+# exactly the read the runtime does to present a frame.
+def render_only.top(image: Image) -> U32:
+  match image:
+    case Pix{color}:
+      color
+    case Qua{tl, tr, bl, br}:
+      render_only.top(tl)
+
+def render_only.with(image: Image, +hash: U32) -> U32:
+  fold_hash(hash, render_only.top(image))
+
+def render_only.go(remaining: Nat, +world: Client.World, +pose: Frame.Pose,
+  +depth: Nat) -> IO(Unit):
+  match remaining:
+    case 0n:
+      IO.pure(Unit, Unit{})
+    case 1n+p:
+      do IO<Unit>:
+        used : U32 <- IO.pure(U32, render_only.with(render_at_with(world, pose, depth),
+          2166136261))
+        render_only.go(p, world, pose, depth)
+
+# The painter's two halves, so the frame's cost can be attributed rather than guessed at.
+# `draw_*` is the whole thing; `sky_*` is the pre-fill alone and `fold_*` is the quadtree
+# alone. At 1024 the pre-fill and the fold are each a million operations and the fill is
+# not, so which of the three to attack is the whole question and it is cheaper to measure
+# than to reason about.
+def sky_of(read: Array<U32> & U32) -> Array<U32>:
+  (frame, _) = read
+  frame
+
+def sky_value(read: Array<U32> & U32) -> U32:
+  (_, +value) = read
+  value
+
+def sky_only.go(remaining: Nat, +size: U32, read: Array<U32> & U32) -> IO(U32):
+  match remaining:
+    case 0n:
+      IO.pure(U32, sky_value(read))
+    case 1n+p:
+      do IO<U32>:
+        filled : Array<U32> = Paint.sky.rows(U32.to_nat(size), 0, size, sky_of(read))
+        sky_only.go(p, size, filled[0])
+
+def sky_only.printed(+label: String, +size: U32, +iterations: Nat, +started: Nat,
+  +finished: Nat) -> IO(Unit):
+  IO.print(phase_line(label, size, iterations, started, finished, 0))
+
+def sky_only.clocked(+label: String, +size: U32, +iterations: Nat, +started: Nat,
+  +finished: Nat) -> IO(Unit):
+  sky_only.printed(label, size, iterations, started, finished)
+
+def sky_only.after(+label: String, +size: U32, +iterations: Nat, +started: Nat,
+  +used: U32) -> IO(Unit):
+  do IO<Unit>:
+    finished : Nat <- IO.now()
+    sky_only.clocked(label, size, iterations, started, finished)
+
+def sky_only.timed(+label: String, +iterations: Nat, +depth: Nat, +size: U32,
+  read: Array<U32> & U32, started: Nat) -> IO(Unit):
+  do IO<Unit>:
+    used : U32 <- sky_only.go(iterations, size, read)
+    sky_only.after(label, size, iterations, started, used)
+
+def sky_only.start(+label: String, +iterations: Nat, +depth: Nat, +size: U32,
+  read: Array<U32> & U32) -> IO(Unit):
+  do IO<Unit>:
+    started : Nat <- IO.now()
+    sky_only.timed(label, iterations, depth, size, read, started)
+
+def sky_only_phase(+label: String, +iterations: Nat, +depth: Nat, +size: U32) -> IO(Unit):
+  sky_only.start(label, iterations, depth, size, Array.new(U32, Paint.slots_of(depth), 0)[0])
+
+
+# Every fill is forced by being consumed: each iteration's array is destructured by the next
+# iteration's `sky_of`, and the last one is read by the base case. Passing the filled array
+# forward without ever reading it leaves the whole pass as dead code and the phase reads
+# 0.00 ms — which is what both `draw_*` and this first measured.
+
+
+
+
+
+
+
+
+# `filled[0]` reads a pixel, which is what forces the pre-fill to have happened; without it
+# the whole pass is dead code and the phase reads 0.00 ms, exactly as `draw_*` did.
+
+def render_only_phase(+label: String, +iterations: Nat,
+  +world: Client.World, +pose: Frame.Pose, +depth: Nat) -> IO(Unit):
+  do IO<Unit>:
+    started : Nat <- IO.now()
+    done : Unit <- render_only.go(iterations, world, pose, depth)
+    finished : Nat <- IO.now()
+    IO.print(phase_line(label, size_at(depth), iterations, started, finished, 0))
+
+
+
+
+
 # The whole frame: the tick, then the render, in the order the loop runs them. This
 # is the number the 16.7 ms budget is judged on.
 #
@@ -858,6 +969,17 @@ def run_events(+state: Client.Client, +edits: List<&2, WorldState.Edit>,
     Unit <- render_at_phase("render_128", 10n, world, pose, 7n)
     Unit <- render_at_phase("render_64", 40n, world, pose, 6n)
     Unit <- render_at_phase("render_32", 100n, world, pose, 5n)
+    # The same sizes without the fingerprint, which is the per-frame cost the window's
+    # 16.67 ms tick is actually judged on.
+    Unit <- render_only_phase("draw_512", 10n, world, pose, 9n)
+    Unit <- render_only_phase("draw_256", 20n, world, pose, 8n)
+    Unit <- render_only_phase("draw_128", 40n, world, pose, 7n)
+    Unit <- render_only_phase("draw_64", 80n, world, pose, 6n)
+    Unit <- render_only_phase("draw_32", 160n, world, pose, 5n)
+    Unit <- render_only_phase("draw_1024", 4n, world, pose, 10n)
+    Unit <- sky_only_phase("sky_1024", 4n, 10n, 1024)
+    Unit <- sky_only_phase("sky_512", 10n, 9n, 512)
+    Unit <- sky_only_phase("sky_256", 20n, 8n, 256)
     Unit <- frame_phase("frame_held", 20n, state, held_first, held_second, edits, pose, False{})
     Unit <- frame_phase("frame_look", 20n, state, action_first, action_second, edits, pose, False{})
     Unit <- frame_phase("frame_edited", 20n, state, held_first, held_second, edits, pose, True{})

@@ -95,6 +95,53 @@ def empty_drops() -> List<&2, Drop>:
 def wander_dir(+id: Nat, +tick: Nat) -> U32:
   U32.from_nat(Nat.mod(Nat.add(Nat.mul(id, 7n), Nat.div(tick, 24n)), 8n))
 
+# --- aiming at a body ---------------------------------------------------------
+#
+# What a player's ray is tested against: an upright box on the body's feet, 0.4 to each side
+# and as tall as its kind. The heights are the roster's (`web/mob-kinds.js` holds the same
+# numbers for the browser, whose `web/aim.js` is this rule's older copy and a migration
+# target; `tests/entities-bend.test.mjs` holds the two together). A kind the roster does not
+# know is as tall as the tallest.
+def body_half_width() -> F32:
+  fraction(4, 10)
+
+def body_height(+kind: U32) -> F32:
+  Bool.pick(F32, U32.is_eq(kind, 1), fraction(12, 10),
+    Bool.pick(F32, U32.is_eq(kind, 3), fraction(13, 10),
+      Bool.pick(F32, U32.is_eq(kind, 5), fraction(14, 10),
+        Bool.pick(F32, U32.is_eq(kind, 6), fraction(8, 10), fraction(19, 10)))))
+
+# One axis of the slab test: where along the ray it enters the span from `lo` to `hi`. A ray
+# that runs along the span is inside it for all of its length or for none.
+def aim.enter(+o: F32, +d: F32, +lo: F32, +hi: F32) -> F32:
+  +flat = F32.is_lt(F32.abs(d), 0.000000001)
+  +safe = choose_f32(flat, 1.0, d)
+  +inside = Bool.and(F32.is_ge(o, lo), F32.is_le(o, hi))
+  choose_f32(flat, choose_f32(inside, F32.neg(1000000000.0), 1000000000.0),
+    F32.min(F32.div(F32.sub(lo, o), safe), F32.div(F32.sub(hi, o), safe)))
+
+# And where it leaves.
+def aim.leave(+o: F32, +d: F32, +lo: F32, +hi: F32) -> F32:
+  +flat = F32.is_lt(F32.abs(d), 0.000000001)
+  +safe = choose_f32(flat, 1.0, d)
+  +inside = Bool.and(F32.is_ge(o, lo), F32.is_le(o, hi))
+  choose_f32(flat, choose_f32(inside, 1000000000.0, F32.neg(1000000000.0)),
+    F32.max(F32.div(F32.sub(lo, o), safe), F32.div(F32.sub(hi, o), safe)))
+
+# How far along a ray from (`ox`, `oy`, `oz`) toward (`dx`, `dy`, `dz`) the body standing at
+# (`x`, `y`, `z`) is, when the ray meets it within `reach`; and less than nothing when it
+# does not.
+def aim_distance(
+  +ox: F32, +oy: F32, +oz: F32, +dx: F32, +dy: F32, +dz: F32,
+  +x: F32, +y: F32, +z: F32, +height: F32, +reach: F32
+) -> F32:
+  +w = body_half_width()
+  +near = F32.max(F32.max(0.0, aim.enter(ox, dx, F32.sub(x, w), F32.add(x, w))),
+    F32.max(aim.enter(oy, dy, y, F32.add(y, height)), aim.enter(oz, dz, F32.sub(z, w), F32.add(z, w))))
+  +far = F32.min(F32.min(reach, aim.leave(ox, dx, F32.sub(x, w), F32.add(x, w))),
+    F32.min(aim.leave(oy, dy, y, F32.add(y, height)), aim.leave(oz, dz, F32.sub(z, w), F32.add(z, w))))
+  choose_f32(F32.is_le(near, far), near, F32.neg(1.0))
+
 def combat_mobs(state: CombatResult) -> List<&2, Mob>:
   CombatResult{mobs, drops, hit} = state
   mobs

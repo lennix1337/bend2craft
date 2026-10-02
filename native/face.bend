@@ -363,38 +363,83 @@ def chunk_layer(blocks: List<&2, U32>, y: Nat) -> List<&2, U32>:
   +per_chunk = U32.to_nat(U32.mul(width(), width()))
   List.take(&2, U32, List.drop(&2, U32, blocks, Nat.mul(y, per_chunk)), per_chunk)
 
-def chunk_layers(+chunks: List<&2, List<&2, U32>>, +y: Nat) -> List<&2, List<&2, U32>>:
-  match chunks:
-    case Nil{}:
-      []
-    case blocks <> rest:
-      chunk_layer(blocks, y) <> chunk_layers(rest, y)
-
-def region_layer(chunks: List<&2, List<&2, U32>>, y: Nat) -> List<&2, U32>:
-  List.concat(&2, U32, chunk_layers(chunks, y))
-
-def region_layers(remaining: Nat, +y: Nat, +chunks: List<&2, List<&2, U32>>) ->
-  List<&2, List<&2, U32>>:
+# One chunk's layer as its sixteen z-rows.
+def layer_rows(remaining: Nat, +layer: List<&2, U32>) -> List<&2, List<&2, U32>>:
   match remaining:
     case 0n:
       []
     case 1n+r:
-      region_layer(chunks, y) <> region_layers(r, Nat.add(y, 1n), chunks)
+      List.take(&2, U32, layer, U32.to_nat(width()))
+        <> layer_rows(r, List.drop(&2, U32, layer, U32.to_nat(width())))
 
-def region_flat(chunks: List<&2, List<&2, U32>>) -> List<&2, U32>:
-  List.concat(&2, U32, region_layers(layer_count(), 0n, chunks))
+# Two strips side by side: each z-row of the left with the same z-row of the right after it.
+def join_rows(left: List<&2, List<&2, U32>>, right: List<&2, List<&2, U32>>) ->
+  List<&2, List<&2, U32>>:
+  match left right:
+    case l <> lt r <> rt:
+      List.append(&2, U32, l, r) <> join_rows(lt, rt)
+    case _ _:
+      []
+
+def strip.joined(more: Nat, rows: List<&2, List<&2, U32>>, tail: List<&2, List<&2, U32>>) ->
+  List<&2, List<&2, U32>>:
+  match more:
+    case 0n:
+      rows
+    case 1n+r:
+      join_rows(rows, tail)
+
+# One row of chunks at height `y`, as z-rows the whole region wide. A region row is the
+# same z-row of every chunk in the strip, west to east — not one chunk's layer after
+# another's, which is the right order for a single chunk and a scramble for more.
+def strip_rows(+remaining: Nat, chunks: List<&2, List<&2, U32>>, +y: Nat) ->
+  List<&2, List<&2, U32>>:
+  match remaining chunks:
+    case 1n+r blocks <> rest:
+      strip.joined(r, layer_rows(U32.to_nat(width()), chunk_layer(blocks, y)),
+        strip_rows(r, rest, y))
+    case _ _:
+      []
+
+# The region's layer at height `y`: its `strips` rows of chunks north to south, each
+# `columns` chunks wide.
+def region_layer(strips: Nat, +chunks: List<&2, List<&2, U32>>, +y: Nat, +columns: Nat) ->
+  List<&2, U32>:
+  match strips:
+    case 0n:
+      []
+    case 1n+r:
+      List.append(&2, U32, List.concat(&2, U32, strip_rows(columns, chunks, y)),
+        region_layer(r, List.drop(&2, List<&2, U32>, chunks, columns), y, columns))
+
+def region_layers(remaining: Nat, +y: Nat, +chunks: List<&2, List<&2, U32>>,
+  +columns: Nat, +rows: Nat) -> List<&2, List<&2, U32>>:
+  match remaining:
+    case 0n:
+      []
+    case 1n+r:
+      region_layer(rows, chunks, y, columns)
+        <> region_layers(r, Nat.add(y, 1n), chunks, columns, rows)
+
+def region_flat(chunks: List<&2, List<&2, U32>>, +columns: Nat, +rows: Nat) -> List<&2, U32>:
+  List.concat(&2, U32, region_layers(layer_count(), 0n, chunks, columns, rows))
 
 def faces_from_chunks(+chunks: List<&2, List<&2, U32>>, +columns: Nat, +rows: Nat) ->
   List<&2, Face>:
-  faces_from_layers(padded_layers(region_flat(chunks), extent_x(columns), extent_z(rows)),
-    extent_x(columns), extent_z(rows))
+  faces_from_layers(padded_layers(region_flat(chunks, columns, rows), extent_x(columns),
+    extent_z(rows)), extent_x(columns), extent_z(rows))
 
-def face_total(faces: List<&2, Face>) -> U32:
+# A count kept on the way down, so a region's tens of thousands of faces are a loop and not
+# a call for each.
+def face_total.go(faces: List<&2, Face>, +count: U32) -> U32:
   match faces:
     case Nil{}:
-      0
-    case +face <> rest:
-      (1 + face_total(rest) : U32)
+      count
+    case face <> rest:
+      face_total.go(rest, U32.add(count, 1))
+
+def face_total(faces: List<&2, Face>) -> U32:
+  face_total.go(faces, 0)
 
 # The side labels present at one cell, as a bitmask over 0..5, and the count.
 type At is Data:

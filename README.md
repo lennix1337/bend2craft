@@ -14,6 +14,94 @@ The renderer can be controlled from Options → Graphics API (`Auto`, `WebGPU` o
 
 The Bend 2 compiler is pinned as the `vendor/bend` submodule. Bend 2's JavaScript target does not provide graphics, and native support on Windows is not available yet, so the development toolchain runs through WSL while the final game runs in the browser.
 
+## Two targets
+
+The rules are `world/*.bend`, and two programs run them.
+
+- **The browser** (`web/`) is the complete game: everything under "Current slice" below.
+  It runs Bend's JavaScript lane, which is sequential, and renders with WebGL or WebGPU.
+- **The native client** (`native/`) is a Bend 2 program with its own window, compiled by
+  the pinned CLI to C. It reuses `world/` and owns its renderer, which is written in Bend
+  and runs on CPU threads: there is no OpenGL, no shader and no engine under it. It has
+  the world, walking, digging, placing, the bag, the inventory, crafting table, chest and
+  furnace screens, a save of the world and of the bag, and a place in a multiplayer room; it
+  does not yet have redstone or armour.
+
+### What the native client draws
+
+A view region of five chunks by five that follows the player, 40,656 faces at the spawn,
+painted nearest first in 64-pixel tiles, one tile a task, a pixel written once.
+
+- Sixteen-by-sixteen procedural textures, in perspective.
+- Light at every corner of every face: open sky, shade under leaves and roofs, and the dark
+  crease where a wall meets the ground, worked out once per chunk.
+- Air that starts to show at 22 cells and hides everything at 58, in the colour the sky has
+  at the horizon, so the region's edge is behind it and far water takes the sky.
+- A sky that is a gradient over the view, clouds that drift, and a twelve-minute day: the
+  sun crosses the sky and sets orange, the world's colours fall to a quarter of their light,
+  and the moon and the stars come out.
+
+### How fast, and where that was measured
+
+One frame of the native client, in milliseconds, at the spawn (`bash lab/native/paint/run.sh`,
+medians of five):
+
+| window | 1 thread | 2 threads | 4 threads | 8 threads |
+| --- | ---: | ---: | ---: | ---: |
+| 128x128 | 1.55 | 1.52 | 1.68 | 1.98 |
+| 256x256 | 2.90 | 2.23 | 2.12 | 2.25 |
+| 512x512 | 7.55 | 4.83 | 3.62 | 3.17 |
+| 1024x1024 | 24.52 | 13.93 | 8.40 | 6.10 |
+
+The spawn is inside a house, the cheapest view. From open ground 1024x1024 costs 6.15 to
+8.47 ms on eight threads depending on which way the player looks. The runtime paces every
+presented frame to 16.67 ms, so 60 FPS is the ceiling: every size holds it on eight
+threads, and 1024x1024 does not on one. Walking across open ground in a real window, the
+client presented 59.99 frames a second at 1024x1024 with one late frame in 869.
+
+**Measured on one machine and one lane**: an AMD Ryzen 7 9800X3D under Windows 11, inside
+WSL2 Ubuntu, shown through WSLg, native C, on the **CPU's threads**. Every number is
+`--gpu off`. **The native client has no GPU path yet.** Bend puts a call on the GPU only
+where the source marks it with `!`, and the client marks none, so on any machine it runs on
+CPU threads. Marking one is not enough: the painter's tiles write into arrays, which Bend's
+own shader guide rules out on a device, so a GPU painter is a piece of work and not a flag.
+It also cannot be tried on this machine: the runtime refuses CUDA under WSL2. **No macOS
+build of the native client has been made** either; it should build and run on its CPU
+threads there, and that is untested.
+
+```bash
+bash scripts/bootstrap-native-bend.sh      # once: builds the pinned CLI
+bash scripts/play-native.sh --size=1024    # compiles the client when stale, and runs it
+```
+
+On Windows that is run inside WSL. `native/README.md` has the controls and the layout.
+
+### Laws
+
+`world/LAWS.bend` states 91 laws about the rules and `world/PROOF.bend` proves every one;
+`npm run proof` is the gate and prints `ALL PROOFS CHECK`.
+
+**Thirty hold for every input**, proved by cases and induction. Among them:
+
+- an edit reads back from any edit log, for every log, seed, cell and block;
+- an edit changes no other cell;
+- a refused mining or placing hands back the bag it was given, whatever refused it;
+- mining, placing, adding and removing never change how many slots a bag has;
+- placing into an occupied cell, outside the world or into the player is refused, as is
+  mining the bottom layer, for every bag and item;
+- a refused load or take leaves a furnace as it was, and a withdrawal a chest's slots;
+- above a column's height the terrain rule answers air, its top is sand by the sea and
+  grass above it, and no cell above sea level is generated as water.
+
+**Sixty-one are values** the game depends on, computed by the checker from the definition
+the game runs: the default seed's terrain at eleven cells, what each pickaxe breaks, what
+each block drops and that the drop places the block again, the recipes that turn two logs
+into a pickaxe, the furnace, crops, farmland, armour, experience, the mob roster, and that
+no block id is both solid and something light passes.
+
+The checker decides integers, booleans, naturals and lists, not floats, so the player's
+physics and both renderers are held by tests rather than laws.
+
 ## Current slice
 
 - Deterministic chunk-streamed world with `16 x 16 x 20` chunks, a configurable `2–8` chunk render distance (default `4`) and dedicated workers for Bend2 chunk generation.
@@ -79,7 +167,8 @@ The Bend 2 compiler is pinned as the `vendor/bend` submodule. Bend 2's JavaScrip
 - Nine-slot hotbar inventory with stack counts.
 - Inventory drag transfer, half-stack right-click moves, shift-click section transfer and `Q` item drops.
 - Collecting a block adds it to the inventory; placing consumes one item.
-- Bend laws and proofs for core world invariants.
+- Bend laws and proofs: 91 laws in `world/LAWS.bend`, 30 of them for every input (see
+  "Laws" above).
 
 Block IDs:
 
@@ -216,6 +305,10 @@ does the same thing by hand.
 
 ## Multiplayer
 
+Several players can share one world, and a native client can be one of them: it joins the
+same room as the browsers and every block dug or placed goes both ways. Blocks are all it
+shares so far; see "A native client in the room" below.
+
 Several players can share one world. The server holds the world's seed and its
 ordered edit log; the authority is `world/multiplayer.bend`, which validates each
 submitted batch (in-world cell, known block, bounded batch size), folds the
@@ -291,6 +384,31 @@ expose it with a Cloudflare quick tunnel, then share the printed
 cloudflared tunnel --url http://localhost:8080
 ```
 
+### A native client in the room
+
+The server opens a second, plain TCP port for native clients, one above the HTTP port
+(`NATIVE_PORT` changes it, `NATIVE_PORT=0` closes it), and prints the command to join:
+
+```bash
+npm run build && node scripts/play-server.mjs      # the server, on 8080 and 8081
+bash scripts/play-native.sh --size=512 --join=127.0.0.1:8081
+```
+
+The native client and the browsers are then in one world: dig a block in one and it is gone
+in the other, and each sees the others walk. A browser draws the native player like any
+other; the native client draws the others as plain figures with their names over them, and
+its day and night are the room's. It sees the room's animals, monsters, villagers and dropped
+items, hits a mob with the dig key, is hurt by a monster and picks up what lies beside it.
+It opens the room's chests and furnaces, and each click on
+them asks the room. It plays in the room's world, not its own
+save, and it refuses a room whose seed is not the native client's (1337).
+
+On Windows the native client runs inside WSL, so start the server inside WSL too: the
+launcher `Jogar-Bend2Craft.bat` starts it on the Windows side at `127.0.0.1`, which a
+program inside WSL does not reach by default. Verified on one machine: Windows 11, WSL2,
+server and native client both in WSL, the browser on Windows. The Cloudflare deployment
+has no native port.
+
 Deploy to Cloudflare (Workers Free plan; Durable Objects with SQLite storage):
 
 ```bash
@@ -316,8 +434,10 @@ shell on macOS or Linux:
 ```bash
 npm run verify       # all Bend, proof, test, build and diff checks
 npm run check:bend   # type-check world/world.bend
-npm run proof        # verify LAWS.bend and PROOF.bend
-npm run test         # world, inventory and game-state regression tests
+npm run proof        # prove all 91 laws of world/LAWS.bend
+npm run test         # world, inventory and game-state regression tests, then the native Bend ones
+bash lab/native/paint/run.sh   # the native client's frame cost, per size and thread count
+bash lab/native/paint/shot.sh  # the native client's frame as PNG files
 npm run bench:light  # compare dirty-cell and full light updates
 npm run bench:render-distance # measure mesh cost for distances 2/4/6/8
 npm run dev          # start the Bun development server

@@ -28,12 +28,16 @@
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
-ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
+ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../../.." && pwd)
 SCRATCH="$ROOT/scratchpad/client-probe"
 BEND="${BEND_BIN:-$ROOT/.tools/bend-local/bin/bend}"
 # The runtime defaults `--threads` to the CPU count, which is how the shipping client
 # is launched. Set to a number to compare against an explicit pool.
 CLIENT_THREADS="${CLIENT_THREADS:-}"
+# The window the probe opens, passed straight through to the client's own `--size` selector,
+# so a resolution can be measured live instead of only in the harness. Empty means the
+# client's default, which is the size the benchmarks measure.
+PROBE_ARGS="${*:-}"
 TICKS_PER_SECOND=60
 
 if [ ! -x "$BEND" ]; then
@@ -60,7 +64,8 @@ mkdir -p "$RUN_DIR/native"
 WORLD_FILE="$RUN_DIR/native/client-world.b2cw"
 printf 'compiler: '
 "$BEND" version
-printf 'target: the client loop, a fixed frame countdown, under Xvfb\n'
+printf 'target: the client loop, a fixed frame countdown, under Xvfb%s\n' \
+  "${PROBE_ARGS:+ ($PROBE_ARGS)}"
 
 timeout 180s "$BEND" "$SCRIPT_DIR/fps_probe.bend" -o "$BINARY" >/dev/null
 
@@ -102,9 +107,9 @@ printf 'XVFB_DISPLAY=:%s\n' "$DISPLAY_NUM"
 xsetroot -solid black >/dev/null 2>&1 || true
 
 if [ -n "$CLIENT_THREADS" ]; then
-  (cd "$RUN_DIR" && "$BINARY" --threads "$CLIENT_THREADS") >"$RUN_DIR/probe.log" 2>&1 &
+  (cd "$RUN_DIR" && "$BINARY" --threads "$CLIENT_THREADS" $PROBE_ARGS) >"$RUN_DIR/probe.log" 2>&1 &
 else
-  (cd "$RUN_DIR" && "$BINARY") >"$RUN_DIR/probe.log" 2>&1 &
+  (cd "$RUN_DIR" && "$BINARY" $PROBE_ARGS) >"$RUN_DIR/probe.log" 2>&1 &
 fi
 PROBE_PID=$!
 

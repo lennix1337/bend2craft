@@ -177,13 +177,21 @@ export function createWorldSimulation({ seed, chunkSize, world, state = restoreS
     return bendList(waters.reverse());
   }
 
+  // The cells a fluid rule asks about around each live flow: the one below it,
+  // the four beside it, and the one above it. The cell above is what tells a
+  // flow that a column landed on it, so a pool spreads where the water fell;
+  // without it the rules read that cell as stone and the pool stops there.
   function fluidSamples(list) {
     const unique = new Map();
     for (let node = list; node?.$ === "Con"; node = node.tail) {
       const x = Number(node.head.x);
       const y = Number(node.head.y);
       const z = Number(node.head.z);
-      for (const [sampleX, sampleY, sampleZ] of [[x, y - 1, z], [x - 1, y, z], [x + 1, y, z], [x, y, z - 1], [x, y, z + 1]]) {
+      for (const [sampleX, sampleY, sampleZ] of [
+        [x, y - 1, z], [x, y + 1, z],
+        [x - 1, y, z], [x + 1, y, z],
+        [x, y, z - 1], [x, y, z + 1],
+      ]) {
         if (!simulated(sampleX, sampleY, sampleZ)) continue;
         const key = `${sampleX},${sampleY},${sampleZ}`;
         if (!unique.has(key)) {

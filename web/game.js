@@ -5408,7 +5408,10 @@ try {
       footstepTimer = 0;
     }
     if (isInWater(world, player)) {
-      const [pushX, pushZ] = waterCurrentPush(Fluids.take(64n, Fluids.state_flows(worldSimulation.fluids)), player.x, player.y, player.z);
+      // The whole field, not a slice of it: a bounded window here reads as a current
+      // that stops at an invisible line partway across a pool. The contract's own
+      // cap is already applied to the state, so this is at most that many cells.
+      const [pushX, pushZ] = waterCurrentPush(Fluids.state_flows(worldSimulation.fluids), player.x, player.y, player.z);
       if (pushX !== 0 || pushZ !== 0) {
         player.x += pushX * dt;
         player.z += pushZ * dt;

@@ -1106,6 +1106,12 @@ def Laws.what_light_passes_a_body_passes():
 def Laws.the_ground_is_solid_and_the_air_is_not():
   {==}
 
+def Laws.a_settled_pool_keeps_its_cells():
+  {==}
+
+def Laws.an_unfed_flow_dries_up():
+  {==}
+
 def Laws.the_fluids_are_water_and_lava():
   {==}
 

@@ -300,7 +300,10 @@ Scale:
 - [ ] Cache terrain per column in the light patch: `sky_visible` still
   generates terrain for every cell it climbs.
 - [ ] Remove the remaining strict `Bool.pick` scans in `world/fluids.bend`
-  (`append_source`, `contains`) and measure a large pool.
+  (`contains`, `level_at`) and measure a large pool. A tick now walks every flow
+  rather than the first 64, and each one asks its four neighbours about the
+  field, so the walk is quadratic in the field's size and the cap
+  (`Fluids.max_flow_cells`, 256) is what keeps it bounded.
 
 Connection and hosting:
 

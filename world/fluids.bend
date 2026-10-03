@@ -77,12 +77,12 @@ def append_if(
     case False{}:
       flows
 
+def can_fall(samples: List<&2, Sample>, +x: Nat, +y: Nat, +z: Nat) -> Bool:
+  Bool.and(Nat.is_gt(y, 0n), open_cell(samples, x, Nat.sub(y, 1n), z))
+
 def spread(source: Flow, +samples: List<&2, Sample>) -> List<&2, Flow>:
   Flow{+x, +y, +z, +level, source, +source_block} = source
-  +can_down = Bool.and(
-    Nat.is_gt(y, 0n),
-    open_cell(samples, x, Nat.sub(y, 1n), z)
-  )
+  +can_down = can_fall(samples, x, y, z)
   +side_valid = Bool.and(Bool.not(can_down), U32.is_gt(level, 1))
   +side_level = U32.sub(level, 1)
   +down = append_if(Nil{}, x, Nat.sub(y, 1n), z, level, source_block, can_down)
@@ -130,10 +130,6 @@ def append_unique(+flows: List<&2, Flow>, +candidate: Flow) -> List<&2, Flow>:
   Flow{+x, +y, +z, level, source, block} = candidate
   Bool.pick(List<&2, Flow>, contains(flows, x, y, z), flows, Con{candidate, flows})
 
-def append_source(+flows: List<&2, Flow>, +candidate: Flow) -> List<&2, Flow>:
-  Flow{+x, +y, +z, level, +source, block} = candidate
-  Bool.pick(List<&2, Flow>, source, append_unique(flows, candidate), flows)
-
 def append_spread(
   +candidates: List<&2, Flow>, +flows: List<&2, Flow>
 ) -> List<&2, Flow>:
@@ -142,6 +138,13 @@ def append_spread(
       flows
     case Con{+head, +tail}:
       append_spread(tail, append_unique(flows, head))
+
+def append_at_end(+flows: List<&2, Flow>, +candidate: Flow) -> List<&2, Flow>:
+  match flows:
+    case Nil{}:
+      Con{candidate, Nil{}}
+    case Con{head, tail}:
+      Con{head, append_at_end(tail, candidate)}
 
 def take(+remaining: Nat, +flows: List<&2, Flow>) -> List<&2, Flow>:
   match remaining:
@@ -262,17 +265,114 @@ def changes(+before: State, +after: State) -> List<&2, Edit>:
   State{+new_flows} = after
   append_edits(removed_edits(old_flows, new_flows), added_edits(new_flows, old_flows))
 
-def tick_entries(
-  +remaining: List<&2, Flow>, +samples: List<&2, Sample>,
-  +result: List<&2, Flow>
-) -> List<&2, Flow>:
+# --- whether a flow is still fed --------------------------------------------------
+#
+# A flow stands while something feeds it: a source always does, a falling flow
+# does not (it moves down instead), and a flow that cannot fall needs a stronger
+# neighbour beside it or water on top of it. Nothing else is kept, so a pool
+# drains when its source goes and a stray flow dries up rather than sitting
+# there forever.
+#
+# The level of a cell says how far that cell is from its source, so a cell that
+# is still fed keeps the level it had. Taking the level a neighbour offered
+# instead would ratchet a whole pool down one step every tick.
+
+# The level of the flow standing at a cell, or 0 when none does: a level is never
+# 0, so 0 answers "nothing here".
+def level_at(flows: List<&2, Flow>, +x: Nat, +y: Nat, +z: Nat, +fallback: U32) -> U32:
+  match flows:
+    case Nil{}:
+      fallback
+    case Con{+head, +tail}:
+      Flow{+fx, +fy, +fz, +level, source, block} = head
+      Bool.pick(
+        U32,
+        Bool.and(Bool.and(Nat.is_eq(fx, x), Nat.is_eq(fy, y)), Nat.is_eq(fz, z)),
+        level,
+        level_at(tail, x, y, z, fallback)
+      )
+
+# Bend's Nat cannot go below zero, so the cell one north and one west of the
+# origin has no neighbour to ask about and answers 0.
+def level_east(flows: List<&2, Flow>, +x: Nat, +y: Nat, +z: Nat) -> U32:
+  level_at(flows, Nat.add(x, 1n), y, z, 0)
+
+def level_west(flows: List<&2, Flow>, +x: Nat, +y: Nat, +z: Nat) -> U32:
+  Bool.pick(U32, Nat.is_gt(x, 0n), level_at(flows, Nat.sub(x, 1n), y, z, 0), 0)
+
+def level_south(flows: List<&2, Flow>, +x: Nat, +y: Nat, +z: Nat) -> U32:
+  level_at(flows, x, y, Nat.add(z, 1n), 0)
+
+def level_north(flows: List<&2, Flow>, +x: Nat, +y: Nat, +z: Nat) -> U32:
+  Bool.pick(U32, Nat.is_gt(z, 0n), level_at(flows, x, y, Nat.sub(z, 1n), 0), 0)
+
+def strongest_of(+a: U32, +b: U32) -> U32:
+  Bool.pick(U32, U32.is_gt(a, b), a, b)
+
+def strongest_beside(+flows: List<&2, Flow>, +x: Nat, +y: Nat, +z: Nat) -> U32:
+  strongest_of(
+    level_east(flows, x, y, z),
+    strongest_of(
+      level_west(flows, x, y, z),
+      strongest_of(level_south(flows, x, y, z), level_north(flows, x, y, z))
+    )
+  )
+
+def fed_from_above(samples: List<&2, Sample>, +x: Nat, +y: Nat, +z: Nat, +block: U32) -> Bool:
+  U32.is_eq(sample_block(samples, x, Nat.add(y, 1n), z), block)
+
+def still_fed(flow: Flow, +flows: List<&2, Flow>, +samples: List<&2, Sample>) -> Bool:
+  Flow{+x, +y, +z, +level, source, +block} = flow
+  match source:
+    case True{}:
+      True{}
+    case False{}:
+      Bool.and(
+        Bool.not(can_fall(samples, x, y, z)),
+        Bool.or(
+          U32.is_gt(strongest_beside(flows, x, y, z), level),
+          fed_from_above(samples, x, y, z, block)
+        )
+      )
+
+# A tick walks the field once and leaves two lists: the flows that are still fed,
+# and every cell the field reaches this tick. A Bend value is consumed once, so
+# one walk has to build both rather than walk the list twice.
+type Spread is Data:
+  Spread{kept: List<&2, Flow>, offers: List<&2, Flow>}
+
+def spread_field(
+  +remaining: List<&2, Flow>, +flows: List<&2, Flow>, +samples: List<&2, Sample>,
+  +kept: List<&2, Flow>, +offers: List<&2, Flow>
+) -> Spread:
   match remaining:
     case Nil{}:
-      result
+      Spread{kept, offers}
     case Con{+head, +tail}:
-      +with_flow = append_spread(spread(head, samples), result)
-      +with_source = append_source(with_flow, head)
-      tick_entries(tail, samples, with_source)
+      +reached = spread(head, samples)
+      spread_field(
+        tail, flows, samples,
+        Bool.pick(List<&2, Flow>, still_fed(head, flows, samples), Con{head, kept}, kept),
+        append_spread(reached, offers)
+      )
+
+# A cell the field already holds keeps its own level: the level says how far
+# that cell is from its source, and an offer that reaches it this tick is
+# always a lower one, so taking the offer would ratchet the whole pool down a
+# step every tick.
+def merge_offers(+offers: List<&2, Flow>, +kept: List<&2, Flow>) -> List<&2, Flow>:
+  match offers:
+    case Nil{}:
+      kept
+    case Con{+head, +tail}:
+      Flow{+x, +y, +z, level, source, block} = head
+      +next = Bool.pick(
+        List<&2, Flow>,
+        contains(kept, x, y, z),
+        kept,
+        append_at_end(kept, head)
+      )
+      merge_offers(tail, next)
 
 def seed(+state: State, +x: Nat, +y: Nat, +z: Nat, +level: U32) -> State:
   State{+flows} = state
@@ -282,10 +382,18 @@ def seed_lava(+state: State, +x: Nat, +y: Nat, +z: Nat, +level: U32) -> State:
   State{+flows} = state
   State{take(max_flow_cells(), append_unique(flows, Flow{x, y, z, level, True{}, lava_block()}))}
 
+def merge_spread(+spread: Spread) -> State:
+  Spread{+kept, +offers} = spread
+  State{take(max_flow_cells(), merge_offers(offers, kept))}
+
+# Every flow in the field is advanced, not the first sixty-four: bounding the
+# walk used to drop the rest of the field, and the world then cleared those
+# cells, so any pool wider than the bound lost water every tick. New cells land
+# at the end, so the cap drops the newest arrivals rather than water that was
+# already standing: past the cap a field stops spreading instead of vanishing.
 def tick(+state: State, +samples: List<&2, Sample>) -> State:
   State{+flows} = state
-  +bounded = take(64n, flows)
-  State{take(max_flow_cells(), tick_entries(bounded, samples, Nil{}))}
+  merge_spread(spread_field(flows, flows, samples, Nil{}, Nil{}))
 
 def remove(+state: State, +x: Nat, +y: Nat, +z: Nat) -> State:
   State{+flows} = state

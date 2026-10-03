@@ -94,7 +94,8 @@ Status markers:
 ## P1 — farming, villages and fluids
 
 - [x] Wheat, farmland, crop ticking and basic villager trade/pathing.
-- [x] Water/lava flow, buckets, doors and fire primitives.
+- [x] Water/lava flow, buckets, doors and fire primitives. Two bugs made a placed pool fall apart on 2026-10-03 and are fixed in `world/fluids.bend`: a cell took the lower level a neighbour offered it, so a pool ratcheted itself down one step per tick and drained, and a tick walked only the first 64 flows, so any wider pool lost cells every tick and the world cleared them. A flow now stays while something feeds it (a source, a stronger neighbour, or water on top of it) and every flow in the field is advanced. The browser's sample window also grew to include the cell above each flow, which is what tells a flow a column landed on it. Laws: `a_settled_pool_keeps_its_cells`, `an_unfed_flow_dries_up`.
+- [ ] Water is drawn as a full block: the surface of a one-deep sheet sits at the top of the cell instead of below it, so shallow water reads as a row of cubes. This is presentation, not the rule.
 - [ ] Add carrots, potatoes and sugar cane.
 - [ ] Add bonemeal and crop acceleration rules.
 - [ ] Add breeding and animal population rules.

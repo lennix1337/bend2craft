@@ -597,6 +597,27 @@ law the_ground_is_solid_and_the_air_is_not:
 
 # The fluid rules and the world's block ids name the same blocks, and nothing a
 # player mines is a fluid.
+# A placed pool holds its shape instead of ratcheting itself away. A tick used
+# to rebuild the field from the spreads alone, so every cell took a lower level
+# than it had, one step per tick, until the pool drained; it also walked only
+# the first 64 flows and dropped the rest, which cleared their cells in the
+# world. These are values, computed from the same definition the game runs.
+law a_settled_pool_keeps_its_cells:
+  {List.length(&2, Fluids.Flow, Fluids.state_flows(Fluids.tick(
+      Fluids.State{
+        Con{Fluids.Flow{5n, 0n, 5n, 8, True{}, 7},
+        Con{Fluids.Flow{6n, 0n, 5n, 7, False{}, 7},
+        Con{Fluids.Flow{7n, 0n, 5n, 6, False{}, 7}, Nil{}}}}},
+      Nil{}))) == 3n : Nat}
+
+# A cell with no source, no stronger neighbour and no water above it has nothing
+# holding it there, so the tick clears it and leaves only what it reached.
+law an_unfed_flow_dries_up:
+  {List.length(&2, Fluids.Flow, Fluids.state_flows(Fluids.tick(
+      Fluids.State{
+        Con{Fluids.Flow{5n, 0n, 5n, 3, False{}, 7}, Nil{}}},
+      Nil{}))) == 0n : Nat}
+
 law the_fluids_are_water_and_lava:
   {(Fluids.water_block(), (Fluids.lava_block(), (Fluids.cobblestone_block(), (Fluids.obsidian_block(), Fire.fire_block()))))
     == (7, (21, (22, (23, 24)))) : U32 & (U32 & (U32 & (U32 & U32)))}

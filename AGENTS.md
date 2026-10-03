@@ -32,7 +32,7 @@ The game model is authored in Bend 2 under `world/`. Two targets consume it:
 Start here:
 
 - Bend world contract: `world/world.bend`
-- Bend laws and proofs: `world/LAWS.bend`, `world/PROOF.bend` (97 laws, 31 of them for
+- Bend laws and proofs: `world/LAWS.bend`, `world/PROOF.bend` (99 laws, 31 of them for
   every input; see "Laws" below)
 - Bend module boundary: `web/bend-modules.js` (wraps every `world/*.bend`
   module; the only place that knows how the JS lane names a datatype)
@@ -482,6 +482,38 @@ both targets; the browser reads them through `web/inventory.js`'s
 were once in the texture atlas's order, four ids out of step, and a crafting table painted
 as glass; `native/voxel_test.bend` names the colours.
 
+### Water and lava are one field that has to hold still
+
+`world/fluids.bend` is the whole rule: a flow is water or lava at a cell with a
+level that says how far that cell is from its source (8 at the source), and a tick
+decides two things for each flow — where it reaches, and whether it stays.
+
+- **A cell that is still fed keeps its own level.** A neighbour that reaches a
+  cell this tick always offers a *lower* level, and taking that offer ratchets a
+  whole pool down one step per tick until it drains. The old code rebuilt the
+  field from the spreads alone, which is how a placed pool shrank to a puddle and
+  then vanished.
+- **A flow stays only while something feeds it**: a source always does, a falling
+  flow does not (it moves down instead), and a flow that cannot fall needs a
+  stronger flow beside it or water above it. So a pool holds while its source
+  does and drains from the inside out when the source goes, which is what the
+  bucket tests expect.
+- **Every flow is advanced each tick.** The tick used to walk the first 64 flows
+  and drop the rest; the world then cleared those cells, so any pool wider than
+  the bound lost water every tick and the shape flickered. `max_flow_cells` (256)
+  is the only bound, and new cells land at the end of the list, so past the cap a
+  field stops spreading instead of disappearing.
+- **The adapter's sample window has to include the cell above each flow.** That
+  cell is what tells a flow a column landed on it; without it the rules read it
+  as stone and a pool stops at the foot of a waterfall.
+- The shape from one source is a 7-wide diamond, because spread is to the four
+  sides and the level drops by one each step. That is the shape the rules define,
+  not an accident.
+
+Laws: `a_settled_pool_keeps_its_cells`, `an_unfed_flow_dries_up`. The shapes are
+held by `tests/fluids-bend.test.mjs`, which pours a pool on a flat floor, lets it
+settle, and asserts the next tick tells the world nothing.
+
 ### A native client joins the browsers' room, through a door on the server
 
 `--join=host:port` puts the native client in a multiplayer room. It is the **same room**
@@ -657,7 +689,7 @@ they mean.
 
 ## Laws
 
-`world/LAWS.bend` states 97 laws and `world/PROOF.bend` closes every one; `npm run proof`
+`world/LAWS.bend` states 99 laws and `world/PROOF.bend` closes every one; `npm run proof`
 prints `ALL PROOFS CHECK` in about nine seconds. There are two kinds, and the difference
 matters:
 

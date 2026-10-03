@@ -5,7 +5,7 @@
 #
 # This is the only check that exercises the pinned window effect, the real key
 # events and the real file writes together. Everything else in native/client.bend
-# is proven headless by native/client_test.bend.
+# is proven headless by native/play_test.bend.
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
@@ -19,8 +19,8 @@ if [ ! -x "$BEND" ]; then
   printf 'Bend 2 compiler is missing or not executable: %s\n' "$BEND" >&2
   exit 1
 fi
-if [ "$("$BEND" version)" != 'bend 2.0.32' ]; then
-  printf 'Native client smoke requires Bend 2.0.32: %s\n' "$BEND" >&2
+if [ "$("$BEND" version)" != 'bend 2.0.35' ]; then
+  printf 'Native client smoke requires Bend 2.0.35: %s\n' "$BEND" >&2
   exit 1
 fi
 if ! command -v Xvfb >/dev/null 2>&1; then

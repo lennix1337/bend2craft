@@ -6,7 +6,8 @@ policy for moving it. Upstream keeps its own per-release notes in
 
 ## Current pin
 
-- Pinned: `v2.0.32` (2026-09-27)
+- Pinned: `v2.0.35` (2026-10-03), commit `79df8d9`. `scripts/bootstrap-native-bend.sh` carries the
+  same commit and builds the native CLI from it.
 - Commands: `bash scripts/bend-toolchain.sh check` (read-only),
   `bash scripts/bend-toolchain.sh update` (working tree only, no commit).
 
@@ -27,6 +28,15 @@ policy for moving it. Upstream keeps its own per-release notes in
 - Do not edit `vendor/bend` for application features; it is upstream code.
 
 ## History
+
+- `v2.0.32` -> `v2.0.35` (2026-10-03): moved so that the native client builds on Apple Silicon.
+  Since 2.0.29 Apple's shader compiler died on the GPU program of any program with a `!` on M1 and
+  M2 chips, and on macOS every windowed program has one (`Image.drop!` in `App.turn`), so the
+  native client could not be built there at all (`XPC_ERROR_CONNECTION_INTERRUPTED`, a crash in
+  `MTLCompilerService`: `unable to legalize instruction ... load monotonic`). 2.0.35 fixes it
+  (upstream #1154). The gate was run on the new pin before it was recorded here. Two Base changes
+  that touch our code were read before the bump: `U32.to_nat` widens to u64 in C (2.0.33) and
+  `U32.min`/`max`/`List.sort` open their argument first (2.0.33).
 
 - `v2.0.19` -> `v2.0.32` (2026-09-27): 13 upstream releases. This one needed
   source changes on our side, and every one of them came from two upstream

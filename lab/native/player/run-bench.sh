@@ -18,8 +18,8 @@ if [ ! -x "$BEND" ]; then
   printf 'Pinned Bend compiler is missing or not executable: %s\n' "$BEND" >&2
   exit 1
 fi
-if [ "$("$BEND" version)" != 'bend 2.0.32' ]; then
-  printf 'Native player probe requires Bend 2.0.32: %s\n' "$("$BEND" version)" >&2
+if [ "$("$BEND" version)" != 'bend 2.0.35' ]; then
+  printf 'Native player probe requires Bend 2.0.35: %s\n' "$("$BEND" version)" >&2
   exit 1
 fi
 

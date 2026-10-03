@@ -16,8 +16,8 @@ if [ ! -x "$BEND" ]; then
   printf 'Bend 2 compiler is missing or not executable: %s\n' "$BEND" >&2
   exit 1
 fi
-if [ "$("$BEND" version)" != 'bend 2.0.32' ]; then
-  printf 'Native face probe requires Bend 2.0.32: %s\n' "$BEND" >&2
+if [ "$("$BEND" version)" != 'bend 2.0.35' ]; then
+  printf 'Native face probe requires Bend 2.0.35: %s\n' "$BEND" >&2
   exit 1
 fi
 

@@ -18,8 +18,8 @@ if [ ! -x "$compiler" ]; then
   printf 'Pinned standalone Bend compiler is missing: %s\n' "$compiler" >&2
   exit 1
 fi
-if [ "$("$compiler" version)" != 'bend 2.0.32' ]; then
-  printf 'Native smoke requires Bend 2.0.32: %s\n' "$compiler" >&2
+if [ "$("$compiler" version)" != 'bend 2.0.35' ]; then
+  printf 'Native smoke requires Bend 2.0.35: %s\n' "$compiler" >&2
   exit 1
 fi
 

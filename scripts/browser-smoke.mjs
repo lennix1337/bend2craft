@@ -2,7 +2,20 @@ import assert from "node:assert/strict";
 import { chromium } from "playwright";
 
 const baseUrl = process.argv[2] ?? "http://127.0.0.1:3000";
-const browser = await chromium.launch({ headless: true });
+
+// The smoke waits for real pointer lock, which the default headless builds
+// (chrome-headless-shell) refuse with a pointerlockerror. Prefer the full
+// Chromium build and fall back to the default headless browser only when the
+// full one is not installed.
+async function launchBrowser() {
+  try {
+    return await chromium.launch({ headless: true, channel: "chromium" });
+  } catch {
+    return chromium.launch({ headless: true });
+  }
+}
+
+const browser = await launchBrowser();
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 const consoleErrors = [];
 const pageErrors = [];
@@ -532,7 +545,14 @@ try {
     window.__bend2craft.setViewForTest(mob.x, mob.y, mob.z - 1, Math.PI, -0.3);
     const primaryHit = window.__bend2craft.primaryActionForTest(0);
     const hits = [primaryHit];
-    for (let index = 0; index < 4; index += 1) hits.push(window.__bend2craft.attack());
+    for (let index = 0; index < 4; index += 1) {
+      // Each hit knocks the mob back, so it leaves the 4-block reach after a
+      // few blows. Stand up to it again between hits, or the last blow cannot
+      // land and the mob is never actually killed.
+      const current = window.__bend2craft.getMobs().find((entry) => entry.id === mob.id);
+      window.__bend2craft.teleportForTest(current.x, current.z - 1, current.y, Math.PI, -0.3);
+      hits.push(window.__bend2craft.attack());
+    }
     const after = window.__bend2craft.getMobs().find((entry) => entry.id === mob.id);
     return {
       id: mob.id,
@@ -817,6 +837,13 @@ try {
   assert.ok(inventoryIconProbe.painted > 0, "open inventory slots must use the item atlas icons");
   assert.equal(inventoryIconProbe.namesHidden, true);
   assert.ok(inventoryIconProbe.draggable > 0, "inventory slots must support drag transfer");
+  // The panel moves focus into itself on the next animation frame, which is a
+  // separate turn from the click, so wait for it rather than reading once.
+  await page.waitForFunction(
+    () => document.getElementById("inventory-panel")?.contains(document.activeElement) === true,
+    null,
+    { timeout: 5000 },
+  );
   const modalProbe = await page.evaluate(() => {
     const panel = document.getElementById("inventory-panel");
     const canvas = document.getElementById("game");

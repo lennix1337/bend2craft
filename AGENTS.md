@@ -1,5 +1,11 @@
 # Bend2Craft repository instructions
 
+When using Bend:
+- run `bend guide` to learn it
+- use `LAWS.bend` to keep important rules
+- run `bend PROOF.bend` before committing
+- parallelize the code whenever possible.
+
 ## Project constitution: Bend 2 first
 
 This project's primary objective is to stress-test Bend 2 as the engine for large games. Prefer Bend 2 for every domain rule, simulation transition, world query, chunk generator, inventory/crafting operation, collision rule, and authoritative state that it can express. Treat browser JavaScript as a thin adapter for presentation, input capture, cache management, and APIs Bend 2 cannot currently provide.
@@ -26,7 +32,7 @@ The game model is authored in Bend 2 under `world/`. Two targets consume it:
 Start here:
 
 - Bend world contract: `world/world.bend`
-- Bend laws and proofs: `world/LAWS.bend`, `world/PROOF.bend` (91 laws, 30 of them for
+- Bend laws and proofs: `world/LAWS.bend`, `world/PROOF.bend` (95 laws, 31 of them for
   every input; see "Laws" below)
 - Bend module boundary: `web/bend-modules.js` (wraps every `world/*.bend`
   module; the only place that knows how the JS lane names a datatype)
@@ -34,7 +40,13 @@ Start here:
 - Chunk cache/streaming adapter: `web/chunk-world.js`
 - Pure player/world state: `web/game-state.js`
 - Browser entry router/menu: `web/main.js`; WebGL/game runtime: `web/game.js`
-- Native client: `native/client.bend`; its modules are `native/voxel.bend`,
+- Native client: `native/client.bend` (the entry point: the window and the frame loop); the
+  client itself is `native/play.bend` (the player, the world it holds, one tick and one frame,
+  the save), with `native/action.bend` (the ray as the world's cell, dig and place, how long a
+  block takes), `native/slabs.bend` (the world's faces, a chunk at a time), `native/hour.bend`
+  (a room's clock), `native/room.bend` (a multiplayer room, from the client's side) and
+  `native/size.bend` (the window's size and the table that prices it). Its other modules are
+  `native/voxel.bend`,
   `native/face.bend` (the ray walk: the pointer's ray, the tests' reference, and
   what `native/paint_test.bend` holds the painter against),
   `native/paint.bend` (what draws the window), `native/frame.bend`,
@@ -89,8 +101,9 @@ or measured. **Nothing in `native/` imports from `lab/native/`**, and the
 dependency only runs that way: a lab module that stopped matching its client
 would be measuring a different program.
 
-- `native/client.bend` is the entry point. It wires the world, the camera, the
-  input fold, the tick and the save; it owns no game rule.
+- `native/client.bend` is the entry point. It opens the window and runs the frame loop over
+  `native/play.bend` and `native/room.bend`; it owns no game rule and no state, and neither
+  does `play.bend`, which wires the world, the camera, the input fold, the tick and the save.
 - Each `lab/native/<module>/` holds the benchmarks and the recorded numbers for
   the `native/<module>.bend` beside it. The module ships; the measurement does
   not.
@@ -115,10 +128,11 @@ would be measuring a different program.
 
 Everything in this file about the native client was measured on **one machine and one
 lane**: an AMD Ryzen 7 9800X3D (8 cores) under Windows 11, inside **WSL2 Ubuntu**, shown
-through **WSLg**, compiled by the pinned Bend 2.0.32 to native C and run with the default
-thread pool on the **CPU**. Every number is `--gpu off`.
+through **WSLg**, compiled by Bend 2.0.32 to native C and run with the default
+thread pool on the **CPU**. Every number is `--gpu off`. (The pin is now 2.0.35; these were taken
+on 2.0.32 and are not re-measured. The Mac numbers are a separate lane, in `lab/native/paint/README.md`.)
 
-- **No GPU run has been made, and the client has no GPU path.** The runtime only builds a
+- **The client has no GPU path.** The runtime only builds a
   device program when the source has a `!` call (`BANGS != 0` in the runtime, and
   `main.ts` links CUDA or Metal only then), and `native/` has none: `--gpu on` is refused
   and the fork tree runs on the CPU pool. Adding one is not a flag. `vendor/bend/guide/SHADERS.md`
@@ -131,9 +145,27 @@ thread pool on the **CPU**. Every number is `--gpu off`.
   RTX 4070 SUPER this machine has is not a way to test a device painter; a native Linux
   with the CUDA toolkit, or a Mac with Metal, is. Do not write that the client runs on a
   GPU, or how fast, until someone has run it there and the digest matched the CPU's.
-- **macOS has not been run.** The scripts are kept portable to it and the pointer falls
-  back to the runtime's grab outside WSL, but no macOS build of the native client has
-  been made in this repository. Metal is the same: untested.
+- **macOS has been run, once, on one machine, and only the benchmark and the build.** An Apple
+  M1 Pro under macOS 27.0 built the native client and ran `lab/native/paint/run.sh`; the
+  numbers are in their own section of `lab/native/paint/README.md` and are not comparable
+  with the WSL ones. A window was not driven by hand there, so nothing says the client plays
+  correctly on macOS. On macOS the compiler builds a Metal program for any program with a `!`,
+  and every windowed program has one (`Image.drop!` in `Base`'s `App.turn`); that step crashed
+  Apple's shader compiler on M1 and M2 from Bend 2.0.29 to 2.0.34, which is why the pin is 2.0.35.
+- **`--gpu on` was run, and it changes nothing.** On the Mac the benchmark ran with `--gpu on`
+  and `--gpu off` and agreed within noise (0.96 to 1.06), because `paint_bench` has no `!` call
+  and the painter has no device leaf. That is not a GPU painter: the claim above stands that
+  there is none, and a device painter is still a second leaf and not a flag.
+- **A device leaf was tried once, as a throwaway, and is slower.** `lab/native/gpu-probe/` draws the
+  textured frame from flat loops under one bang, on Metal, with the same picture as the CPU painter to
+  within float rounding (54 of a million pixels differ at 1024x1024), and costs 134 ms a frame at best
+  against the CPU painter's 6 ms. Forking to more leaves helped at small sizes and then stopped helping;
+  the cost is spread over every layer (structure 25 ms, list walk 37, coverage 16, texel 55 of 133), and the
+  reference rasterizer it was modelled on differs in ways the README lists. **On this M1 Pro that reference is
+  itself twice as slow on the GPU as on the CPU pool** (`lab/native/gpu-probe/control.sh`: 11.0 against 5.7 ms to
+  draw 1920x1200), so a GPU painter is not expected to win on this hardware whatever the leaf; the guide's
+  figures are from an M4. It is a spike
+  and not a path, and its README says what it did not settle.
 - **Native Windows is not a target.** The toolchain runs in WSL.
 
 A number from this machine is a number about this machine. Quote it with the lane, and
@@ -218,7 +250,7 @@ it, and past that `Frame.home_for` moves it so the player's chunk is the middle 
 the margin keeps a player on a chunk boundary from moving it with every step. It was three
 by three, and the world ended sixteen cells from the player; at five there are at least
 twenty-eight cells in every direction, which is past where the air starts.
-`Client.world_for` brings the faces after it on the next views, and the tick keeps the
+`Slabs.world_for` brings the faces after it on the next views, and the tick keeps the
 collision region around the player, so there is nothing near the player in the picture
 that they cannot walk up to. `Home` is in **window chunks** — chunks of the
 player's movement window, where world chunk 0 is `PlayerProbe.window_origin_chunk` — so the
@@ -227,7 +259,7 @@ place a window chunk becomes storage's spelling, which counts a chunk before the
 from `World.negative_origin`. `bash lab/native/pointer/walk-probe.sh s` holds a key in the
 client's own loop and prints each place the region was. The pose is still counted from chunk (1, 1) — `Frame.origin_x` —
 whatever the region's place: `Frame.view_eye` is the signed shift for the renderer, and
-`Client.aim_cast` goes back into the player's window by the pose's origin, not the
+`Action.aim_cast` goes back into the player's window by the pose's origin, not the
 region's. One client frame in milliseconds, native C, `--gpu off`, from the spawn pose,
 40,656 faces, the `client` phase of `bash lab/native/paint/run.sh`, medians of five:
 
@@ -254,7 +286,7 @@ script draws 1024 from open ground in the middle of the region, in milliseconds:
 
 So **1024 needs the pool**: on one thread it misses the tick almost everywhere and on two
 it is within half a millisecond of it looking down. The client's epilogue says so. The numbers
-the client prints live above `sizes()` in `native/client.bend` and are the spawn's
+the client prints live above `sizes()` in `native/size.bend` and are the spawn's
 eight-thread column plus the measured 0.03 ms tick.
 
 **The front half of a frame is done a chunk at a time.** The painter is handed the slabs
@@ -277,8 +309,8 @@ than one and not 8x, and it cannot be cut from here: `vendor/bend` is not ours t
 **The pool costs a small frame.** Forking the chunks wakes it, so 32x32 looking east is
 0.33 ms on one thread and 0.82 on eight. Every size still fits the tick many times over.
 
-**The world is kept one chunk at a time, and an edit is 5 ms.** `Client.World` holds a
-slab of faces per chunk (`Client.Slab`), each extracted from its own chunk with air outside
+**The world is kept one chunk at a time, and an edit is 5 ms.** `Slabs.World` holds a
+slab of faces per chunk (`Slabs.Slab`), each extracted from its own chunk with air outside
 it, each face with its corner levels. An edit rebuilds the one slab it is in and merges
 the region again (2.55 ms, `slab`) and rebuilds the collision region (2.40 ms, `collide`);
 a region that moved builds the five slabs that came into view one a frame. The whole
@@ -335,7 +367,7 @@ of guessing. Bend 2.0.32 has no stdin, so the choice is a flag and not a prompt.
 Quote the numbers as measured on the machine named in
 `lab/native/2026-09-30-native-renderer-investigation.md`, never as a property of
 the renderer. Re-run the benchmark before changing any of them, and never widen
-the window on an extrapolation. `native/client_test.bend` divides the rate back
+the window on an extrapolation. `native/size_test.bend` divides the rate back
 out of each cost field rather than reading it from a table, so a drifted
 measurement fails the gate.
 
@@ -426,14 +458,15 @@ a third.
   when the room answers (`R`, `Stores.answered`). One request waits at a time and a click
   while one waits is dropped, so an answer is never matched to the wrong click; a quick move
   there is a plain click, and a furnace is loaded one item a request, which is the room's
-  rule. Out of a room the same clicks apply the same rules at once. `tick.shared` is the
+  rule. Out of a room the same clicks apply the same rules at once. `Play.tick.room` with `roomed` set is the
   room's tick: it marks the store as the room's and does not step the furnaces.
 - **A block comes away when the dig button has been held on it long enough.**
-  `Inventory.mining_duration` says how long, with what is in hand; `Client.Dig` is the cell
+  `Inventory.mining_duration` says how long, with what is in hand; `Digging.Dig` (`world/digging.bend`, where
+  `Digging.step` is the rule and `a_refused_dig_gets_nowhere` its law) is the cell
   being dug and the time so far, and a bar under the crosshair fills with it. Looking at
   another cell or letting go starts over, and a block the hand cannot break gets nowhere. A
   press alone digs nothing, so the tests dig by holding (`dig_held` in
-  `native/client_test.bend`). A hit on a room's mob is still the press.
+  `native/play_test.bend`). A hit on a room's mob is still the press.
 - **Shift and the left button send a stack without carrying it** (`Screen.quick.at`): between
   the hotbar and the rows, into an open chest or furnace, and back out. Shift is the sneak
   bit: `Frame.key_bit` maps the runtime's codes for Shift to it and for Control to the sprint
@@ -456,7 +489,7 @@ the browsers are in, and its authority is still `world/multiplayer.bend`: the se
 plain TCP port (`server/native-bridge.mjs`, opened by `scripts/play-server.mjs` on the HTTP
 port plus one) that turns short ASCII lines into the JSON messages a browser sends and
 back. `native/net.bend` is the lines on the Bend side and owns no socket;
-`native/client.bend` owns the socket and reads it once a tick. `docs/MULTIPLAYER.md` has
+`native/room.bend` owns the socket and reads it once a tick. `docs/MULTIPLAYER.md` has
 the table of lines.
 
 - **The bridge is on the server because Bend 2.0.32 cannot be a WebSocket client cheaply**:
@@ -469,7 +502,7 @@ the table of lines.
   collision region is rebuilt, or another player's block is in the picture and not in the
   way).
 - **The socket is linear, so it rides in the loop's state.** `App<S>` takes a `Type`, so the
-  window runs `Client.Session` — the client and its `Link` — and `Client.app()` is still
+  window runs `Room.Session` — the client and its `Link` — and `Play.app()` is still
   the client alone, which is what the probes and tests drive.
 - **The read never waits.** `TCP.poll(socket, max, 0)` answers `None` when nothing has
   arrived, `Some{""}` when the peer closed, and at most `read_most()` bytes otherwise; a
@@ -487,10 +520,10 @@ the table of lines.
   font does not have is a space.
 - **A hit, a pickup and being hurt are the room's, asked the way a browser asks.** The dig
   key with a mob under the crosshair is `A <mob> <damage>` and leaves the block behind
-  alone (`tick.guarded`); an item on the ground in reach that the bag has room for is
+  alone (`Play.tick.room`'s `guarded`); an item on the ground in reach that the bag has room for is
   `K <drop>`; the room answers a pickup with `G <item> <amount>` and a mob's blow is
   `U <amount>`. Every rule is `world/`'s: which mob the ray meets is
-  `Entities.aim_distance` and `Entities.body_height`, the damage `Inventory.melee_damage`,
+  `Entities.aim_step` (with `kind_is_mob`, `aim_distance` and `body_height`), the damage `Inventory.melee_damage`,
   the reach `MultiplayerMobs.melee_range`, the item `Entities.nearest_drop`, the harm
   `Player.damage`; and the room judges each from the pose it holds. The session works out
   the mob and the item **before** the client's tick, from the pose the tick starts with, and
@@ -504,15 +537,15 @@ the table of lines.
 - **A pose is the world's coordinates as whole thousandths, signed.** Bend 2.0.32 reads and
   writes no decimal, so `Net.milli` is the number on the wire and the bridge divides by a
   thousand. A room counts a player from the world's origin and the client from its movement
-  window's first cell: `Client.place_of` and `Client.stood_at` are the only two places that
-  cross, by `Client.window_origin`. The client says where it is when that changed, at most
+  window's first cell: `Room.place_of` and `Room.stood_at` are the only two places that
+  cross, by `Play.window_origin`. The client says where it is when that changed, at most
   every third tick; the room's `Multiplayer.valid_pose` and `MultiplayerMoves.step` judge
   it as they judge a browser's, and a refused move comes back as `C` and the player is put
-  there (`Client.recalled`).
+  there (`Room.recalled`).
 - **In a room the hour is the room's, and it is worked out from the time, not counted.**
   The room's day is `web/daylight.js`'s, 78.54 s, not the client's twelve minutes. The
   bridge says the angle of the day and its length (`T`, on joining and when someone calls
-  the morning); `Client.Hour` keeps the clock that was and when, and every tick reads
+  the morning); `Hour.Hour` keeps the clock that was and when, and every tick reads
   `IO.now` and works out the clock now (`Sky.clock_after`). A count of ticks would fall
   behind by every late frame. Only the sun, the air and the light read the hour: the clouds
   still drift on the client's own `clock`, or they would cross the sky nine times as fast.
@@ -524,9 +557,11 @@ the table of lines.
   between two lists, so a mob moves in steps of a fifth of a second. A thing's `kind` is
   `Body`'s: 1 to 6 a mob, 10 and its profession a villager, 1000 and its id an item. A mob
   and an item carry the room's `id`, which is what a hit and a pickup name.
-- **The other players ride beside the socket, not in the client.** `Peers` is in the `Link`,
+- **The other players ride beside the socket, not in the client.** `Peers` (what the room has said, `Told`, and what the client has left to say, `Outbox`) is in the `Link`,
   `Net.inbox` is handed the list and answers it changed, and `session.view` hands it to
-  `Client.view_among`. A `Client` record has twelve fields and every pattern lists them all.
+  `Play.view_among`. A `Client` is six fields, three of them records (`Avatar`, `Ground`, `Setup`), so a
+  change to the player lists the player's fields and not all of the client's; `Play.player_of`, `with_bag` and
+  the rest are how a test or a probe reaches one.
 - **A player is painted among the faces, not over them.** The painter has no depth buffer:
   `native/body.bend` hands each side of each box to `Paint.tiles_frame_among` with how far
   its box is, and it goes into the same buckets as the blocks, ahead of them. So a wall
@@ -548,7 +583,7 @@ poses, both ways, the hour, the mobs of a room that simulates its world, an item
 down beside the client picked up into its bag, and five dirt taken out of a chest the
 browser stocked, by a click on its screen. Verified live on one machine with the real window: server and native
 client inside WSL2, the browser on Windows, for blocks; for poses, the real window against
-the real server and a WebSocket player that printed the native client's poses. `native/client_test.bend` holds which mob is under the crosshair, which item is asked for,
+the real server and a WebSocket player that printed the native client's poses. `native/room_test.bend` holds which mob is under the crosshair, which item is asked for,
 the harm and the guarded dig. **Not played end to end:** a hit landing on a real room's
 mob, and a zombie hurting a native player; the hit is held as a line the bridge turns into
 the room's request, not as a mob that lost health. **Not yet
@@ -622,19 +657,19 @@ they mean.
 
 ## Laws
 
-`world/LAWS.bend` states 91 laws and `world/PROOF.bend` closes every one; `npm run proof`
+`world/LAWS.bend` states 95 laws and `world/PROOF.bend` closes every one; `npm run proof`
 prints `ALL PROOFS CHECK` in about nine seconds. There are two kinds, and the difference
 matters:
 
 - **A law with a `for` holds for every value of what it names** — every log, every bag,
-  every coordinate. There are 30. The ones the game leans on: an edit reads back from any
+  every coordinate. There are 31. The ones the game leans on: an edit reads back from any
   log (`an_edit_reads_back`); an edit changes no other cell (`an_edit_keeps_every_other_cell`);
   a refused mining or placing returns the bag it was given (`a_refused_mining_keeps_the_bag`,
   `a_refused_placing_keeps_the_bag`); mining, placing, adding and removing never change how
   many slots a bag has; the terrain rule answers air at and above a column's height.
 - **A law without one is a value**, computed by the checker from the same definition the
   game runs: a block id, a recipe, what a pickaxe breaks, the default seed's terrain at a
-  cell. There are 61. They say the table is what the game depends on; they do not say the
+  cell. There are 64. They say the table is what the game depends on; they do not say the
   rule is right for inputs nobody listed.
 
 Do not call a law universal because it is in `LAWS.bend`. Say which kind it is.
@@ -721,7 +756,7 @@ above):
 `.bend` or `.c` under `native/` or `world/` is newer than the binary, and runs it from
 the repository root whatever directory it was called from.
 
-## Bend 2 authoring rules (pinned 2.0.32)
+## Bend 2 authoring rules (established against 2.0.32; the pin is now 2.0.35 and the gate passes, but these were not re-measured)
 
 These were established by experiment against the pinned compiler. They are not
 obvious from the guide and each one costs a failed check to rediscover, so keep

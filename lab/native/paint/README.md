@@ -449,3 +449,23 @@ Bend 2.0.35 built from the pin, the refactored tree, the same `RUNS=5 THREAD_COU
 Across the phases of a millisecond or more the median ratio of AC to battery is 0.87 (0.77 to 1.19): the
 single-thread phases are 14% to 21% faster plugged in, and the eight-thread phases are not consistently faster
 (several are within 20% either way, which this benchmark's run-to-run spread does not rule out). Digests agreed.
+
+### The live client on macOS, with the GPU on and off
+
+`bash lab/native/client-probe/run-pace.sh --size=N --gpu on|off` opens a real window and walks the player across
+open ground for 900 frames (869 presented), timing each. The same Apple M1 Pro, plugged in, Low Power Mode off,
+Bend 2.0.35 built from the pin, the client at the commit that adds this section:
+
+| window | `--gpu` | frames a second | frames over the tick by more than 1 ms | longest frame |
+| --- | --- | ---: | ---: | ---: |
+| 512 | on | 117.6 | 3 | 19 ms |
+| 512 | off | 119.8 | 0 | 11 ms |
+| 1024 | on | 77.3 | 24 | 27 ms |
+| 1024 | off | 94.9 | 0 | 18 ms |
+
+The client runs on this machine with either setting. `--gpu on` is slower, by 2% at 512 and by 19% at 1024 with
+late frames, and that is expected: the painter has no device leaf, so the one bang the program contains
+(`Image.drop!`, freeing the last frame's image) is the only thing sent to the device. One run of each, so read the
+512 pair as the same. These rates are about twice the 60 Hz that the WSL sections record as the ceiling, so that
+ceiling is a property of the WSL/X11 pacing and not of the client. A picture was not captured: the shell used had
+no Screen Recording permission.

@@ -21,6 +21,10 @@ def share_blocks(blocks: List<&1, U32>) -> List<&2, U32>:
     case +block <> rest:
       block <> share_blocks(rest)
 
+# The encoded cell of stored cell 0, the middle of the movement window.
+def window_middle() -> Nat:
+  32768n
+
 def domain_cell(+stored_cell: Nat) -> Nat:
   # Folds a stored world cell onto the player's movement window, so world cell
   # 0 and world cell negative_origin() both land on 32768. Every stored cell at
@@ -31,8 +35,8 @@ def domain_cell(+stored_cell: Nat) -> Nat:
   # points below are the only ones that apply them.
   +negative = Nat.is_ge(stored_cell, Nat.div(World.negative_origin(), 2n))
   Bool.pick(Nat, negative,
-    Nat.sub(32768n, Nat.sub(World.negative_origin(), stored_cell)),
-    Nat.add(32768n, stored_cell))
+    Nat.sub(window_middle(), Nat.sub(World.negative_origin(), stored_cell)),
+    Nat.add(window_middle(), stored_cell))
 
 # ---------------------------------------------------------------------------
 # Storage guard
@@ -52,6 +56,24 @@ def movement_window() -> Nat:
 # positive world cell the decode answers with a negative one.
 def positive_cell_limit() -> Nat:
   Nat.div(World.negative_origin(), 2n)
+
+# The inverse of `domain_cell`. The player and the raycast speak the encoded window while
+# `WorldState` edits and the renderer speak stored cells, so an edit has to come back across
+# that fold or it lands in the wrong cell. A cell the encoding cannot name is refused, which
+# is the same bound the region guard uses.
+def stored_cell.within(inside: Bool, +cell: Nat) -> Maybe<&1, Nat>:
+  match inside:
+    case True{}:
+      Some{cell}
+    case False{}:
+      None{}
+
+def stored_cell(+domain: Nat) -> Maybe<&1, Nat>:
+  Bool.pick(Maybe<&1, Nat>, Nat.is_ge(domain, window_middle()),
+    stored_cell.within(Nat.is_lt(Nat.sub(domain, window_middle()), positive_cell_limit()),
+      Nat.sub(domain, window_middle())),
+    stored_cell.within(Nat.is_lt(Nat.sub(window_middle(), domain), positive_cell_limit()),
+      Nat.sub(World.negative_origin(), Nat.sub(window_middle(), domain))))
 
 # Storage spells a negative cell as negative_origin() + cell, so a stored cell
 # at or above negative_origin() is a second spelling of a cell the positive
@@ -162,7 +184,7 @@ def copy_chunk(
 # The chunk of the movement window that holds world chunk 0. The window is 32768 cells
 # either side of the origin, so it is 2048 chunks in.
 def window_origin_chunk() -> Nat:
-  Nat.div(32768n, World.chunk_size())
+  Nat.div(window_middle(), World.chunk_size())
 
 # A chunk of the movement window as storage spells it. The window counts chunks from its
 # own first one, so a window chunk is always a plain number and a run of them is

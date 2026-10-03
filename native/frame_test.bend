@@ -690,6 +690,47 @@ def buttons_are_the_action_keys() -> IO(Unit):
     check(U32.is_eq(keys_of(Probe.input_from([Mouse{64, 64, 0, False{}}], Probe.left_bit())), 0),
       "releasing the left button did not let it go")
 
+# --- key edges ---------------------------------------------------------------
+#
+# A held key must act once, not sixty times a second, so every action is an edge against the
+# mask the previous tick ended with. The dig is the key or the left button and the place is
+# the key or the right button; the save is a key; and escape quits on a press and only where
+# no screen is open, because a screen is what it closes there.
+def keys_are_edges_and_not_levels() -> IO(Unit):
+  +dig = Probe.key_bit(Probe.dig_code())
+  +place = Probe.key_bit(Probe.place_code())
+  +save = Probe.key_bit(Probe.save_code())
+  +escape = Probe.key_bit(Probe.escape_code())
+  do IO<Unit>:
+    Unit <- check(Probe.wants_dig(0, dig), "a fresh dig press did not count as an edge")
+    Unit <- check(Bool.not(Probe.wants_dig(dig, dig)), "a held dig key repeated instead of firing once")
+    Unit <- check(Probe.wants_dig(0, Probe.left_bit()), "a fresh left click did not count as a dig")
+    Unit <- check(Bool.not(Probe.wants_dig(Probe.left_bit(), Probe.left_bit())),
+      "a held left button repeated instead of firing once")
+    Unit <- check(Probe.wants_place(0, place), "a fresh place press did not count as an edge")
+    Unit <- check(Bool.not(Probe.wants_place(place, place)),
+      "a held place key repeated instead of firing once")
+    Unit <- check(Probe.wants_place(0, Probe.right_bit()), "a fresh right click did not count as a place")
+    Unit <- check(Bool.not(Probe.wants_dig(0, place)), "a place press was read as a dig press")
+    Unit <- check(Bool.not(Probe.wants_place(0, dig)), "a dig press was read as a place press")
+    Unit <- check(Probe.wants_save(0, save), "a fresh save press did not count as an edge")
+    Unit <- check(Bool.not(Probe.wants_save(save, save)), "a held save key repeated instead of firing once")
+    Unit <- check(Probe.quitting_from(False{}, 0, escape, False{}), "an escape press did not quit")
+    Unit <- check(Bool.not(Probe.quitting_from(False{}, escape, escape, False{})),
+      "a held escape quit again instead of waiting for a press")
+    Unit <- check(Bool.not(Probe.quitting_from(False{}, 0, escape, True{})),
+      "escape quit the client while a screen was open, where it closes the screen")
+    check(Probe.quitting_from(True{}, escape, 0, True{}), "the window's close did not quit")
+
+# The dig button is a level: held, the dig goes on, and either the key or the left button
+# holds it.
+def digging_is_a_level() -> IO(Unit):
+  do IO<Unit>:
+    Unit <- check(Probe.digging(Probe.key_bit(Probe.dig_code())), "the dig key did not dig")
+    Unit <- check(Probe.digging(Probe.left_bit()), "the left button did not dig")
+    Unit <- check(Bool.not(Probe.digging(Probe.key_bit(Probe.place_code()))), "the place key dug")
+    check(Bool.not(Probe.digging(0)), "no key dug")
+
 # --- the region follows the player ---------------------------------------------
 #
 # The region is five chunks per axis and `Home` is its first, so its middle chunk is the
@@ -776,6 +817,8 @@ def main() -> IO(Unit):
     input_accumulates_look()
     region_is_multi_chunk()
     buttons_are_the_action_keys()
+    keys_are_edges_and_not_levels()
+    digging_is_a_level()
     region_follows_the_player()
     collision_region_keeps_the_player_inside()
     the_eye_is_shifted_into_the_region()

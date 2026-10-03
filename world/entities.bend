@@ -21,6 +21,11 @@ def kind_is_animal(+kind: U32) -> Bool:
     Bool.or(U32.is_eq(kind, 5), U32.is_eq(kind, 6))
   )
 
+# A mob is one of the roster's: an animal or a hostile. Anything else a client draws in a room
+# — a villager, an item on the ground — is not a mob and is not hit like one.
+def kind_is_mob(+kind: U32) -> Bool:
+  Bool.or(kind_is_hostile(kind), kind_is_animal(kind))
+
 # How many kinds the roster holds. `spawn` draws from it, so the spawn table and
 # the roster cannot drift apart.
 def kind_count() -> Nat:
@@ -141,6 +146,31 @@ def aim_distance(
   +far = F32.min(F32.min(reach, aim.leave(ox, dx, F32.sub(x, w), F32.add(x, w))),
     F32.min(aim.leave(oy, dy, y, F32.add(y, height)), aim.leave(oz, dz, F32.sub(z, w), F32.add(z, w))))
   choose_f32(F32.is_le(near, far), near, F32.neg(1.0))
+
+# The mob a player's ray has found so far: its id, how far along the ray it is, and whether
+# there is one. `away` starts at the reach and is the limit the next body is tested out to.
+type Aimed is Data:
+  Aimed{id: U32, away: F32, found: Bool}
+
+def aim_none(reach: F32) -> Aimed:
+  Aimed{0, reach, False{}}
+
+def aim_found(aimed: Aimed) -> Bool:
+  Aimed{id, away, found} = aimed
+  found
+
+def aim_id(aimed: Aimed) -> U32:
+  Aimed{id, away, found} = aimed
+  id
+
+# One more body tested against the ray: it is the mob under the crosshair when it is a mob and
+# the ray meets it nearer than the one found so far, and otherwise nothing changes. The caller
+# walks its bodies and keeps the answer between them.
+def aim_step(+best: Aimed, +ox: F32, +oy: F32, +oz: F32, +dx: F32, +dy: F32, +dz: F32,
+  +id: U32, +kind: U32, +x: F32, +y: F32, +z: F32) -> Aimed:
+  Aimed{best_id, +best_away, best_found} = best
+  +away = aim_distance(ox, oy, oz, dx, dy, dz, x, y, z, body_height(kind), best_away)
+  Bool.pick(Aimed, Bool.and(kind_is_mob(kind), F32.is_ge(away, 0.0)), Aimed{id, away, True{}}, best)
 
 def combat_mobs(state: CombatResult) -> List<&2, Mob>:
   CombatResult{mobs, drops, hit} = state

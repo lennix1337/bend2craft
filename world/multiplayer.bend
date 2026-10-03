@@ -69,12 +69,6 @@ def max_block() -> U32:
 def max_batch() -> Nat:
   4096n
 
-def chest_block() -> U32:
-  26
-
-def furnace_block() -> U32:
-  11
-
 def empty() -> Room:
   Room{0, Nil{}, Chests.empty(), Furnaces.empty()}
 
@@ -186,7 +180,7 @@ def chest_allows.found(lookup: Chests.Lookup, +block: U32) -> Bool:
     case Chests.ChestMissing{}:
       True{}
     case Chests.ChestFound{+slots}:
-      Bool.or(U32.is_eq(block, chest_block()), slots_empty(slots))
+      Bool.or(U32.is_eq(block, World.chest_block()), slots_empty(slots))
 
 # An edit may replace a chest only while the chest is empty.
 def chest_allows(+chests: Chests.World, edit: WorldState.Edit) -> Bool:
@@ -214,7 +208,7 @@ def chest_step(+ok: Bool, +edit: WorldState.Edit, +chests: Chests.World) -> Step
   match ok:
     case True{}:
       WorldState.Edit{+x, +y, +z, +block} = edit
-      step.block(U32.is_eq(block, chest_block()), x, y, z, chests)
+      step.block(U32.is_eq(block, World.chest_block()), x, y, z, chests)
     case False{}:
       Step{chests, Nil{}}
 
@@ -255,7 +249,7 @@ def furnace_step(+ok: Bool, +edit: WorldState.Edit, +furnaces: Furnaces.World) -
   match ok:
     case True{}:
       WorldState.Edit{+x, +y, +z, +block} = edit
-      furnace_step.block(U32.is_eq(block, furnace_block()), x, y, z, furnaces)
+      furnace_step.block(U32.is_eq(block, World.furnace_block()), x, y, z, furnaces)
     case False{}:
       FurnaceStep{furnaces, Nil{}}
 

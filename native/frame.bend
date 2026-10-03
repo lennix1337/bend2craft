@@ -273,6 +273,21 @@ def held(keys: U32, +code: U32) -> Bool:
 def shift_bit() -> U32:
   64
 
+# The keys the client acts on, by the runtime's own codes. `F` digs from the keyboard and the
+# left button digs from the mouse; `R` places and so does the right button; `T` saves; `E` is
+# the inventory's key (`Screen.key`), as in the game this one is modelled on.
+def dig_code() -> U32:
+  102
+
+def place_code() -> U32:
+  114
+
+def save_code() -> U32:
+  116
+
+def escape_code() -> U32:
+  27
+
 def key_bit(+code: U32) -> U32:
   Bool.pick(U32, U32.is_eq(code, 119), 1,
     Bool.pick(U32, U32.is_eq(code, 115), 4,
@@ -281,15 +296,15 @@ def key_bit(+code: U32) -> U32:
           Bool.pick(U32, U32.is_eq(code, 32), 16,
             Bool.pick(U32, U32.is_eq(code, 16), 32,
               Bool.pick(U32, U32.is_eq(code, 17), 64,
-                Bool.pick(U32, U32.is_eq(code, 27), 128,
+                Bool.pick(U32, U32.is_eq(code, escape_code()), 128,
                   Bool.pick(U32, U32.is_eq(code, 101), 256,
-                    Bool.pick(U32, U32.is_eq(code, 114), 512,
-                      Bool.pick(U32, U32.is_eq(code, 116), 1024,
+                    Bool.pick(U32, U32.is_eq(code, place_code()), 512,
+                      Bool.pick(U32, U32.is_eq(code, save_code()), 1024,
                         Bool.pick(U32, U32.is_eq(code, arrow_up()), 2048,
                           Bool.pick(U32, U32.is_eq(code, arrow_down()), 4096,
                             Bool.pick(U32, U32.is_eq(code, arrow_left()), 8192,
                               Bool.pick(U32, U32.is_eq(code, arrow_right()), 16384,
-                                Bool.pick(U32, U32.is_eq(code, 102), 131072,
+                                Bool.pick(U32, U32.is_eq(code, dig_code()), 131072,
                                   Bool.pick(U32, Bool.or(U32.is_eq(code, 65595), U32.is_eq(code, 65598)), 32,
                                     Bool.pick(U32, Bool.or(U32.is_eq(code, 65592), U32.is_eq(code, 65596)), 64,
                                       0))))))))))))))))))
@@ -334,6 +349,37 @@ def left_bit() -> U32:
 
 def right_bit() -> U32:
   65536
+
+# An edge, not a level: a held key must not dig sixty times a second. A key is down now and
+# was up in the previous tick's mask, which is the only thing an edge means. Testing the bit
+# against the previous mask is what makes this work for every key code rather than only the
+# first one.
+def edge(keys: U32, previous: U32, +bit: U32) -> Bool:
+  down = U32.is_eq(U32.and(bit, keys), bit)
+  was_down = U32.is_eq(U32.and(bit, previous), 0)
+  Bool.and(down, was_down)
+
+def wants_dig(+previous: U32, +keys: U32) -> Bool:
+  Bool.or(edge(keys, previous, key_bit(dig_code())), edge(keys, previous, left_bit()))
+
+def wants_place(+previous: U32, +keys: U32) -> Bool:
+  Bool.or(edge(keys, previous, key_bit(place_code())), edge(keys, previous, right_bit()))
+
+def wants_save(previous: U32, keys: U32) -> Bool:
+  edge(keys, previous, key_bit(save_code()))
+
+# Escape asks to leave; the window manager's own close is noticed while the events are shared
+# and quits just the same.
+#
+# Escape is read as the press it is, and not while the inventory screen is open: there it
+# closes the screen, and a key still held on the tick after must not then close the client.
+def quitting_from(closing: Bool, previous: U32, keys: U32, screen: Bool) -> Bool:
+  Bool.or(closing, Bool.and(Bool.not(screen), edge(keys, previous, key_bit(escape_code()))))
+
+# Whether the dig button is down: the left button or the dig key, as a level.
+def digging(+mask: U32) -> Bool:
+  Bool.or(U32.is_eq(U32.and(mask, left_bit()), left_bit()),
+    U32.is_eq(U32.and(mask, key_bit(dig_code())), key_bit(dig_code())))
 
 def button_bit(+button: U32) -> U32:
   Bool.pick(U32, U32.is_eq(button, 0), left_bit(),

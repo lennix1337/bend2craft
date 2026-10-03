@@ -5,7 +5,6 @@ import ../../../native/voxel.bend as Voxel
 import ../../../native/frame.bend as Frame
 import ../../../native/scenery.bend as Scenery
 import ../../../native/sky.bend as Sky
-import ../../../native/client.bend as Client
 import ../../../native/bag.bend as Bag
 import ../../../native/hud.bend as Hud
 import ../../../native/net.bend as Net
@@ -14,10 +13,12 @@ import ../../../native/tag.bend as Tag
 import ../../../native/screen.bend as Screen
 import ../../../native/stores.bend as Stores
 import ../../../world/inventory.bend as Inventory
+import ../../../native/play.bend as Play
+import ../../../native/slabs.bend as Slabs
 
 # The client's frame as numbers, so a picture can be looked at without a window.
 #
-# Each view is painted the way `Client.image_at` paints it — the same faces, the same
+# Each view is painted the way `Play.image_at` paints it — the same faces, the same
 # camera, the same overlay, the same hour — as one tile, and printed as a `view=` line
 # followed by a line of its pixels, row by row. `lab/native/paint/shot.sh` turns each into a
 # PNG.
@@ -37,20 +38,20 @@ def pixels_text(cells: List<&1, U32>, acc: String) -> String:
 def frame_text(frame: Array<U32>) -> String:
   pixels_text(List.reverse(&1, U32, Array.to_list(~U32, frame)), "")
 
-def frame_at(+world: Client.World, +eye: Voxel.Vec, +pose: Frame.Pose, +depth: Nat, +clock: U32,
+def frame_at(+world: Slabs.World, +eye: Voxel.Vec, +pose: Frame.Pose, +depth: Nat, +clock: U32,
   +others: List<&2, Net.Other>, things: List<&2, Net.Thing>, +bag: Bag.Bag) -> Array<U32>:
-  Scenery.pixels_among(Client.w_groups(world), eye, Frame.yaw_of(pose), Frame.pitch_of(pose), depth,
+  Scenery.pixels_among(Slabs.w_groups(world), eye, Frame.yaw_of(pose), Frame.pitch_of(pose), depth,
     Paint.quads.after(
       Screen.quads(bag, U32.shln((1 : U32), depth), Hud.overlay(bag, U32.shln((1 : U32), depth), 20, 20)),
-      Tag.quads(Client.labels(others, Client.w_home(world)), eye, Frame.yaw_of(pose), Frame.pitch_of(pose),
+      Tag.quads(Play.labels(others, Slabs.w_home(world)), eye, Frame.yaw_of(pose), Frame.pitch_of(pose),
         depth, Paint.QNil{})),
-    Client.region_shift(Frame.home_x(Client.w_home(world))),
-    Client.region_shift(Frame.home_z(Client.w_home(world))), clock, clock,
-    Client.bodies(others, things, Client.w_home(world)))
+    Play.region_shift(Frame.home_x(Slabs.w_home(world))),
+    Play.region_shift(Frame.home_z(Slabs.w_home(world))), clock, clock,
+    Play.bodies(others, things, Slabs.w_home(world)))
 
-def frame_of(+world: Client.World, +pose: Frame.Pose, +depth: Nat, +clock: U32,
+def frame_of(+world: Slabs.World, +pose: Frame.Pose, +depth: Nat, +clock: U32,
   others: List<&2, Net.Other>, things: List<&2, Net.Thing>) -> Array<U32>:
-  frame_at(world, Frame.view_eye(Frame.eye_of(pose), Client.w_home(world)), pose, depth, clock, others,
+  frame_at(world, Frame.view_eye(Frame.eye_of(pose), Slabs.w_home(world)), pose, depth, clock, others,
     things, Bag.start())
 
 # The inventory screen open over a view: a log in the crafting grid, which shows the planks
@@ -105,21 +106,21 @@ def furnace_screen() -> Bag.Bag:
         0, Frame.left_bit(), 0.0, 0.0, 512), 56, 512),
       0, Frame.left_bit(), 0.0, 0.0, 512))
 
-def shot_screen(name: String, +world: Client.World, +pose: Frame.Pose, +clock: U32, bag: Bag.Bag) -> IO(Unit):
+def shot_screen(name: String, +world: Slabs.World, +pose: Frame.Pose, +clock: U32, bag: Bag.Bag) -> IO(Unit):
   do IO<Unit>:
     head : Unit <- IO.print("view=" ++ name ++ " size=512")
-    IO.print(frame_text(frame_at(world, Frame.view_eye(Frame.eye_of(pose), Client.w_home(world)), pose, 9n,
+    IO.print(frame_text(frame_at(world, Frame.view_eye(Frame.eye_of(pose), Slabs.w_home(world)), pose, 9n,
       clock, [], [], bag)))
 
 # A view with a room's other players in it, and what the room simulates, where the room
 # would say they stand.
-def shot_among(name: String, +world: Client.World, +pose: Frame.Pose, +clock: U32,
+def shot_among(name: String, +world: Slabs.World, +pose: Frame.Pose, +clock: U32,
   others: List<&2, Net.Other>, things: List<&2, Net.Thing>) -> IO(Unit):
   do IO<Unit>:
     head : Unit <- IO.print("view=" ++ name ++ " size=512")
     IO.print(frame_text(frame_of(world, pose, 9n, clock, others, things)))
 
-def shot(name: String, +world: Client.World, +pose: Frame.Pose, +clock: U32) -> IO(Unit):
+def shot(name: String, +world: Slabs.World, +pose: Frame.Pose, +clock: U32) -> IO(Unit):
   shot_among(name, world, pose, clock, [], [])
 
 # One of each thing a room simulates, east of the outdoor camera and turned every way: the
@@ -154,8 +155,8 @@ def morning() -> U32:
 
 def main() -> IO(Unit):
   do IO<Unit>:
-    +world : Client.World = Client.world_built(WorldState.empty(), Frame.home_start())
-    +outside : Client.World = Client.world_built(WorldState.empty(), Frame.Home{2048n, 2047n})
+    +world : Slabs.World = Slabs.world_built(WorldState.empty(), Frame.home_start())
+    +outside : Slabs.World = Slabs.world_built(WorldState.empty(), Frame.Home{2048n, 2047n})
     a : Unit <- shot("spawn", world, spawn_pose(), morning())
     b : Unit <- shot("north", outside, outdoor_pose(0.0, 0.0), morning())
     c : Unit <- shot("east", outside, outdoor_pose(1.5708, 0.0), morning())

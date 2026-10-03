@@ -291,7 +291,7 @@ step and leaves out only the X transfer.
 
 The action keys are deliberately not in a timed phase: dig and save both reach the
 filesystem, and a benchmark that writes the world twenty times measures the disk
-rather than the tick. The edit and save paths are covered by `native/client_test.bend`.
+rather than the tick. The edit and save paths are covered by `native/play_test.bend`.
 
 ## Measured
 

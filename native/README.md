@@ -10,7 +10,13 @@ from there.
 
 | file | owns |
 | --- | --- |
-| `client.bend` | the client: the window, the event fold, the tick, the dig/place/save decisions |
+| `size.bend` | the resolution selector: the sizes, their measured cost, the table and the `--size` flag |
+| `client.bend` | the entry point: the window, the pointer grab and the frame loop |
+| `play.bend` | the client alone: the player, the world it holds, one tick, one frame, the save |
+| `action.bend` | the ray as the world's cell, dig and place, the dig timer, which blocks open a screen |
+| `slabs.bend` | the world's faces kept a chunk at a time |
+| `hour.bend` | a room's clock |
+| `room.bend` | a multiplayer room from the client's side: the socket, mobs, pickups, harm, joining |
 | `voxel.bend` | the camera, the region grid, and the per-pixel DDA raycaster the face renderer is checked against |
 | `face.bend` | the visible-face renderer: one pass over the bulk cells, bucket, project; the ray walk the pointer's ray and the painter's gate use |
 | `paint.bend` | what draws the window: the faces projected once and cut at the near plane, dealt down a fork tree to 64-pixel tiles, each painted nearest first in its own array, a pixel written once |
@@ -31,7 +37,7 @@ from there.
 | `player.bend` | the player region, collision, the chunk seam, and `Player.raycast` |
 | `save.bend` | the `B2CW:1` snapshot codec and the legacy browser/multiplayer migration |
 | `main.bend`, `world.bend` | the 16x16 feasibility slice: a cursor, one editable cell, a two-byte save |
-| `client_test.bend` and the `*_test.bend` files | the focused regressions, all in `scripts/test-suite.sh` |
+| the `*_test.bend` files | the focused regressions, all in `scripts/test-suite.sh` |
 
 ## Building and running
 
@@ -107,7 +113,7 @@ size cheaper than the tick still presents at 60 rather than at the quotient.
 Bend 2.0.32 has no stdin, which is why the choice is a command-line flag rather
 than a prompt: `IO` offers `print`, `args`, `get_env`, `sleep`, `now`,
 `thread_count` and `random_u32`, and nothing that reads a key from a terminal.
-`native/client_test.bend` divides the rate back out of each cost field rather than
+`native/size_test.bend` divides the rate back out of each cost field rather than
 reading it out of a table, so a re-measurement that drifts fails the test.
 
 ## Controls
@@ -175,8 +181,9 @@ saves; `native/save.bend` reads those instead, as a migration.
 
 ## Window size
 
-`window_width()` in `client.bend` is the size the benchmarks measure and the
-selector defaults to, and `frame_depth()` is the matching quadtree depth. Every size
-the selector offers fits the tick: `lab/native/paint/README.md` has the measured
+`native/size.bend` is the selector: the sizes, what each costs, the table printed before
+the window opens, and which `--size` flag wins. 128 is the default, and the benchmarks
+measure it (`window_width()` and `frame_depth()` live in
+`lab/native/client-probe/frame_bench.bend` now). Every size the selector offers fits the tick: `lab/native/paint/README.md` has the measured
 per-size, per-thread table behind the selector, and
 `lab/native/2026-09-30-native-renderer-investigation.md` has the investigation.

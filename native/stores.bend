@@ -1,4 +1,5 @@
 import Base
+import ../world/world.bend as World
 import ../world/inventory.bend as Inventory
 import ../world/chest.bend as Chest
 import ../world/chests.bend as Chests
@@ -409,12 +410,6 @@ def roomed(store: Bag.Store) -> Bag.Store:
 
 # --- digging -----------------------------------------------------------------------
 
-def chest_block() -> U32:
-  26
-
-def furnace_block() -> U32:
-  11
-
 def any_held(slots: List<&2, Chest.Slot>) -> Bool:
   match slots:
     case Nil{}:
@@ -424,7 +419,7 @@ def any_held(slots: List<&2, Chest.Slot>) -> Bool:
 
 # A chest that still holds something cannot be dug: it is emptied first, as in the browser.
 def locked(store: Bag.Store, +block: U32, +x: Nat, +y: Nat, +z: Nat) -> Bool:
-  Bool.and(U32.is_eq(block, chest_block()), any_held(chest_at(chests_of(store), x, y, z)))
+  Bool.and(U32.is_eq(block, World.chest_block()), any_held(chest_at(chests_of(store), x, y, z)))
 
 def chests_without(result: Chests.WorldResult) -> Chests.World:
   Chests.WorldResult{world, ok} = result
@@ -434,6 +429,6 @@ def chests_without(result: Chests.WorldResult) -> Chests.World:
 def forgot(store: Bag.Store, +block: U32, +x: Nat, +y: Nat, +z: Nat) -> Bag.Store:
   Bag.Store{+chests, +furnaces, ox, oy, oz, beat, ask} = store
   Bag.Store{
-    Bool.pick(Chests.World, U32.is_eq(block, chest_block()), chests_without(Chests.remove(chests, x, y, z)), chests),
-    Bool.pick(Furnaces.World, U32.is_eq(block, furnace_block()), added_world(Furnaces.remove(furnaces, x, y, z)), furnaces),
+    Bool.pick(Chests.World, U32.is_eq(block, World.chest_block()), chests_without(Chests.remove(chests, x, y, z)), chests),
+    Bool.pick(Furnaces.World, U32.is_eq(block, World.furnace_block()), added_world(Furnaces.remove(furnaces, x, y, z)), furnaces),
     ox, oy, oz, beat, ask}

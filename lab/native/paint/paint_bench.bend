@@ -6,10 +6,12 @@ import ../../../native/face.bend as Face
 import ../../../native/voxel.bend as Voxel
 import ../../../native/frame.bend as Frame
 import ../../../native/paint.bend as Paint
-import ../../../native/client.bend as Client
 import ../../../native/bag.bend as Bag
 import ../../../native/net.bend as Net
 import ../../../native/sky.bend as Sky
+import ../../../native/action.bend as Action
+import ../../../native/play.bend as Play
+import ../../../native/slabs.bend as Slabs
 
 # The painter's frame cost at the client's own spawn camera, per window size.
 #
@@ -72,15 +74,15 @@ def draw_phase(+label: String, +iterations: Nat, +tiled: Bool, +faces: List<&2, 
     IO.print(phase_line(label, U32.shln(1, depth), iterations, started, finished, digest))
 
 # The client's own frame: its view region's faces, held as the client holds them, drawn
-# through `Client.image_at_depth` from the spawn pose, under the starting bag's hotbar. This is the row the frame budget is
+# through `Play.image_at_depth` from the spawn pose, under the starting bag's hotbar. This is the row the frame budget is
 # judged on, because the region is nine chunks and the phases above are one.
-def client_step(+world: Client.World, +pose: Frame.Pose, +depth: Nat, +hash: U32) -> U32:
-  +image = Client.image_at_depth(world, pose, depth, Bag.start(), 20, 20)
+def client_step(+world: Slabs.World, +pose: Frame.Pose, +depth: Nat, +hash: U32) -> U32:
+  +image = Play.image_at_depth(world, pose, depth, Bag.start(), 20, 20)
   +digest : U32 = Voxel.fingerprint(image)
   released : Unit = Image.drop(image)
   fold_hash(hash, digest)
 
-def client.go(remaining: Nat, +world: Client.World, +pose: Frame.Pose, +depth: Nat,
+def client.go(remaining: Nat, +world: Slabs.World, +pose: Frame.Pose, +depth: Nat,
   +hash: U32) -> U32:
   match remaining:
     case 0n:
@@ -88,7 +90,7 @@ def client.go(remaining: Nat, +world: Client.World, +pose: Frame.Pose, +depth: N
     case 1n+p:
       client.go(p, world, pose, depth, client_step(world, pose, depth, hash))
 
-def client_phase(+iterations: Nat, +world: Client.World, +pose: Frame.Pose,
+def client_phase(+iterations: Nat, +world: Slabs.World, +pose: Frame.Pose,
   +depth: Nat) -> IO(Unit):
   do IO<Unit>:
     started : Nat <- IO.now()
@@ -105,7 +107,7 @@ def client_phase(+iterations: Nat, +world: Client.World, +pose: Frame.Pose,
 def outdoor_pose(+yaw: F32, +pitch: F32) -> Frame.Pose:
   Frame.Pose{Voxel.Vec{40.5, 10.62, 25.5}, yaw, pitch}
 
-def outdoor_phase(+label: String, +iterations: Nat, +world: Client.World, +yaw: F32,
+def outdoor_phase(+label: String, +iterations: Nat, +world: Slabs.World, +yaw: F32,
   +pitch: F32, +depth: Nat) -> IO(Unit):
   do IO<Unit>:
     started : Nat <- IO.now()
@@ -138,14 +140,14 @@ def herd.go(remaining: Nat, +index: U32, acc: List<&2, Net.Thing>) -> List<&2, N
 def herd() -> List<&2, Net.Thing>:
   herd.go(40n, 0, [])
 
-def scene_step(+world: Client.World, +pose: Frame.Pose, +depth: Nat, +hash: U32,
+def scene_step(+world: Slabs.World, +pose: Frame.Pose, +depth: Nat, +hash: U32,
   others: List<&2, Net.Other>, things: List<&2, Net.Thing>) -> U32:
-  +image = Client.image_among(world, pose, depth, Bag.start(), 20, 20, Sky.clock_start(), Sky.clock_start(), others, things, 0)
+  +image = Play.image_among(world, pose, depth, Bag.start(), 20, 20, Sky.clock_start(), Sky.clock_start(), others, things, 0)
   +digest : U32 = Voxel.fingerprint(image)
   released : Unit = Image.drop(image)
   fold_hash(hash, digest)
 
-def herd.steps(remaining: Nat, +world: Client.World, +pose: Frame.Pose, +depth: Nat,
+def herd.steps(remaining: Nat, +world: Slabs.World, +pose: Frame.Pose, +depth: Nat,
   +hash: U32) -> U32:
   match remaining:
     case 0n:
@@ -153,7 +155,7 @@ def herd.steps(remaining: Nat, +world: Client.World, +pose: Frame.Pose, +depth: 
     case 1n+p:
       herd.steps(p, world, pose, depth, scene_step(world, pose, depth, hash, [], herd()))
 
-def herd_phase(+iterations: Nat, +world: Client.World, +depth: Nat) -> IO(Unit):
+def herd_phase(+iterations: Nat, +world: Slabs.World, +depth: Nat) -> IO(Unit):
   do IO<Unit>:
     started : Nat <- IO.now()
     +digest : U32 <- IO.pure(U32, herd.steps(iterations, world, outdoor_pose(1.5708, 0.0), depth,
@@ -162,13 +164,13 @@ def herd_phase(+iterations: Nat, +world: Client.World, +depth: Nat) -> IO(Unit):
     finished : Nat <- IO.now()
     IO.print(phase_line("herd", U32.shln(1, depth), iterations, started, finished, digest))
 
-def crowd_step(+world: Client.World, +pose: Frame.Pose, +depth: Nat, +hash: U32) -> U32:
-  +image = Client.image_among(world, pose, depth, Bag.start(), 20, 20, Sky.clock_start(), Sky.clock_start(), crowd(), [], 0)
+def crowd_step(+world: Slabs.World, +pose: Frame.Pose, +depth: Nat, +hash: U32) -> U32:
+  +image = Play.image_among(world, pose, depth, Bag.start(), 20, 20, Sky.clock_start(), Sky.clock_start(), crowd(), [], 0)
   +digest : U32 = Voxel.fingerprint(image)
   released : Unit = Image.drop(image)
   fold_hash(hash, digest)
 
-def crowd.go(remaining: Nat, +world: Client.World, +pose: Frame.Pose, +depth: Nat,
+def crowd.go(remaining: Nat, +world: Slabs.World, +pose: Frame.Pose, +depth: Nat,
   +hash: U32) -> U32:
   match remaining:
     case 0n:
@@ -176,7 +178,7 @@ def crowd.go(remaining: Nat, +world: Client.World, +pose: Frame.Pose, +depth: Na
     case 1n+p:
       crowd.go(p, world, pose, depth, crowd_step(world, pose, depth, hash))
 
-def crowd_phase(+iterations: Nat, +world: Client.World, +depth: Nat) -> IO(Unit):
+def crowd_phase(+iterations: Nat, +world: Slabs.World, +depth: Nat) -> IO(Unit):
   do IO<Unit>:
     started : Nat <- IO.now()
     +digest : U32 <- IO.pure(U32, crowd.go(iterations, world, outdoor_pose(1.5708, 0.0), depth,
@@ -193,7 +195,7 @@ def build.go(remaining: Nat, +hash: U32) -> U32:
       hash
     case 1n+p:
       build.go(p, fold_hash(hash,
-        Face.face_total(Client.w_faces(Client.world_built(WorldState.empty(), Frame.home_start())))))
+        Face.face_total(Slabs.w_faces(Slabs.world_built(WorldState.empty(), Frame.home_start())))))
 
 def build_phase(+iterations: Nat) -> IO(Unit):
   do IO<Unit>:
@@ -209,15 +211,15 @@ def build_phase(+iterations: Nat) -> IO(Unit):
 def one_edit() -> List<&2, WorldState.Edit>:
   WorldState.set(WorldState.empty(), 25n, 9n, 25n, 0)
 
-def slab.go(remaining: Nat, +world: Client.World, +hash: U32) -> U32:
+def slab.go(remaining: Nat, +world: Slabs.World, +hash: U32) -> U32:
   match remaining:
     case 0n:
       hash
     case 1n+p:
       slab.go(p, world, fold_hash(hash,
-        Face.face_total(Client.w_faces(Client.world_for(world, one_edit(), Frame.home_start())))))
+        Face.face_total(Slabs.w_faces(Slabs.world_for(world, one_edit(), Frame.home_start())))))
 
-def slab_phase(+iterations: Nat, +world: Client.World) -> IO(Unit):
+def slab_phase(+iterations: Nat, +world: Slabs.World) -> IO(Unit):
   do IO<Unit>:
     started : Nat <- IO.now()
     +digest : U32 <- IO.pure(U32, slab.go(iterations, world, 2166136261))
@@ -236,7 +238,7 @@ def hit_mark(result: Player.RayResult) -> U32:
 def collided(maybe: Maybe<&1, PlayerProbe.Region>, +pose: Frame.Pose) -> U32:
   match maybe:
     case Some{region}:
-      hit_mark(Client.aimed(pose, region))
+      hit_mark(Action.aimed(pose, region))
     case None{}:
       0
 
@@ -246,7 +248,7 @@ def collide.go(remaining: Nat, +pose: Frame.Pose, +hash: U32) -> U32:
       hash
     case 1n+p:
       collide.go(p, pose, fold_hash(hash,
-        collided(Client.collision_region(WorldState.empty(), Client.den_start()), pose)))
+        collided(Play.collision_region(WorldState.empty(), Play.den_start()), pose)))
 
 def collide_phase(+iterations: Nat, +pose: Frame.Pose) -> IO(Unit):
   do IO<Unit>:
@@ -273,15 +275,15 @@ def main() -> IO(Unit):
     j : Unit <- draw_phase("tiles", 40n, True{}, faces, pose, 8n)
     k : Unit <- draw_phase("tiles", 40n, True{}, faces, pose, 9n)
     l : Unit <- draw_phase("tiles", 40n, True{}, faces, pose, 10n)
-    +world : Client.World = Client.world_built(WorldState.empty(), Frame.home_start())
-    said : Unit <- IO.print("client-faces=" ++ U32.show(Face.face_total(Client.w_faces(world))))
+    +world : Slabs.World = Slabs.world_built(WorldState.empty(), Frame.home_start())
+    said : Unit <- IO.print("client-faces=" ++ U32.show(Face.face_total(Slabs.w_faces(world))))
     m : Unit <- client_phase(40n, world, pose, 5n)
     n : Unit <- client_phase(40n, world, pose, 6n)
     o : Unit <- client_phase(40n, world, pose, 7n)
     p : Unit <- client_phase(40n, world, pose, 8n)
     q : Unit <- client_phase(40n, world, pose, 9n)
     r : Unit <- client_phase(40n, world, pose, 10n)
-    +outside : Client.World = Client.world_built(WorldState.empty(), Frame.Home{2048n, 2047n})
+    +outside : Slabs.World = Slabs.world_built(WorldState.empty(), Frame.Home{2048n, 2047n})
     oa : Unit <- outdoor_phase("north", 40n, outside, 0.0, 0.0, 10n)
     ob : Unit <- outdoor_phase("east", 40n, outside, 1.5708, 0.0, 10n)
     oc : Unit <- outdoor_phase("south", 40n, outside, 3.1416, 0.0, 10n)

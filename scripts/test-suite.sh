@@ -188,7 +188,11 @@ BEND_TESTS=(
   native/shade_test.bend
   native/sky_test.bend
   native/scenery_test.bend
-  native/client_test.bend
+  native/size_test.bend
+  native/digging_test.bend
+  native/hour_test.bend
+  native/play_test.bend
+  native/room_test.bend
 )
 mkdir -p "$ROOT/scratchpad"
 native_test_dir="$(mktemp -d "$ROOT/scratchpad/native-tests.XXXXXX")"

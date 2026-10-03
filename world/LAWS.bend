@@ -23,6 +23,7 @@ import ./fire.bend as Fire
 import ./redstone.bend as Redstone
 import ./player.bend as Player
 import ./entities.bend as Entities
+import ./digging.bend as Digging
 
 # --- what the laws read out of a result ----------------------------------------
 
@@ -443,6 +444,34 @@ law a_lit_furnace_burns_one_coal_for_eight_ticks:
   {Furnace.step_furnace(Furnace.tick(Furnace.Furnace{15, 1, 14, 1, 0, 0, 0, 0}))
     == Furnace.Furnace{15, 1, 14, 0, 20, 0, 1, 7} : Furnace.Furnace}
 
+# --- digging ----------------------------------------------------------------------------
+
+# For every block, cell, item and time: a dig the rules refuse is the dig at rest and never
+# comes away, so nothing about the time or what was going can make a refused block progress.
+# Whether a tick is allowed is decided first and alone (`Digging.step.allowed`); that it is
+# decided by `Inventory.can_mine` is held by the tests, because the checker computes no floats.
+law a_refused_dig_gets_nowhere:
+  for +block: U32
+  for +x: Nat
+  for +y: Nat
+  for +z: Nat
+  for +item: U32
+  for +time: F32
+  {Digging.step.allowed(False{}, block, x, y, z, item, time)
+    == Digging.Mined{Digging.resting(), False{}} : Digging.Mined}
+
+# --- the blocks that hold something --------------------------------------------------
+
+# A furnace, a chest and a crafting table are named once, in `world/world.bend`, and the item
+# that places each (`Inventory.placed_block`) puts down the block named for it. A client and a
+# room each used to keep their own number for these.
+law the_blocks_that_hold_something_are_named:
+  {[World.furnace_block(), World.chest_block(), World.crafting_table_block()] == [11, 26, 27] : List<U32>}
+
+law an_item_places_the_block_named_for_it:
+  {[Inventory.placed_block(21), Inventory.placed_block(43), Inventory.placed_block(10)]
+    == [World.furnace_block(), World.chest_block(), World.crafting_table_block()] : List<U32>}
+
 # --- the chest -----------------------------------------------------------------------
 
 # For every chest, slot and amount: taking from it answers a chest of as many slots.
@@ -575,6 +604,12 @@ law a_signal_equals_itself:
 law every_mob_is_an_animal_or_a_hostile:
   {List.map(~U32, ~Bool, ~(kind => Bool.xor(Entities.kind_is_animal(kind), Entities.kind_is_hostile(kind))), [1, 2, 3, 4, 5, 6])
     == [True{}, True{}, True{}, True{}, True{}, True{}] : List<Bool>}
+
+# A body is a mob exactly when the roster holds its kind, 1 to 6: the number that names a
+# villager (10 and up) or an item on the ground (1000 and up) is not one, and neither is 0.
+law only_the_roster_are_mobs:
+  {List.map(~U32, ~Bool, ~(kind => Entities.kind_is_mob(kind)), [0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 1000, 1001])
+    == [False{}, True{}, True{}, True{}, True{}, True{}, True{}, False{}, False{}, False{}, False{}, False{}] : List<Bool>}
 
 law zombies_and_brutes_are_the_hostiles:
   {List.map(~U32, ~Bool, ~(kind => Entities.kind_is_hostile(kind)), [1, 2, 3, 4, 5, 6])

@@ -908,4 +908,31 @@ for (const kind of [1, 2, 6]) {
     else assert.ok(Math.abs(got - want) < 1e-4, `kind ${kind}: Bend's distance ${got} is web/aim.js's ${want}`);
   }
 }
+
+// Which bodies a ray can hit: the roster's mobs and nothing else. A villager and an item on
+// the ground are told apart from a mob by the number that names their kind, and the native
+// client asks this rather than keeping a range of its own.
+for (const [kind, isMob] of [[0, false], [1, true], [2, true], [3, true], [4, true], [5, true], [6, true], [7, false], [10, false], [11, false], [12, false], [1000, false], [1001, false]]) {
+  assert.equal(Entities.kind_is_mob(kind), isMob, `kind ${kind} ${isMob ? "is" : "is not"} a mob`);
+}
+// The mob under the crosshair is the nearest one the ray meets within reach: each body is
+// only tested out to the nearest found so far, so a nearer mob replaces it and a farther one,
+// or anything that is not a mob, leaves it.
+const eye = [10.5, 11.62, 8.5];
+const forward = [0, 0, -1];
+const found = (best, id, kind, z) => Entities.aim_step(best, ...eye, ...forward, id, kind, 10.5, 10, z);
+let nearest = Entities.aim_none(4);
+assert.equal(nearest.found, false, "nothing has been found before a body is tested");
+nearest = found(nearest, 7, 2, 5.5);
+assert.deepEqual([nearest.found, Number(nearest.id)], [true, 7], "a zombie on the ray is under the crosshair");
+assert.ok(Math.abs(Number(nearest.away) - 2.6) < 1e-4, "it is as far as its box is along the ray");
+nearest = found(nearest, 8, 2, 6.5);
+assert.equal(Number(nearest.id), 8, "a nearer zombie replaces it");
+nearest = found(nearest, 9, 2, 4.5);
+assert.equal(Number(nearest.id), 8, "a farther zombie does not");
+assert.equal(found(Entities.aim_none(4), 13, 1, 5.5).found, false, "a ray at eye height passes over a pig, which is not that tall");
+nearest = found(nearest, 10, 11, 7.0);
+assert.equal(Number(nearest.id), 8, "a villager in front of it is not hit like a mob");
+assert.equal(found(Entities.aim_none(4), 11, 2, 3.0).found, false, "a mob past the reach is not under the crosshair");
+assert.equal(found(Entities.aim_none(4), 12, 1001, 6.5).found, false, "an item on the ground is not a mob");
 console.log('aim rule ok');

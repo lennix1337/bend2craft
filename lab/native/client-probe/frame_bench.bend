@@ -5,8 +5,11 @@ import ../../../native/player.bend as PlayerProbe
 import ../../../native/face.bend as Face
 import ../../../native/voxel.bend as Voxel
 import ../../../native/frame.bend as Frame
+import ../../../native/size.bend as Size
 import ../../../native/client.bend as Client
 import ../../../native/paint.bend as Paint
+import ../../../native/play.bend as Play
+import ../../../native/slabs.bend as Slabs
 
 # ---------------------------------------------------------------------------
 # The client's own frame cost
@@ -74,20 +77,39 @@ def player_of(value: Maybe<&1, Player.State>) -> IO(Player.State):
 def spawn_pose(player: Player.State) -> Frame.Pose:
   Frame.pose(player, Frame.origin_x(), Frame.origin_z())
 
+# The size every benchmark here measures, and the tile edge it buckets faces into. They are
+# the benchmark's and not the client's: the shipped painter draws 64-pixel tiles and takes
+# its size from `--size`. The edge was chosen by measurement, one chunk and then the
+# client's own region and camera, and that table and its reasoning are in
+# `lab/native/2026-09-30-native-renderer-investigation.md` and `lab/native/face/README.md`.
+# Below depth 8 an edge of 16 wins and from 8 up 32 does, so the edge follows the depth of
+# the frame being built.
+def window_width() -> U32:
+  128
+
+def frame_depth() -> Nat:
+  7n
+
+def tile_edge_at(depth: Nat) -> U32:
+  Bool.pick(U32, Nat.is_lt(depth, 8n), 16, 32)
+
+def tile_edge() -> U32:
+  tile_edge_at(frame_depth())
+
 # The harness builds the client the benchmarks measure, which is the default the
 # client picks with no flag. Asking the client for it keeps one number in one place.
-def benchmarked_size() -> Client.Size:
-  Client.size_of_width(Client.window_width())
+def benchmarked_size() -> Size.Size:
+  Size.of_width(window_width())
 
-def posed(+player: Player.State, region: PlayerProbe.Region) -> Client.Client:
+def posed(+player: Player.State, region: PlayerProbe.Region) -> Play.Client:
   +edits = WorldState.empty()
-  Client.Client{player, spawn_pose(player), 0, edits, region, Client.path(),
-    Client.world_built(edits), benchmarked_size()}
+  Play.Client{player, spawn_pose(player), 0, edits, region, Play.path(),
+    Slabs.world_built(edits), benchmarked_size()}
 
-def spawn_state(region: PlayerProbe.Region) -> IO(Client.Client):
-  do IO<Client.Client>:
+def spawn_state(region: PlayerProbe.Region) -> IO(Play.Client):
+  do IO<Play.Client>:
     player : Player.State <- player_of(PlayerProbe.checked_create_player(25n, 25n, 9n))
-    IO.pure(Client.Client, posed(player, region))
+    IO.pure(Play.Client, posed(player, region))
 
 def benchmark_region() -> IO(PlayerProbe.Region):
   region_of(PlayerProbe.checked_from_world_state(Frame.seed(), Frame.chunk_x(),
@@ -111,17 +133,17 @@ def clock.go(remaining: Nat, +total: U32, +hash: U32) -> IO(U32):
         clock.go(p, U32.add(total, U32.from_nat(Nat.sub(finished, started))),
           U32.add(hash, 1))
 
-def pose_of(state: Client.Client) -> Frame.Pose:
-  Client.Client{player, +pose, keys, edits, region, path, world, size} = state
+def pose_of(state: Play.Client) -> Frame.Pose:
+  Play.Client{player, +pose, keys, edits, region, path, world, size} = state
   pose
 
-def eye_z_of(state: Client.Client) -> F32:
+def eye_z_of(state: Play.Client) -> F32:
   Frame.eye_z(Frame.eye_of(pose_of(state)))
 
 # The client's own tick, so the input fold, the edge decisions and the player
 # transition are the ones the client runs. The step and its fold come before the
 # fold that calls them, because a def must be written before anything that calls it.
-def tick_fold(next: Client.Client, +hash: U32) -> U32:
+def tick_fold(next: Play.Client, +hash: U32) -> U32:
   +z = F32.abs(eye_z_of(next))
   fold_hash(hash, F32.to_u32(z))
 
@@ -134,17 +156,17 @@ def tick_fold(next: Client.Client, +hash: U32) -> U32:
 # keeps running has to be unwrapped here. The unwrap is a `match`, not a clamp: a tick
 # that quit mid-benchmark is a different program than the one that ships, and the
 # benchmark would quietly go on timing the wrong thing.
-def client_or_die(maybe: Maybe<&1, Client.Client>) -> IO(Client.Client):
+def client_or_die(maybe: Maybe<&1, Play.Client>) -> IO(Play.Client):
   match maybe:
     case Some{state}:
-      IO.pure(Client.Client, state)
+      IO.pure(Play.Client, state)
     case None{}:
-      IO.die(Client.Client, 1, "frame-bench: the client stopped during a tick it should have kept running")
+      IO.die(Play.Client, 1, "frame-bench: the client stopped during a tick it should have kept running")
 
-def tick_step(+state: Client.Client, +first: Event, +second: Event, +hash: U32) -> IO(U32):
+def tick_step(+state: Play.Client, +first: Event, +second: Event, +hash: U32) -> IO(U32):
   do IO<U32>:
-    answer : Maybe<&1, Client.Client> <- Client.tick.events([first, second], state)
-    +next : Client.Client <- client_or_die(answer)
+    answer : Maybe<&1, Play.Client> <- Play.tick.events([first, second], state)
+    +next : Play.Client <- client_or_die(answer)
     IO.pure(U32, tick_fold(next, hash))
 
 # The state is built once, outside the fold, and handed to every iteration. It used to
@@ -152,7 +174,7 @@ def tick_step(+state: Client.Client, +first: Event, +second: Event, +hash: U32) 
 # and is not free now that the client extracts it once on start: a per-iteration spawn
 # would have timed the world build inside the tick and reported a tick that does not
 # exist. `Client` is `Data`, so one state serves every iteration.
-def tick.go(remaining: Nat, +state: Client.Client, +first: Event, +second: Event,
+def tick.go(remaining: Nat, +state: Play.Client, +first: Event, +second: Event,
   +hash: U32) -> IO(U32):
   match remaining:
     case 0n:
@@ -194,8 +216,8 @@ def chunk.go(remaining: Nat, +edits: List<&2, WorldState.Edit>, +hash: U32) -> I
 # `Face.render_size_at_with_tile_size` over a single chunk, which stopped being what the
 # client does the moment the client rendered a region, and a benchmark that measures a
 # different program than the one that ships is worse than no benchmark.
-def render_with(world: Client.World, +pose: Frame.Pose) -> Image:
-  Client.image_of(world, pose, benchmarked_size())
+def render_with(world: Slabs.World, +pose: Frame.Pose) -> Image:
+  Play.image_of(world, pose, benchmarked_size())
 
 # The image is read back before it is released, because a build whose result nothing
 # observes is elidable and a phase that measured an elided build would report the cost
@@ -207,14 +229,14 @@ def render_with(world: Client.World, +pose: Frame.Pose) -> Image:
 # argument to it: a `Bool`-guarded call whose argument is built before the call
 # measures the cold path in the warm row, which is how this read 8.45 ms against
 # `render_64`'s 6.05 for the same call.
-def render_world(cold: Bool, +edits: List<&2, WorldState.Edit>, carried: Client.World) -> Client.World:
+def render_world(cold: Bool, +edits: List<&2, WorldState.Edit>, carried: Slabs.World) -> Slabs.World:
   match cold:
     case True{}:
-      Client.world_built(edits)
+      Slabs.world_built(edits)
     case False{}:
       carried
 
-def render_step(cold: Bool, +edits: List<&2, WorldState.Edit>, world: Client.World,
+def render_step(cold: Bool, +edits: List<&2, WorldState.Edit>, world: Slabs.World,
   +pose: Frame.Pose, +hash: U32) -> U32:
   +next = render_world(cold, edits, world)
   +image = render_with(next, pose)
@@ -223,7 +245,7 @@ def render_step(cold: Bool, +edits: List<&2, WorldState.Edit>, world: Client.Wor
   fold_hash(hash, digest)
 
 def render.go(remaining: Nat, +edits: List<&2, WorldState.Edit>,
-  +world: Client.World, +pose: Frame.Pose, +cold: Bool, +hash: U32) -> IO(U32):
+  +world: Slabs.World, +pose: Frame.Pose, +cold: Bool, +hash: U32) -> IO(U32):
   match remaining:
     case 0n:
       IO.pure(U32, hash)
@@ -232,14 +254,14 @@ def render.go(remaining: Nat, +edits: List<&2, WorldState.Edit>,
         render_step(cold, edits, world, pose, hash))
 
 def render_phase(+label: String, +iterations: Nat,
-  +edits: List<&2, WorldState.Edit>, +world: Client.World, +pose: Frame.Pose,
+  +edits: List<&2, WorldState.Edit>, +world: Slabs.World, +pose: Frame.Pose,
   +cold: Bool) -> IO(Unit):
   do IO<Unit>:
     started : Nat <- IO.now()
     +digest : U32 <- render.go(iterations, edits, world, pose, cold, 2166136261)
     consumed : Unit <- IO.print("consume=" ++ label ++ ":" ++ U32.show(digest))
     finished : Nat <- IO.now()
-    IO.print(phase_line(label, Client.window_width(), iterations, started, finished, digest))
+    IO.print(phase_line(label, window_width(), iterations, started, finished, digest))
 
 # Face extraction on its own: the world cells turned into the exposed-face list, with
 # the list observed so the walk cannot be elided. This is the phase that says where
@@ -272,7 +294,7 @@ def extract_phase(+iterations: Nat, +edits: List<&2, WorldState.Edit>) -> IO(Uni
     +digest : U32 <- extract.go(iterations, edits, 2166136261)
     consumed : Unit <- IO.print("consume=extract:" ++ U32.show(digest))
     finished : Nat <- IO.now()
-    IO.print(phase_line("extract", Client.window_width(), iterations, started, finished, digest))
+    IO.print(phase_line("extract", window_width(), iterations, started, finished, digest))
 
 # ---------------------------------------------------------------------------
 # Where the render's own time goes
@@ -397,13 +419,13 @@ def faces_phase(+iterations: Nat, +edits: List<&2, WorldState.Edit>) -> IO(Unit)
     +digest : U32 <- IO.pure(U32, faces.go(iterations, edits, 2166136261))
     consumed : Unit <- IO.print("consume=faces:" ++ U32.show(digest))
     finished : Nat <- IO.now()
-    IO.print(phase_line("faces", Client.window_width(), iterations, started, finished, digest))
+    IO.print(phase_line("faces", window_width(), iterations, started, finished, digest))
 
 def project_phase(+iterations: Nat, +edits: List<&2, WorldState.Edit>, +camera: Voxel.Camera,
   +size: U32) -> IO(Unit):
   do IO<Unit>:
-    +half : F32 = half_at(Client.frame_depth())
-    +focal : F32 = focal_at(Client.frame_depth())
+    +half : F32 = half_at(frame_depth())
+    +focal : F32 = focal_at(frame_depth())
     started : Nat <- IO.now()
     +digest : U32 <- IO.pure(U32, project.go(iterations, edits, camera, half, focal, size, 2166136261))
     consumed : Unit <- IO.print("consume=project:" ++ U32.show(digest))
@@ -413,11 +435,11 @@ def project_phase(+iterations: Nat, +edits: List<&2, WorldState.Edit>, +camera: 
 def grid_phase(+iterations: Nat, +edits: List<&2, WorldState.Edit>, +camera: Voxel.Camera,
   +size: U32) -> IO(Unit):
   do IO<Unit>:
-    +half : F32 = half_at(Client.frame_depth())
-    +focal : F32 = focal_at(Client.frame_depth())
+    +half : F32 = half_at(frame_depth())
+    +focal : F32 = focal_at(frame_depth())
     started : Nat <- IO.now()
     +digest : U32 <- IO.pure(U32, grid.go(iterations, edits, camera, half, focal, size,
-      Client.tile_edge(), 2166136261))
+      tile_edge(), 2166136261))
     consumed : Unit <- IO.print("consume=grid:" ++ U32.show(digest))
     finished : Nat <- IO.now()
     IO.print(phase_line("grid", size, iterations, started, finished, digest))
@@ -467,8 +489,8 @@ def image.go(remaining: Nat, +tiles: Face.Tiles, +depth: Nat, +hash: U32) -> U32
 def pixel_phase(+iterations: Nat, +edits: List<&2, WorldState.Edit>,
   +camera: Voxel.Camera, +size: U32) -> IO(Unit):
   do IO<Unit>:
-    +tiles : Face.Tiles = grid_with(edits, camera, half_at(Client.frame_depth()),
-      focal_at(Client.frame_depth()), size, Client.tile_edge())
+    +tiles : Face.Tiles = grid_with(edits, camera, half_at(frame_depth()),
+      focal_at(frame_depth()), size, tile_edge())
     started : Nat <- IO.now()
     +digest : U32 <- IO.pure(U32, pixel.go(iterations, tiles, size, 2166136261))
     consumed : Unit <- IO.print("consume=pixel:" ++ U32.show(digest))
@@ -478,8 +500,8 @@ def pixel_phase(+iterations: Nat, +edits: List<&2, WorldState.Edit>,
 def step_phase(+iterations: Nat, +edits: List<&2, WorldState.Edit>,
   +camera: Voxel.Camera, +size: U32) -> IO(Unit):
   do IO<Unit>:
-    +tiles : Face.Tiles = grid_with(edits, camera, half_at(Client.frame_depth()),
-      focal_at(Client.frame_depth()), size, Client.tile_edge())
+    +tiles : Face.Tiles = grid_with(edits, camera, half_at(frame_depth()),
+      focal_at(frame_depth()), size, tile_edge())
     started : Nat <- IO.now()
     +digest : U32 <- IO.pure(U32, Face.step.go(iterations, tiles, size, 2166136261))
     consumed : Unit <- IO.print("consume=step:" ++ U32.show(digest))
@@ -489,8 +511,8 @@ def step_phase(+iterations: Nat, +edits: List<&2, WorldState.Edit>,
 def bare_phase(+iterations: Nat, +edits: List<&2, WorldState.Edit>,
   +camera: Voxel.Camera, +size: U32) -> IO(Unit):
   do IO<Unit>:
-    +tiles : Face.Tiles = grid_with(edits, camera, half_at(Client.frame_depth()),
-      focal_at(Client.frame_depth()), size, Client.tile_edge())
+    +tiles : Face.Tiles = grid_with(edits, camera, half_at(frame_depth()),
+      focal_at(frame_depth()), size, tile_edge())
     started : Nat <- IO.now()
     +digest : U32 <- IO.pure(U32, Face.step_bare.go2(iterations, tiles, size, 2166136261))
     consumed : Unit <- IO.print("consume=bare:" ++ U32.show(digest))
@@ -500,8 +522,8 @@ def bare_phase(+iterations: Nat, +edits: List<&2, WorldState.Edit>,
 def one_phase(+iterations: Nat, +edits: List<&2, WorldState.Edit>,
   +camera: Voxel.Camera, +size: U32) -> IO(Unit):
   do IO<Unit>:
-    +tiles : Face.Tiles = grid_with(edits, camera, half_at(Client.frame_depth()),
-      focal_at(Client.frame_depth()), size, Client.tile_edge())
+    +tiles : Face.Tiles = grid_with(edits, camera, half_at(frame_depth()),
+      focal_at(frame_depth()), size, tile_edge())
     started : Nat <- IO.now()
     +digest : U32 <- IO.pure(U32, Face.one.go(iterations, tiles, size, 2166136261))
     consumed : Unit <- IO.print("consume=one:" ++ U32.show(digest))
@@ -538,8 +560,8 @@ def grid_rm.go(remaining: Nat, +edits: List<&2, WorldState.Edit>, +camera: Voxel
 def grid_rm_phase(+label: String, +iterations: Nat, +edits: List<&2, WorldState.Edit>,
   +camera: Voxel.Camera, +size: U32, +edge: U32) -> IO(Unit):
   do IO<Unit>:
-    +half : F32 = half_at(Client.frame_depth())
-    +focal : F32 = focal_at(Client.frame_depth())
+    +half : F32 = half_at(frame_depth())
+    +focal : F32 = focal_at(frame_depth())
     started : Nat <- IO.now()
     +digest : U32 <- IO.pure(U32, grid_rm.go(iterations, edits, camera, half, focal, size,
       edge, 2166136261))
@@ -550,10 +572,10 @@ def grid_rm_phase(+label: String, +iterations: Nat, +edits: List<&2, WorldState.
 def image_phase(+iterations: Nat, +edits: List<&2, WorldState.Edit>,
   +camera: Voxel.Camera, +size: U32) -> IO(Unit):
   do IO<Unit>:
-    +tiles : Face.Tiles = grid_with(edits, camera, half_at(Client.frame_depth()),
-      focal_at(Client.frame_depth()), size, Client.tile_edge())
+    +tiles : Face.Tiles = grid_with(edits, camera, half_at(frame_depth()),
+      focal_at(frame_depth()), size, tile_edge())
     started : Nat <- IO.now()
-    +digest : U32 <- IO.pure(U32, image.go(iterations, tiles, Client.frame_depth(), 2166136261))
+    +digest : U32 <- IO.pure(U32, image.go(iterations, tiles, frame_depth(), 2166136261))
     consumed : Unit <- IO.print("consume=image:" ++ U32.show(digest))
     finished : Nat <- IO.now()
     IO.print(phase_line("image", size, iterations, started, finished, digest))
@@ -608,8 +630,8 @@ def full_frame_count(screens: List<&2, Face.Screen>, +full: U32) -> U32:
 
 def edge_facts(edits: List<&2, WorldState.Edit>, +camera: Voxel.Camera, +size: U32,
   +edge: U32) -> String:
-  +tiles : Face.Tiles = grid_with(edits, camera, half_at(Client.frame_depth()),
-    focal_at(Client.frame_depth()), size, edge)
+  +tiles : Face.Tiles = grid_with(edits, camera, half_at(frame_depth()),
+    focal_at(frame_depth()), size, edge)
   +across = Face.tiles_across(size, edge)
   " " ++ U32.show(edge) ++ "t" ++ U32.show(U32.mul(across, across))
     ++ "c" ++ U32.show(Face.candidate_count(size, tiles))
@@ -631,15 +653,15 @@ def edges_facts(+index: Nat, +edits: List<&2, WorldState.Edit>, +camera: Voxel.C
 # step is measured at, and the builder is untouched by the field of view.
 def focal_facts(edits: List<&2, WorldState.Edit>, +camera: Voxel.Camera, +size: U32,
   +scale: F32) -> String:
-  +half = half_at(Client.frame_depth())
+  +half = half_at(frame_depth())
   +focal = F32.mul(scale, half)
-  +tiles : Face.Tiles = grid_with(edits, camera, half, focal, size, Client.tile_edge())
+  +tiles : Face.Tiles = grid_with(edits, camera, half, focal, size, tile_edge())
   " " ++ F32.show(scale) ++ "f" ++ U32.show(Face.candidate_count(size, tiles))
 
 def facts_line(+edits: List<&2, WorldState.Edit>, +camera: Voxel.Camera, +size: U32) -> String:
-  +half = half_at(Client.frame_depth())
-  +focal = focal_at(Client.frame_depth())
-  +edge = Client.tile_edge()
+  +half = half_at(frame_depth())
+  +focal = focal_at(frame_depth())
+  +edge = tile_edge()
   +count = face_total(region_faces(edits))
   +live = screen_count(project_screens(edits, camera, half, focal, size))
   +area = clip_area(project_screens(edits, camera, half, focal, size), size)
@@ -670,17 +692,17 @@ def facts_line(+edits: List<&2, WorldState.Edit>, +camera: Voxel.Camera, +size: 
 # client can actually hold at 60 Hz is measured rather than extrapolated from the
 # pixel count. The pose is the client's own spawn pose in every case; only the frame
 # depth changes.
-def render_at_with(world: Client.World, +pose: Frame.Pose, depth: Nat) -> Image:
-  Client.image_at_depth(world, pose, depth)
+def render_at_with(world: Slabs.World, +pose: Frame.Pose, depth: Nat) -> Image:
+  Play.image_at_depth(world, pose, depth)
 
-def render_at_step(world: Client.World, +pose: Frame.Pose, depth: Nat,
+def render_at_step(world: Slabs.World, +pose: Frame.Pose, depth: Nat,
   +hash: U32) -> U32:
   +image = render_at_with(world, pose, depth)
   +digest : U32 = Voxel.fingerprint(image)
   released : Unit = Image.drop(image)
   fold_hash(hash, digest)
 
-def render_at.go(remaining: Nat, +world: Client.World, +pose: Frame.Pose,
+def render_at.go(remaining: Nat, +world: Slabs.World, +pose: Frame.Pose,
   +depth: Nat, +hash: U32) -> IO(U32):
   match remaining:
     case 0n:
@@ -691,7 +713,7 @@ def render_at.go(remaining: Nat, +world: Client.World, +pose: Frame.Pose,
         render_at.go(p, world, pose, depth, next)
 
 def render_at_phase(+label: String, +iterations: Nat,
-  +world: Client.World, +pose: Frame.Pose, +depth: Nat) -> IO(Unit):
+  +world: Slabs.World, +pose: Frame.Pose, +depth: Nat) -> IO(Unit):
   do IO<Unit>:
     started : Nat <- IO.now()
     +digest : U32 <- render_at.go(iterations, world, pose, depth, 2166136261)
@@ -719,7 +741,7 @@ def render_only.top(image: Image) -> U32:
 def render_only.with(image: Image, +hash: U32) -> U32:
   fold_hash(hash, render_only.top(image))
 
-def render_only.go(remaining: Nat, +world: Client.World, +pose: Frame.Pose,
+def render_only.go(remaining: Nat, +world: Slabs.World, +pose: Frame.Pose,
   +depth: Nat) -> IO(Unit):
   match remaining:
     case 0n:
@@ -798,7 +820,7 @@ def sky_only_phase(+label: String, +iterations: Nat, +depth: Nat, +size: U32) ->
 # the whole pass is dead code and the phase reads 0.00 ms, exactly as `draw_*` did.
 
 def render_only_phase(+label: String, +iterations: Nat,
-  +world: Client.World, +pose: Frame.Pose, +depth: Nat) -> IO(Unit):
+  +world: Slabs.World, +pose: Frame.Pose, +depth: Nat) -> IO(Unit):
   do IO<Unit>:
     started : Nat <- IO.now()
     done : Unit <- render_only.go(iterations, world, pose, depth)
@@ -817,39 +839,39 @@ def render_only_phase(+label: String, +iterations: Nat,
 # dig pays for the extraction and a frame that follows a step does not. `frame_cold`
 # forces the extraction every iteration instead, so the cost of a world edit is
 # measured rather than assumed away.
-def client_edits(state: Client.Client) -> List<&2, WorldState.Edit>:
-  Client.Client{player, pose, keys, edits, region, path, world, size} = state
+def client_edits(state: Play.Client) -> List<&2, WorldState.Edit>:
+  Play.Client{player, pose, keys, edits, region, path, world, size} = state
   edits
 
-def client_world(state: Client.Client) -> Client.World:
-  Client.Client{player, pose, keys, edits, region, path, +world, size} = state
+def client_world(state: Play.Client) -> Slabs.World:
+  Play.Client{player, pose, keys, edits, region, path, +world, size} = state
   world
 
-def frame_world(cold: Bool, +carried: Client.World,
-  +edits: List<&2, WorldState.Edit>) -> Client.World:
+def frame_world(cold: Bool, +carried: Slabs.World,
+  +edits: List<&2, WorldState.Edit>) -> Slabs.World:
   match cold:
     case True{}:
-      Client.world_built(edits)
+      Slabs.world_built(edits)
     case False{}:
       carried
 
-def frame_fold(next: Client.Client, world: Client.World, +pose: Frame.Pose, +hash: U32) -> U32:
+def frame_fold(next: Play.Client, world: Slabs.World, +pose: Frame.Pose, +hash: U32) -> U32:
   +z = F32.abs(eye_z_of(next))
   +image = render_with(world, pose)
   +digest : U32 = Voxel.fingerprint(image)
   released : Unit = Image.drop(image)
   fold_hash(fold_hash(hash, F32.to_u32(z)), digest)
 
-def frame_step(+state: Client.Client, +first: Event, +second: Event,
+def frame_step(+state: Play.Client, +first: Event, +second: Event,
   +edits: List<&2, WorldState.Edit>, +pose: Frame.Pose, +cold: Bool, +hash: U32) -> IO(U32):
   do IO<U32>:
-    answer : Maybe<&1, Client.Client> <- Client.tick.events([first, second], state)
-    +next : Client.Client <- client_or_die(answer)
-    +world : Client.World = frame_world(cold,
-      Client.world_for(client_world(next), client_edits(next)), edits)
+    answer : Maybe<&1, Play.Client> <- Play.tick.events([first, second], state)
+    +next : Play.Client <- client_or_die(answer)
+    +world : Slabs.World = frame_world(cold,
+      Slabs.world_for(client_world(next), client_edits(next)), edits)
     IO.pure(U32, frame_fold(next, world, pose, hash))
 
-def frame.go(remaining: Nat, +state: Client.Client, +first: Event, +second: Event,
+def frame.go(remaining: Nat, +state: Play.Client, +first: Event, +second: Event,
   +edits: List<&2, WorldState.Edit>, +pose: Frame.Pose, +cold: Bool, +hash: U32) -> IO(U32):
   match remaining:
     case 0n:
@@ -869,16 +891,16 @@ def clock_phase(+iterations: Nat) -> IO(Unit):
     +total : U32 <- clock.go(iterations, 0, 2166136261)
     consumed : Unit <- IO.print("consume=clock:" ++ U32.show(total))
     finished : Nat <- IO.now()
-    IO.print(phase_line("clock", Client.window_width(), iterations, started, finished, total))
+    IO.print(phase_line("clock", window_width(), iterations, started, finished, total))
 
-def tick_phase(+label: String, +iterations: Nat, +state: Client.Client,
+def tick_phase(+label: String, +iterations: Nat, +state: Play.Client,
   +first: Event, +second: Event) -> IO(Unit):
   do IO<Unit>:
     started : Nat <- IO.now()
     +digest : U32 <- tick.go(iterations, state, first, second, 2166136261)
     consumed : Unit <- IO.print("consume=" ++ label ++ ":" ++ U32.show(digest))
     finished : Nat <- IO.now()
-    IO.print(phase_line(label, Client.window_width(), iterations, started, finished, digest))
+    IO.print(phase_line(label, window_width(), iterations, started, finished, digest))
 
 def chunk_phase(+iterations: Nat, +edits: List<&2, WorldState.Edit>) -> IO(Unit):
   do IO<Unit>:
@@ -886,9 +908,9 @@ def chunk_phase(+iterations: Nat, +edits: List<&2, WorldState.Edit>) -> IO(Unit)
     +digest : U32 <- chunk.go(iterations, edits, 2166136261)
     consumed : Unit <- IO.print("consume=region:" ++ U32.show(digest))
     finished : Nat <- IO.now()
-    IO.print(phase_line("region", Client.window_width(), iterations, started, finished, digest))
+    IO.print(phase_line("region", window_width(), iterations, started, finished, digest))
 
-def frame_phase(+label: String, +iterations: Nat, +state: Client.Client,
+def frame_phase(+label: String, +iterations: Nat, +state: Play.Client,
   +first: Event, +second: Event, +edits: List<&2, WorldState.Edit>,
   +pose: Frame.Pose, +cold: Bool) -> IO(Unit):
   do IO<Unit>:
@@ -896,7 +918,7 @@ def frame_phase(+label: String, +iterations: Nat, +state: Client.Client,
     +digest : U32 <- frame.go(iterations, state, first, second, edits, pose, cold, 2166136261)
     consumed : Unit <- IO.print("consume=" ++ label ++ ":" ++ U32.show(digest))
     finished : Nat <- IO.now()
-    IO.print(phase_line(label, Client.window_width(), iterations, started, finished, digest))
+    IO.print(phase_line(label, window_width(), iterations, started, finished, digest))
 
 # The events a held movement key produces, and the events a look produces. Both are
 # the client's real codes, in the shape the runtime hands the tick, so the client's
@@ -904,13 +926,13 @@ def frame_phase(+label: String, +iterations: Nat, +state: Client.Client,
 # cannot be shared, so the two sets are passed on as four events.
 #
 # The action keys are deliberately not in a timed phase. Save is the one that reaches
-# the filesystem — `tick.decided` threads `wants_save` through to `save_text.at`, so a
+# the filesystem — `tick.finish` takes `wants_save` through to `save_text.at`, so a
 # timed press would measure the disk. A dig does not: it only extends the edit log, and
 # the world is written when the player saves. (This line used to claim dig reached the
 # filesystem too, which is why the dig frame had no timed phase at all; the dig path is
-# covered by native/client_test.bend, and `frame_edited` measures it as a phase, because
+# covered by native/play_test.bend, and `frame_edited` measures it as a phase, because
 # the phase forces the rebuild the dig causes without pressing the key.)
-# The edit and save paths are covered by native/client_test.bend
+# The edit and save paths are covered by native/play_test.bend
 # instead, and this file only times the two things a frame pays every tick.
 type Events is Data:
   Events{first: Event, second: Event}
@@ -919,7 +941,7 @@ def held_events() -> Events:
   Events{Key{119, True{}}, Key{119, False{}}}
 
 def look_events() -> Events:
-  Events{Look{24.0, 0.0}, Key{Client.dig_code(), False{}}}
+  Events{Look{24.0, 0.0}, Key{Frame.dig_code(), False{}}}
 
 def first_of(events: Events) -> Event:
   Events{first, second} = events
@@ -929,8 +951,8 @@ def second_of(events: Events) -> Event:
   Events{first, second} = events
   second
 
-def run_events(+state: Client.Client, +edits: List<&2, WorldState.Edit>,
-  +pose: Frame.Pose, +world: Client.World, +held_first: Event, +held_second: Event,
+def run_events(+state: Play.Client, +edits: List<&2, WorldState.Edit>,
+  +pose: Frame.Pose, +world: Slabs.World, +held_first: Event, +held_second: Event,
   +action_first: Event, +action_second: Event) -> IO(Unit):
   do IO<Unit>:
     Unit <- clock_phase(7n)
@@ -940,24 +962,24 @@ def run_events(+state: Client.Client, +edits: List<&2, WorldState.Edit>,
     Unit <- extract_phase(40n, edits)
     +camera : Voxel.Camera = camera_of(pose)
     Unit <- faces_phase(40n, edits)
-    Unit <- project_phase(40n, edits, camera, Client.window_width())
-    Unit <- grid_phase(20n, edits, camera, Client.window_width())
+    Unit <- project_phase(40n, edits, camera, window_width())
+    Unit <- grid_phase(20n, edits, camera, window_width())
     # The scatter builder against the row-major one at the shipping edge and at edge 8.
     # The walk is cheaper at a smaller edge and the scatter builder is dearer, and only
     # the walk is parallel; row-major removes the builder's random access entirely, so
     # if it is cheap enough here the smaller edge becomes worth taking. It is not.
-    Unit <- grid_rm_phase("grid_rm16", 20n, edits, camera, Client.window_width(), 16)
-    Unit <- grid_rm_phase("grid_rm8", 20n, edits, camera, Client.window_width(), 8)
-    Unit <- pixel_phase(20n, edits, camera, Client.window_width())
+    Unit <- grid_rm_phase("grid_rm16", 20n, edits, camera, window_width(), 16)
+    Unit <- grid_rm_phase("grid_rm8", 20n, edits, camera, window_width(), 8)
+    Unit <- pixel_phase(20n, edits, camera, window_width())
     # The walk cost probe: `bare` is the list iteration with nothing but the step,
     # `step` adds the seven-field destructure a pattern forces, `pixel` is the shipped
     # walk, and `one` is the same walk with the two halves of the box test folded into
     # one `Bool.and` and so one call in the reject path instead of two. All four visit
     # the same 695,808 candidates.
-    Unit <- bare_phase(20n, edits, camera, Client.window_width())
-    Unit <- step_phase(20n, edits, camera, Client.window_width())
-    Unit <- one_phase(20n, edits, camera, Client.window_width())
-    Unit <- image_phase(20n, edits, camera, Client.window_width())
+    Unit <- bare_phase(20n, edits, camera, window_width())
+    Unit <- step_phase(20n, edits, camera, window_width())
+    Unit <- one_phase(20n, edits, camera, window_width())
+    Unit <- image_phase(20n, edits, camera, window_width())
     Unit <- render_phase("render", 20n, edits, world, pose, False{})
     Unit <- render_phase("render_cold", 20n, edits, world, pose, True{})
     # The sizes the resolution question is actually about, measured at the client's own
@@ -987,13 +1009,13 @@ def run_events(+state: Client.Client, +edits: List<&2, WorldState.Edit>,
     # per focal scale and per tile edge, and the allocation churn is enough to move the
     # phases that follow it by several percent, so a diagnostic that perturbs the thing
     # it measures has to run once the measuring is done.
-    IO.print(facts_line(edits, camera, Client.window_width()))
-    IO.print("client-bench=pass size=" ++ U32.show(Client.window_width())
-      ++ " tile=" ++ U32.show(Client.tile_edge())
+    IO.print(facts_line(edits, camera, window_width()))
+    IO.print("client-bench=pass size=" ++ U32.show(window_width())
+      ++ " tile=" ++ U32.show(tile_edge())
       ++ " budget_ms=" ++ U32.show(U32.from_nat(Nat.div(1000n, 60n))))
 
-def run_all(+state: Client.Client, +edits: List<&2, WorldState.Edit>, +pose: Frame.Pose,
-  +world: Client.World, +held: Events, +action: Events) -> IO(Unit):
+def run_all(+state: Play.Client, +edits: List<&2, WorldState.Edit>, +pose: Frame.Pose,
+  +world: Slabs.World, +held: Events, +action: Events) -> IO(Unit):
   +held_first : Event = first_of(held)
   +held_second : Event = second_of(held)
   +action_first : Event = first_of(action)
@@ -1001,10 +1023,10 @@ def run_all(+state: Client.Client, +edits: List<&2, WorldState.Edit>, +pose: Fra
   run_events(state, edits, pose, world, held_first, held_second, action_first,
     action_second)
 
-def run_phases(+state: Client.Client) -> IO(Unit):
+def run_phases(+state: Play.Client) -> IO(Unit):
   +pose : Frame.Pose = pose_of(state)
   +edits : List<&2, WorldState.Edit> = WorldState.empty()
-  +world : Client.World = Client.world_built(edits)
+  +world : Slabs.World = Slabs.world_built(edits)
   +held : Events = held_events()
   +action : Events = look_events()
   run_all(state, edits, pose, world, held, action)
@@ -1012,5 +1034,5 @@ def run_phases(+state: Client.Client) -> IO(Unit):
 def main() -> IO(Unit):
   do IO<Unit>:
     +region : PlayerProbe.Region <- benchmark_region()
-    +state : Client.Client <- spawn_state(region)
+    +state : Play.Client <- spawn_state(region)
     run_phases(state)

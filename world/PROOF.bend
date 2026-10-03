@@ -997,6 +997,15 @@ def Laws.a_withdrawal_keeps_the_chest_slots(chest, index, amount):
           %Laws.a_withdrawal_keeps_the_chest_slots(tail, p, amount) : {chest_slots(Chest.withdraw_slots(Chest.prepend_withdraw(head, Chest.withdraw.at(tail, p, amount)))) == 1n+_ : Nat}
           chest_prepend_keeps(head, Chest.withdraw.at(tail, p, amount))
 
+def Laws.a_refused_dig_gets_nowhere(block, x, y, z, item, time):
+  {==}
+
+def Laws.the_blocks_that_hold_something_are_named():
+  {==}
+
+def Laws.an_item_places_the_block_named_for_it():
+  {==}
+
 def Laws.a_chest_has_nine_slots():
   {==}
 
@@ -1105,6 +1114,9 @@ def Laws.a_signal_equals_itself(a):
       {==}
 
 def Laws.every_mob_is_an_animal_or_a_hostile():
+  {==}
+
+def Laws.only_the_roster_are_mobs():
   {==}
 
 def Laws.zombies_and_brutes_are_the_hostiles():

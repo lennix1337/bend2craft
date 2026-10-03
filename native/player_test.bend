@@ -11,6 +11,9 @@ def require(condition: Bool, message: String) -> IO(Unit):
     case False{}:
       IO.die(Unit, 1, "player-probe: " ++ message)
 
+def check(condition: Bool, message: String) -> IO(Unit):
+  require(condition, message)
+
 def drive(
   +remaining: Nat, state: Player.State, +keys: U32, +region: Probe.Region,
   +spawn_x: Nat, +spawn_z: Nat, +spawn_height: Nat
@@ -271,8 +274,42 @@ def region_of(value: Maybe<&1, Probe.Region>) -> IO(Probe.Region):
 def seam_region(edits: List<&2, WorldState.Edit>) -> IO(Probe.Region):
   region_of(Probe.checked_from_world_state(1337n, 0n, 0n, 2n, 2n, edits))
 
+def is_cell(value: Maybe<&1, Nat>, expected: Nat) -> Bool:
+  match value:
+    case Some{cell}:
+      Nat.is_eq(cell, expected)
+    case None{}:
+      False{}
+
+def is_refused(value: Maybe<&1, Nat>) -> Bool:
+  Maybe.is_none(&1, Nat, value)
+
+# `stored_cell` is the inverse of `domain_cell`: the player's encoded window folded back to
+# the cells `WorldState` and the renderer speak, and a cell the encoding cannot name is
+# refused, which is the same bound the region guard uses.
+def verify_stored_cell() -> IO(Unit):
+  do IO<Unit>:
+    Unit <- require(is_cell(Probe.stored_cell(32768n), 0n),
+      "the encoded world origin did not decode to stored cell 0")
+    Unit <- require(is_cell(Probe.stored_cell(32784n), 16n),
+      "an encoded cell did not decode to its stored cell")
+    Unit <- require(is_cell(Probe.stored_cell(32767n), Nat.sub(World.negative_origin(), 1n)),
+      "an encoded cell below the window did not decode to a negative stored cell")
+    Unit <- require(is_cell(Probe.stored_cell(0n), Nat.sub(World.negative_origin(), 32768n)),
+      "the low end of the encoded window did not decode to the far negative cell")
+    Unit <- require(is_cell(Probe.stored_cell(Probe.domain_cell(25n)), 25n),
+      "domain_cell and stored_cell are not inverse on a positive cell")
+    Unit <- require(is_cell(Probe.stored_cell(Probe.domain_cell(Nat.sub(World.negative_origin(), 7n))),
+        Nat.sub(World.negative_origin(), 7n)),
+      "domain_cell and stored_cell are not inverse on a negative cell")
+    Unit <- require(is_refused(Probe.stored_cell(Nat.add(32768n, Probe.positive_cell_limit()))),
+      "a cell past the storage limit was accepted")
+    check(is_refused(Probe.stored_cell(100000000n)),
+      "a cell far outside the movement window was accepted")
+
 def main() -> IO(Unit):
   do IO<Unit>:
+    Unit <- verify_stored_cell()
     Unit <- require(Nat.is_eq(Probe.domain_cell(0n), 32768n),
       "positive world origin was not mapped to player coordinates")
     Unit <- require(Nat.is_eq(Probe.domain_cell(Nat.sub(World.negative_origin(), 1n)), 32767n),

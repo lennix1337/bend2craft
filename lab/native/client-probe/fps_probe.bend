@@ -1,5 +1,7 @@
 import Base
+import ../../../native/size.bend as Size
 import ../../../native/client.bend as Client
+import ../../../native/play.bend as Play
 
 # The live client's presented frame rate, measured by running the client's own loop for
 # a fixed number of frames and timing it.
@@ -53,7 +55,7 @@ def report(+elapsed_ms: Nat) -> IO(Unit):
     ++ " ms_per_frame=" ++ Nat.show(ms_per_frame)
     ++ " fps=" ++ Nat.show(whole) ++ "." ++ pad(hundredths) ++ Nat.show(hundredths))
 
-def run_at(+state: Client.Client, +width: U32) -> IO(Unit):
+def run_at(+state: Play.Client, +width: U32) -> IO(Unit):
   do IO<Unit>:
     window : Window <- IO.try(Window, Window.open(Client.title(), width, width))
     grabbed : Window <- Client.grabbed(window)
@@ -65,18 +67,18 @@ def run_at(+state: Client.Client, +width: U32) -> IO(Unit):
     pause : Unit <- IO.sleep(Client.grab_wait_ms())
     held : Window <- Client.grabbed(grabbed)
     started : Nat <- IO.now()
-    App.loop(Client.Client, Client.app(), frames(), held, state)
+    App.loop(Play.Client, Play.app(), frames(), held, state)
     finished : Nat <- IO.now()
     report(Nat.sub(finished, started))
 
-def start_at(+chosen: Client.Size) -> IO(Unit):
+def start_at(+chosen: Size.Size) -> IO(Unit):
   do IO<Unit>:
-    state : Client.Client <- Client.start(chosen)
-    run_at(state, Client.width_of(chosen))
+    state : Play.Client <- Play.start(chosen)
+    run_at(state, Size.width_of(chosen))
 
 def chosen() -> IO(Unit):
   do IO<Unit>:
-    for_client : Client.Size <- Client.width_arg()
+    for_client : Size.Size <- Size.from_args()
     start_at(for_client)
 
 def main() -> IO(Unit):

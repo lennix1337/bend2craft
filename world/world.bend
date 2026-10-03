@@ -9,6 +9,18 @@ import ./structures.bend as Structures
 # which owns their ids and the single ordered list `block_ids` that keeps the
 # browser's BLOCK_INFO in step.
 
+# The blocks that hold something, named once so that a client and a room do not each keep
+# their own number: `world/multiplayer.bend` asks them what a dug cell held, and the native
+# client asks them which block opens a screen.
+def furnace_block() -> U32:
+  11
+
+def chest_block() -> U32:
+  26
+
+def crafting_table_block() -> U32:
+  27
+
 def default_seed() -> Nat:
   1337n
 

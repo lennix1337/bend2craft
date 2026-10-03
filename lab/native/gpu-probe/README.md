@@ -26,7 +26,8 @@ image, as `lab/native/paint/run.sh` does.
    reproduced exactly, because the probe asks `Paint.span_edges`; the residue is float rounding: the CPU fills a
    span by stepping the texture planes from its first pixel and the device evaluates them at the pixel.
    **A digest-equal textured frame is not available without changing the CPU rule too**, which is a decision.
-2. **No version of this is faster than the CPU painter; the best is about 22 times slower.** That is a
+2. **No version of this is faster than the CPU painter; the first was 45 times slower and the best, after the
+   optimizing below, is about 14 times slower.** That is a
    statement about this probe, which keeps the painter's own pixel rules, and not about Bend on a GPU: see 5.
 
 | size | CPU painter (today) | straightforward leaf, CPU pool | `filtered_8`, CPU pool | straightforward leaf, GPU | `filtered_8`, GPU |
@@ -78,6 +79,30 @@ image, as `lab/native/paint/run.sh` does.
    - The guide's own summary of what a GPU is for: "uniform numeric work like mandelbrot or nbody; divergent
      work like n-queens stays faster on the CPU". Per-pixel lists of different lengths, early outs and branch
      ladders are divergent work.
+
+## Optimizing the device path
+
+Starting from `filtered_8` (139 ms on the device at 1024x1024), one change at a time, GPU, plugged in, medians of
+ten; each was checked against the CPU painter's picture and for reference counts in the emitted C (63 `term_keep`,
+236 `rfc_seal`, 51 `ctr_take` in the baseline, never more):
+
+| change | file | 1024x1024 | 256x256 | picture |
+| --- | --- | ---: | ---: | --- |
+| baseline: a leaf filters the cell's list into its own, then walks it per 2x2 block | `filtered_8` | 139 | 14 | 54 pixels differ |
+| the list is read once per 4x4 square, and a polygon whose box misses the square is skipped for all sixteen | (in `opt3_hostdeal`) | 106 | 118 | same |
+| the host deals the polygons down to the 8-pixel leaves, so the device builds no list | `opt3_hostdeal` | 87 | 15 | same |
+| coverage by half-planes (multiply-adds) instead of `Paint.span_edges` (five divisions) | `opt4_planes` | 77 | 13 | 855 differ, all on polygon edges |
+
+The host side of a frame, which the device numbers leave out, is 1.0 ms for `filtered_8`, 5.3 for `opt3_hostdeal`
+and 4.8 for `opt4_planes` (dealing three more levels). Per frame at 1024x1024 that is 140, 93 and 82 ms, against
+the CPU painter's 6 to 8. The first probe was 267. **The best version is about 44% faster than where this
+section started, 70% faster than the first probe, and still about 14 times slower than the CPU painter.**
+
+Tried and no faster, so left out: an untouched leaf as one `Pix` (129 to 128 ms), one reciprocal for the three
+perspective divisions (the same picture, 106 to 105), and every `U32.mod` by a power of two as an `and`
+(the same picture, 75 to 76). Where the texel cost sits, by removing parts (ms, `ablate_texel_*`): the material's
+own arithmetic about 25, the perspective divisions and haze about 15 together, and the rest decoding and the
+three plane evaluations.
 
 ## The control: Bend's own reference on this machine
 

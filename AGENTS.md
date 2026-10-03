@@ -158,8 +158,8 @@ on 2.0.32 and are not re-measured. The Mac numbers are a separate lane, in `lab/
   there is none, and a device painter is still a second leaf and not a flag.
 - **A device leaf was tried once, as a throwaway, and is slower.** `lab/native/gpu-probe/` draws the
   textured frame from flat loops under one bang, on Metal, with the same picture as the CPU painter to
-  within float rounding (54 of a million pixels differ at 1024x1024), and costs 134 ms a frame at best
-  against the CPU painter's 6 ms. Forking to more leaves helped at small sizes and then stopped helping;
+  within float rounding (54 of a million pixels differ at 1024x1024), and costs 82 ms a frame at best (after the
+  optimizing in its README) against the CPU painter's 6 ms. Forking to more leaves helped at small sizes and then stopped helping;
   the cost is spread over every layer (structure 25 ms, list walk 37, coverage 16, texel 55 of 133), and the
   reference rasterizer it was modelled on differs in ways the README lists. **On this M1 Pro that reference is
   itself twice as slow on the GPU as on the CPU pool** (`lab/native/gpu-probe/control.sh`: 11.0 against 5.7 ms to

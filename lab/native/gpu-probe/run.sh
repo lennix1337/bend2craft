@@ -23,8 +23,10 @@ printf 'compiler: '
 BEND_NO_TELEMETRY=1 "$BEND" version
 
 mkdir -p "$SCRATCH"
-# `device_probe` is the straightforward leaf; `filtered_8` gives each 8-pixel leaf its own short list.
-for probe in device_probe filtered_8; do
+# `device_probe` is the straightforward leaf; `filtered_8` gives each 8-pixel leaf its own short list; `opt3_hostdeal`
+# adds a 4x4 walk and has the host deal the polygons down to the leaves (the same picture); `opt4_planes` adds
+# coverage by half-planes (about 0.08% of pixels, on polygon edges, differ).
+for probe in device_probe filtered_8 opt3_hostdeal opt4_planes; do
   rm -f "$SCRATCH/$probe" "$SCRATCH/$probe.gpu"
   BEND_NO_TELEMETRY=1 "$BEND" "$SCRIPT_DIR/$probe.bend" -o "$SCRATCH/$probe" >/dev/null
   for gpu in off on; do

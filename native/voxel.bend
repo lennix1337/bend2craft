@@ -333,6 +333,8 @@ def block_color(+block: U32) -> U32:
       rgb(154, 106, 60)
     case 27:
       rgb(148, 100, 58)
+    case 41:
+      rgb(74, 76, 82)
     case 28:
       rgb(170, 30, 30)
     case 29:

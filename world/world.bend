@@ -34,7 +34,7 @@ def depth() -> Nat:
   48n
 
 def max_y() -> Nat:
-  20n
+  64n
 
 def sea_level() -> Nat:
   7n
@@ -259,10 +259,29 @@ def canopy(+seed: Nat, +x: Nat, +y: Nat, +z: Nat) -> Bool:
     || canopy_at(seed, xp, zm, x, y, z) || canopy_at(seed, xp, z, x, y, z)
     || canopy_at(seed, xp, zp, x, y, z)
 
+# Caves are two 3D noise fields read on a four-cell lattice, and a cell is a cave
+# only where both fields sit in their own band. That is the cheap two-field
+# ("spaghetti") rule: every lattice cell that passes becomes one 4x4x4 pocket of
+# air, and neighbouring pockets share a face, so caves run and join instead of
+# speckling the way a single per-cell hash did.
+def cave_lattice_at(+seed: Nat, +x: Nat, +y: Nat, +z: Nat) -> Bool:
+  +cell_x = Nat.div(x, 4n)
+  +cell_y = Nat.div(y, 4n)
+  +cell_z = Nat.div(z, 4n)
+  +column = mix(seed, cell_x, cell_z)
+  +first = Nat.mod(Nat.add(Nat.add(column, Nat.mul(cell_y, 17n)), Nat.mod(seed, 13n)), 97n)
+  +second = Nat.mod(Nat.add(Nat.add(column, Nat.mul(cell_y, 31n)), Nat.mod(seed, 29n)), 97n)
+  Nat.is_lt(first, 12n) && Nat.is_lt(second, 13n)
+
+def cave_lattice_when(enclosed: Bool, +seed: Nat, +x: Nat, +y: Nat, +z: Nat) -> Bool:
+  match enclosed:
+    case False{}:
+      False{}
+    case True{}:
+      cave_lattice_at(seed, x, y, z)
+
 def cave_at_height(+seed: Nat, +x: Nat, +y: Nat, +z: Nat, +h: Nat) -> Bool:
-  +enclosed = Nat.is_gt(y, 1n) && Nat.is_lt(Nat.add(y, 2n), h)
-  +hash = Nat.mod(Nat.add(mix(seed, x, z), Nat.mul(y, 17n)), 43n)
-  enclosed && Nat.is_eq(hash, 0n)
+  cave_lattice_when(Nat.is_gt(y, 1n) && Nat.is_lt(Nat.add(y, 2n), h), seed, x, y, z)
 
 def cave_at(+seed: Nat, +x: Nat, +y: Nat, +z: Nat) -> Bool:
   cave_at_height(seed, x, y, z, column_height(seed, x, z))
@@ -346,12 +365,14 @@ def block(+seed: Nat, +x: Nat, +y: Nat, +z: Nat) -> U32:
   +lava = lava_at(seed, x, y, z)
   +cave = cave_at(seed, x, y, z)
   +water = water_at(seed, x, y, z)
-  Bool.pick(U32, U32.is_ne(structure, 0), structure,
+  +bedrock = Nat.is_eq(y, 0n)
+  Bool.pick(U32, bedrock, 41,
+    Bool.pick(U32, U32.is_ne(structure, 0), structure,
     Bool.pick(U32, wood, 5,
       Bool.pick(U32, leaf, 4,
         Bool.pick(U32, lava, 21,
           Bool.pick(U32, cave, 0,
-            Bool.pick(U32, water, 7, terrain_block(seed, x, y, z)))))))
+            Bool.pick(U32, water, 7, terrain_block(seed, x, y, z))))))))
 
 # Above the terrain surface only generated structures, trunks, and canopy can
 # provide shade. Keep this narrower query separate from the full block rule so
@@ -655,8 +676,32 @@ def chunk32.terrain(+s89: U32, +mixed: U32, +h: U32, +sand: Bool, +y: U32, insid
         Bool.pick(U32, U32.is_eq(y, sat_sub32(h, 2)), Bool.pick(U32, sand, 6, 2),
           Bool.pick(U32, U32.is_lt(y, deep_limit), deep, 2)))
 
+# The U32 reading of `cave_lattice_at`: the same two banded fields on the same
+# four-cell lattice, so the per-chunk path and the per-cell query carve one
+# world and not two.
+def chunk32.cave_lattice(+mix: U32, +x: U32, +y: U32, +z: U32, +s13: U32, +s29: U32) -> Bool:
+  +cell_x = U32.div(x, 4)
+  +cell_y = U32.div(y, 4)
+  +cell_z = U32.div(z, 4)
+  +lattice_column = mix32(mix, cell_x, cell_z)
+  +first = U32.mod((lattice_column + cell_y * 17 + s13 : U32), 97)
+  +second = U32.mod((lattice_column + cell_y * 31 + s29 : U32), 97)
+  U32.is_lt(first, 12) && U32.is_lt(second, 13)
+
+# The same short-circuit as `cave_lattice_when`: rows above the surface, the
+# bedrock row and the sea floor never pay for the lattice.
+def chunk32.cave_when(
+  enclosed: Bool, +mix: U32, +x: U32, +y: U32, +z: U32, +s13: U32, +s29: U32
+) -> Bool:
+  match enclosed:
+    case False{}:
+      False{}
+    case True{}:
+      chunk32.cave_lattice(mix, x, y, z, s13, s29)
+
 def chunk32.cell(
-  +seed: Nat, +s89: U32, +village_height: Nat, +column: Column,
+  +seed: Nat, +mix: U32, +s89: U32, +s13: U32, +s29: U32, +village_height: Nat,
+  +column: Column,
   +x: U32, +z: U32, +y: U32, +leaf_mask: U32
 ) -> U32:
   Column{+height, +mixed, +sand, +tree, +leaves, +village} = column
@@ -666,18 +711,24 @@ def chunk32.cell(
   +structure = chunk32.structure(seed, x, y, z, village_height, Bool.and(village, in_band))
   +wood = Bool.and(tree, Bool.and(U32.is_ge(y, height), U32.is_lt(y, (height + 3 : U32))))
   +leaf = U32.is_ne(U32.and(leaf_mask, 1), 0)
-  +cave = Bool.and(Bool.and(U32.is_gt(y, 1), U32.is_lt((y + 2 : U32), height)),
-    U32.is_eq(U32.mod((mixed + y * 17 : U32), 43), 0))
+  +cave = chunk32.cave_when(
+    Bool.and(U32.is_gt(y, 1), U32.is_lt((y + 2 : U32), height)),
+    mix, x, y, z, s13, s29)
   +water = Bool.and(U32.is_le(height, y), U32.is_lt(y, 8))
   +terrain = chunk32.terrain(s89, mixed, height, sand, y, U32.is_lt(y, height))
-  Bool.pick(U32, U32.is_ne(structure, 0), structure,
-    Bool.pick(U32, wood, 5,
-      Bool.pick(U32, leaf, 4,
-        Bool.pick(U32, cave, 0,
-          Bool.pick(U32, water, 7, terrain)))))
+  # Bedrock is the same bottom row `World.block` gives, so the fast per-chunk
+  # path and the cell query never disagree about the floor of the world.
+  +bedrock = U32.is_eq(y, 0)
+  Bool.pick(U32, bedrock, 41,
+    Bool.pick(U32, U32.is_ne(structure, 0), structure,
+      Bool.pick(U32, wood, 5,
+        Bool.pick(U32, leaf, 4,
+          Bool.pick(U32, cave, 0,
+            Bool.pick(U32, water, 7, terrain))))))
 
 def chunk32.fill(
-  +seed: Nat, +s89: U32, +village_height: Nat, +column: Column,
+  +seed: Nat, +mix: U32, +s89: U32, +s13: U32, +s29: U32, +village_height: Nat,
+  +column: Column,
   +x: U32, +z: U32, +local: U32, +remaining: Nat, +y: U32, +leaf_mask: U32,
   blocks: Array<U32>
 ) -> Array<U32>:
@@ -686,8 +737,8 @@ def chunk32.fill(
       blocks
     case 1n+p:
       +index = (local + y * 256 : U32)
-      updated = blocks[index] <- chunk32.cell(seed, s89, village_height, column, x, z, y, leaf_mask)
-      chunk32.fill(seed, s89, village_height, column, x, z, local, p, (y + 1 : U32), U32.shr(leaf_mask), updated)
+      updated = blocks[index] <- chunk32.cell(seed, mix, s89, s13, s29, village_height, column, x, z, y, leaf_mask)
+      chunk32.fill(seed, mix, s89, s13, s29, village_height, column, x, z, local, p, (y + 1 : U32), U32.shr(leaf_mask), updated)
 
 def chunk32.columns.x(
   +seed: Nat, +t: Terms, +village_height: Nat, +origin_x: U32, +origin_z: U32,
@@ -701,7 +752,9 @@ def chunk32.columns.x(
       +x = (base_x + local_x : U32)
       +z = (base_z + local_z : U32)
       +column = chunk32.column(t, x, z, origin_x, origin_z, village_valid)
-      updated = chunk32.fill(seed, terms.s89(t), village_height, column, x, z, (local_x + local_z * 16 : U32), max_y(), 0, column.leaves(column), blocks)
+      updated = chunk32.fill(seed, terms.mix(t), terms.s89(t),
+        U32.from_nat(Nat.mod(seed, 13n)), U32.from_nat(Nat.mod(seed, 29n)),
+        village_height, column, x, z, (local_x + local_z * 16 : U32), max_y(), 0, column.leaves(column), blocks)
       chunk32.columns.x(seed, t, village_height, origin_x, origin_z, village_valid, base_x, base_z, p, (local_x + 1 : U32), local_z, updated)
 
 def chunk32.columns.z(
@@ -725,5 +778,5 @@ def chunk(+seed: Nat, +chunk_x: Nat, +chunk_z: Nat) -> Array<U32>:
     U32.from_nat(origin_x), U32.from_nat(origin_z),
     Structures.village_height_valid(village_height),
     U32.from_nat(Nat.mul(chunk_x, chunk_size())), U32.from_nat(Nat.mul(chunk_z, chunk_size())),
-    chunk_size(), 0, Array.new(U32, 13n, 0)
+    chunk_size(), 0, Array.new(U32, 14n, 0)
   )

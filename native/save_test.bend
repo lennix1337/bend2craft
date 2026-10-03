@@ -278,7 +278,7 @@ def out_of_world_cells_are_refused() -> Bool:
   all_of([
     read_refuses(one_edit_document(94371840n, 8n, 1n, 0)),
     read_refuses(one_edit_document(4294967295n, 8n, 1n, 0)),
-    read_refuses(one_edit_document(1n, 20n, 1n, 0)),
+    read_refuses(one_edit_document(1n, 64n, 1n, 0)),
     read_refuses(one_edit_document(1n, 8n, 94371840n, 0)),
     read_refuses(one_edit_document(1n, 8n, 1n, 28)),
     read_refuses(one_edit_document(1n, 8n, 1n, 4294967295))
@@ -344,7 +344,7 @@ def native_rejects() -> Bool:
     rejects_native("B2CW:1\n1337\n1\n [1,8,1,26]\n"),
     rejects_native("B2CW:1\n1337\n1\n[1,8,1,26],[2,8,1,26]\n"),
     rejects_native("B2CW:1\n1337\n1\n[94371840,8,1,0]\n"),
-    rejects_native("B2CW:1\n1337\n1\n[1,20,1,0]\n"),
+    rejects_native("B2CW:1\n1337\n1\n[1,64,1,0]\n"),
     rejects_native("B2CW:1\n1337\n1\n[1,8,1,28]\n"),
     rejects_native("B2CW:1\n1337\n0\n" ++ String.repeat(" ", (1n + Migration.max_native_input() : Nat)))
   ])

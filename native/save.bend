@@ -47,7 +47,7 @@ def max_u32_digits() -> Nat:
 # The widest one edit may be in the canonical form `JSON.stringify` wrote and
 # `encode` writes: two brackets, three commas and, from Multiplayer.valid_edit,
 # an x and a z below World.negative_origin (94371840, eight digits), a y below
-# World.max_y (20, two digits) and a block id at most 27 (two digits).
+# World.max_y (64, two digits) and a block id at most 27 (two digits).
 def max_edit_text() -> Nat:
   25n
 

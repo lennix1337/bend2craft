@@ -9,8 +9,10 @@ import ../world/world_state.bend as WorldState
 # These numbers are not the probe's opinion of itself. They were counted twice,
 # by two independent routes that share no code with it: once in Bend through the
 # ray renderer's already-validated nested grid, and once through the JavaScript
-# lane reading the same `WorldState.chunk` bytes. Both report 2102 solid cells
-# and 1298 exposed faces for seed 1337, chunk 0,0, of which 296 are top faces.
+# lane reading the same `WorldState.chunk` bytes. Both report 2070 solid cells
+# and 1216 exposed faces for seed 1337, chunk 0,0, of which 296 are top faces.
+# These numbers moved on 2026-10-03 with max_y 64, bedrock, and the lattice cave
+# rule; the surface counts (296 top faces) did not move.
 #
 # A renderer that extracts fewer faces than this is not rendering the world: it
 # draws an almost empty frame, and any speed it appears to win is the speed of
@@ -105,14 +107,14 @@ def reference() -> IO(Reference):
 
 def checked(pinned: Reference, +extracted: U32) -> IO(Unit):
   Reference{solid, exposed} = pinned
-  solid_ok = is_eq(solid, 2102)
-  exposed_ok = is_eq(exposed, 1298)
-  extracted_ok = is_eq(extracted, 1298)
+  solid_ok = is_eq(solid, 2070)
+  exposed_ok = is_eq(exposed, 1216)
+  extracted_ok = is_eq(extracted, 1216)
   do IO<Unit>:
-    cells : Unit <- report(solid_ok, "solid cells must be 2102")
-    faces : Unit <- report(exposed_ok, "the reference must expose 1298 faces")
-    probe : Unit <- report(extracted_ok, "the probe must extract 1298 faces, not fewer")
-    IO.print("face-extraction=pass solid=2102 exposed=1298 extracted=1298")
+    cells : Unit <- report(solid_ok, "solid cells must be 2070")
+    faces : Unit <- report(exposed_ok, "the reference must expose 1216 faces")
+    probe : Unit <- report(extracted_ok, "the probe must extract 1216 faces, not fewer")
+    IO.print("face-extraction=pass solid=2070 exposed=1216 extracted=1216")
 
 # --- a region of chunks is the world, cell for cell ----------------------------
 #

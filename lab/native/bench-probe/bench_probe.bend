@@ -32,7 +32,11 @@ def check_sample(clones: Array<U32> & Array<U32>) -> IO(Unit):
   do IO<Unit>:
     report : Unit <- IO.print("correctness seed=1337 chunk=(0,0) block_fp="
       ++ U32.show(chunk_fingerprint) ++ " image_fp=" ++ U32.show(image_fingerprint))
-    chunk_check : Unit <- check(U32.is_eq(chunk_fingerprint, 1613011386),
+    # The block fingerprint moved on 2026-10-03 when max_y went from 20 to 64, the
+    # bottom row became bedrock, and the cave rule became a two-field lattice;
+    # the image fingerprint did not, because the spawn pose's ray render never
+    # sees the floor.
+    chunk_check : Unit <- check(U32.is_eq(chunk_fingerprint, 1865757378),
       "chunk fingerprint changed")
     image_check : Unit <- check(U32.is_eq(image_fingerprint, 3748750826),
       "native image fingerprint changed")

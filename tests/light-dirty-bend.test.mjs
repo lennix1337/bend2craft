@@ -27,8 +27,8 @@ const columnCells = [];
 for (let node = Dirty.cells_column(8n, 8n, 8n); node?.$ === "Con"; node = node.tail) {
   columnCells.push([Number(node.head.x), Number(node.head.y), Number(node.head.z)]);
 }
-assert.equal(columnCells.length, 20);
-assert.deepEqual(columnCells[0], [8, 19, 8]);
+assert.equal(columnCells.length, 64);
+assert.deepEqual(columnCells[0], [8, 63, 8]);
 assert.deepEqual(columnCells.at(-1), [8, 0, 8]);
 // Air and water are both clear and dark to the light rules: a swap between
 // them can only change the swapped cell's own light.

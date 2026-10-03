@@ -447,7 +447,7 @@ def light32.sky.columns.z(
 def light32.sky_chunk(+seed: Nat, +chunk_x: Nat, +chunk_z: Nat) -> Array<U32>:
   light32.sky.columns.z(World.terms(seed),
     U32.from_nat(Nat.mul(chunk_x, World.chunk_size())), U32.from_nat(Nat.mul(chunk_z, World.chunk_size())),
-    World.chunk_size(), 0, Array.new(U32, 13n, 0))
+    World.chunk_size(), 0, Array.new(U32, 14n, 0))
 
 def chunk_cells() -> Nat:
   Nat.mul(Nat.mul(World.chunk_size(), World.chunk_size()), World.max_y())
@@ -475,7 +475,7 @@ def chunk(+sources: List<&2, Edit>, +seed: Nat, +chunk_x: Nat, +chunk_z: Nat) ->
       light32.sky_chunk(seed, chunk_x, chunk_z)
     case Con{head, tail}:
       +fields = source_fields.chunk(sources, seed, chunk_x, chunk_z)
-      chunk.fill.fields(fields, seed, chunk_x, chunk_z, chunk_cells(), 0n, Array.new(U32, 13n, 0))
+      chunk.fill.fields(fields, seed, chunk_x, chunk_z, chunk_cells(), 0n, Array.new(U32, 14n, 0))
 
 type EditOverride is Data:
   EditFound{block: U32}
@@ -774,7 +774,7 @@ def light32.chunk(
 ) -> Array<U32>:
   +base_x = Nat.mul(chunk_x, World.chunk_size())
   +base_z = Nat.mul(chunk_z, World.chunk_size())
-  binned = light32.bin_fields(fields, base_x, base_z, Array.new(U32, 13n, 0))
+  binned = light32.bin_fields(fields, base_x, base_z, Array.new(U32, 14n, 0))
   light32.columns.z(local, World.terms(seed), U32.from_nat(base_x), U32.from_nat(base_z),
     World.chunk_size(), 0, binned)
 

@@ -42,6 +42,8 @@ TESTS=(
   tests/redstone-observer-bend.test.mjs
   tests/redstone-all-bend.test.mjs
   tests/redstone-blocks.test.mjs
+  tests/world-block-chunk.test.mjs
+  tests/inventory-bend-contract.test.mjs
   tests/redstone-adapter.test.mjs
   tests/simulation-ticker.test.mjs
   tests/crops-bend.test.mjs

@@ -8,7 +8,7 @@ const chunkSize = Number(World.chunk_size());
 const seaLevel = Number(World.sea_level());
 assert.equal(width, 48);
 assert.equal(depth, 48);
-assert.equal(maxY, 20);
+assert.equal(maxY, 64);
 assert.equal(chunkSize, 16);
 assert.equal(seaLevel, 7);
 assert.equal(Number(World.biome_at(1337n, 40n, 40n)), 0);
@@ -31,7 +31,7 @@ for (const seed of [0n, 1n, 42n, 9999n, 123456n]) {
 }
 const generatedChunk = World.chunk(1337n, 2n, 2n);
 assert.equal(Array.isArray(generatedChunk), true);
-assert.equal(generatedChunk.length, 8192);
+assert.equal(generatedChunk.length, 16384);
 const chunkIndex = (x, y, z) => x + chunkSize * (z + chunkSize * y);
 assert.equal(Number(generatedChunk[chunkIndex(3, 7, 3)]), Number(World.block(1337n, 35n, 7n, 35n)));
 assert.equal(Number(generatedChunk[chunkIndex(0, 0, 0)]), Number(World.block(1337n, 32n, 0n, 32n)));

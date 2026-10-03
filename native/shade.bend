@@ -125,7 +125,7 @@ def columns(remaining: Nat, +offset: U32, cells: Array<U32>) -> Array<U32>:
 
 # Every cell of a chunk as the level it holds.
 def sky(blocks: List<&2, U32>) -> Array<U32>:
-  columns(256n, 0, kinds(blocks, 0, Array.new(U32, 13n, 1)))
+  columns(256n, 0, kinds(blocks, 0, Array.new(U32, 14n, 1)))
 
 # --- the corners -----------------------------------------------------------------
 

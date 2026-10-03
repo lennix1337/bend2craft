@@ -14,6 +14,9 @@ SCRATCH="$ROOT/scratchpad/paint"
 BEND="${BEND_BIN:-$ROOT/.tools/bend-local/bin/bend}"
 RUNS="${RUNS:-7}"
 THREAD_COUNTS="${THREAD_COUNTS:-1 2 4 8}"
+# `on` asks the runtime for the device; the default is the CPU pool, which is what every number
+# in the README was taken with unless its section says otherwise.
+GPU="${GPU:-off}"
 
 if [ ! -x "$BEND" ]; then
   printf 'Bend 2 compiler is missing or not executable: %s\n' "$BEND" >&2
@@ -26,7 +29,7 @@ SAMPLES="$SCRATCH/samples.txt"
 
 printf 'compiler: '
 BEND_NO_TELEMETRY=1 "$BEND" version
-printf 'target: native C executable; --gpu off\n'
+printf 'target: native C executable; --gpu %s\n' "$GPU"
 if [ -r /proc/cpuinfo ]; then
   printf 'cpu: '
   awk -F: '/^model name[[:space:]]*:/ { sub(/^[[:space:]]*/, "", $2); print $2; exit }' /proc/cpuinfo
@@ -38,7 +41,7 @@ BEND_NO_TELEMETRY=1 "$BEND" "$SCRIPT_DIR/paint_bench.bend" -o "$BINARY" >/dev/nu
 for threads in $THREAD_COUNTS; do
   run=1
   while [ "$run" -le "$RUNS" ]; do
-    "$BINARY" --threads "$threads" --gpu off | grep -E '^phase=' \
+    "$BINARY" --threads "$threads" --gpu "$GPU" | grep -E '^phase=' \
       | sed -E "s/^/threads=$threads /" >> "$SAMPLES"
     run=$((run + 1))
   done

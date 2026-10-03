@@ -18,13 +18,13 @@ only the X transfer.
 | --- | --- |
 | `whole` | the spawn chunk's 1,654 faces, the frame as one tile |
 | `tiles` | the same faces, in 64-pixel tiles |
-| `client` | `Client.image_at_depth` over the client's five-by-five view region, from the spawn |
+| `client` | `Play.image_at_depth` over the client's five-by-five view region, from the spawn |
 | `north`, `east`, `south`, `west`, `down`, `up` | the same frame at 1024 from open ground in the middle of the region, looking each way |
-| `crowd` | the `east` frame with eight of a room's other players in it, through `Client.image_among` |
+| `crowd` | the `east` frame with eight of a room's other players in it, through `Play.image_among` |
 | `herd` | the `east` frame with forty of a room's mobs in it |
-| `build` | `Client.world_built`: the whole region's slabs from nothing |
-| `slab` | `Client.world_for` after one edit: the one slab rebuilt and the region merged |
-| `collide` | `Client.collision_region`: the two-by-two grid the player collides with |
+| `build` | `Slabs.world_built`: the whole region's slabs from nothing |
+| `slab` | `Slabs.world_for` after one edit: the one slab rebuilt and the region merged |
+| `collide` | `Play.collision_region`: the two-by-two grid the player collides with |
 
 The script fails if `whole` and `tiles` print a different digest for one size, or if any
 phase prints a different digest at two thread counts. A frame that changes with how it
@@ -355,3 +355,97 @@ fill wrote at least one pixel, so a quad whose top was not on a pixel row wrote 
 in the frame's last column. `span_edges` now answers an empty span for a row nothing
 crosses. The gate's tallies did not move, so on those cameras the write was being painted
 over.
+
+## Measured on Apple Silicon, macOS: a second lane
+
+Everything above this section is the WSL lane and is not touched by it. This is a different machine
+and a different OS, so the two are not comparable and nothing here replaces a number above.
+
+Platform: Apple M1 Pro (10 cores, 8 performance and 2 efficiency), 16-core GPU, macOS 27.0 (26A428),
+Apple clang 21, native C, run from `bash lab/native/paint/run.sh` with `RUNS=5 THREAD_COUNTS="1 8"`
+(two thread counts, not the four the sections above use), medians of five samples, milliseconds,
+2026-10-03. Every run's digests agreed across thread counts. **The Mac was on battery (22%) with Low
+Power Mode on for every run in this section**, which lowers CPU and GPU clocks, so the absolute figures are
+lower bounds on what the machine does plugged in; the before/after pairs were run back to back in the same
+state. They have not been repeated on AC power.
+
+### Before and after the refactor of `native/client.bend`
+
+The client was split into `play`, `room`, `action`, `slabs`, `hour` and `size`, its records were
+nested, and three rules moved into `world/`. The same benchmark, on Bend 2.0.32, `--gpu off`, on the
+commit before the refactor (`HEAD`, `e1bc69a`) and on the refactored tree. Every phase of a
+millisecond or more is within 3% of the other, which is run-to-run noise; none is a measured speedup
+or slowdown. What the benchmark does **not** cover is the tick: `lab/native/client-probe/frame_bench.bend`
+is the only thing that timed it and it does not compile (it builds the 8-field `Client`, as it did at `HEAD`).
+
+| phase | size | 1 thread, before | 1 thread, after | 8 threads, before | 8 threads, after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| client | 32 | 1.30 | 1.32 | 1.07 | 1.07 |
+| client | 128 | 2.42 | 2.42 | 1.95 | 1.98 |
+| client | 1024 | 37.60 | 37.35 | 8.00 | 8.25 |
+| north | 1024 | 35.88 | 35.30 | 14.30 | 14.55 |
+| east | 1024 | 22.80 | 22.48 | 10.62 | 10.70 |
+| south | 1024 | 26.43 | 25.85 | 10.35 | 10.60 |
+| west | 1024 | 38.73 | 37.62 | 15.72 | 15.75 |
+| down | 1024 | 40.33 | 38.98 | 15.62 | 15.90 |
+| up | 1024 | 16.68 | 16.50 | 7.10 | 7.05 |
+| crowd | 1024 | 22.82 | 22.35 | 10.70 | 10.85 |
+| herd | 1024 | 23.10 | 22.77 | 10.62 | 10.72 |
+| build | — | 46.40 | 46.10 | 49.80 | 50.80 |
+| slab | — | 3.50 | 3.50 | 4.00 | 3.90 |
+| collide | — | 4.50 | 4.50 | 4.50 | 4.40 |
+
+### `--gpu on` and `--gpu off`, Bend 2.0.35
+
+`--gpu on` makes no difference, and it should not: the painter has no device leaf. `paint_bench` is
+compiled with `BANGS 0` (no `!` call), so there is nothing for the runtime to send to the device and
+`--gpu on` runs the same CPU pool. Over every phase of a millisecond or more the ratio of on to off is
+0.96 to 1.06. What this does show is that the GPU build step now works on this machine (see below),
+and that 2.0.35 on the CPU is a little faster than 2.0.32 above: 4% to 8% less on the 1024 frames at
+eight threads. That comparison is one run of each compiler, the 2.0.35 runs used the released
+`~/.bend/bin/bend` binary rather than the one built from the pin, and it was not repeated, so read it as
+a direction and not a figure.
+
+| phase | size | 1 thread, off | 1 thread, on | 8 threads, off | 8 threads, on |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| client | 32 | 1.32 | 1.32 | 0.93 | 0.90 |
+| client | 128 | 2.42 | 2.40 | 1.80 | 1.80 |
+| client | 1024 | 36.33 | 35.90 | 7.78 | 7.72 |
+| north | 1024 | 34.40 | 33.55 | 13.60 | 13.53 |
+| east | 1024 | 21.98 | 21.38 | 9.82 | 9.95 |
+| down | 1024 | 39.27 | 38.00 | 15.20 | 15.10 |
+| build | — | 45.70 | 45.10 | 48.70 | 49.50 |
+| slab | — | 3.50 | 3.50 | 3.95 | 4.20 |
+
+### What it took to build and run on this machine
+
+- The native client builds with `bend native/client.bend -o <out>`, but on macOS the compiler also
+  builds a Metal program for any program containing a `!`, and every windowed program does:
+  `Image.drop!` in `Base`'s `App.turn` frees the last frame's image. On WSL that step is skipped
+  unless CUDA headers exist, which is why `AGENTS.md` says the client has no bang: that is true of
+  `native/`, not of the compiled program.
+- On Bend 2.0.32 that Metal step failed on this M1 Pro with `XPC_ERROR_CONNECTION_INTERRUPTED`.
+  The cause is a crash of Apple's `MTLCompilerService` (`unable to legalize instruction ... load
+  monotonic`), upstream issue #1154, present from 2.0.29 on M1 and M2 and fixed in 2.0.35. The CPU
+  half of the build still produced a working binary, and `--gpu off` runs it.
+- The pin was moved to 2.0.35 for that reason (`docs/vendor-bend.md`).
+- The client prints its resolution table and starts, and `--size=` is read by `native/size.bend`. A
+  window was not driven by hand, so nothing here says the client plays correctly on macOS.
+
+### The same benchmark plugged in
+
+The runs above were on battery with Low Power Mode on. Repeated on AC power with Low Power Mode off, `--gpu off`,
+Bend 2.0.35 built from the pin, the refactored tree, the same `RUNS=5 THREAD_COUNTS="1 8"`, milliseconds:
+
+| phase | size | 1 thread, battery | 1 thread, AC | 8 threads, battery | 8 threads, AC |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| client | 32 | 1.32 | 1.07 | 0.93 | 0.80 |
+| client | 128 | 2.42 | 1.98 | 1.80 | 1.60 |
+| client | 1024 | 36.33 | 29.52 | 7.78 | 7.67 |
+| east | 1024 | 21.98 | 18.98 | 9.82 | 10.70 |
+| north | 1024 | 34.40 | — | 13.60 | 14.65 |
+| down | 1024 | 39.27 | — | 15.20 | 18.12 |
+
+Across the phases of a millisecond or more the median ratio of AC to battery is 0.87 (0.77 to 1.19): the
+single-thread phases are 14% to 21% faster plugged in, and the eight-thread phases are not consistently faster
+(several are within 20% either way, which this benchmark's run-to-run spread does not rule out). Digests agreed.

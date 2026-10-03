@@ -1,4 +1,5 @@
 import { Inventory as InventoryDomain } from "./bend-modules.js";
+import { redstoneBlockForItem } from "./redstone.js";
 
 export const MAX_STACK = Number(InventoryDomain.max_stack());
 export const HOTBAR_SIZE = 9;
@@ -19,6 +20,7 @@ export function cellNat(value) {
 
 export const BLOCK_INFO = Object.freeze({
   0: Object.freeze({ name: "air", color: "#8bbfdc" }),
+  41: Object.freeze({ name: "bedrock", color: "#3d4350" }),
   1: Object.freeze({ name: "stone", color: "#7f8a91" }),
   2: Object.freeze({ name: "dirt", color: "#9b5c38" }),
   3: Object.freeze({ name: "grass", color: "#58ad42" }),
@@ -135,146 +137,74 @@ const ITEM_NAMES = Object.freeze(Object.fromEntries(
   Object.entries(ITEM_IDS).map(([name, id]) => [id, name]),
 ));
 
-export const BLOCK_TO_ITEM = Object.freeze({
-  1: "stone",
-  2: "dirt",
-  3: "grass",
-  4: "leaves",
-  5: "wood",
-  6: "sand",
-  7: "water",
-  8: "coal",
-  9: "raw_iron",
-  10: "diamond",
-  11: "furnace",
-  12: "torch",
-  13: "bed",
-  14: "door",
-  15: "door",
-  16: "wheat_seeds",
-  17: "wheat_seeds",
-  18: "wheat_seeds",
-  19: "wheat",
-  20: "dirt",
-  22: "cobblestone",
-  23: "obsidian",
-  25: "glass",
-  26: "chest",
-  27: "crafting_table",
-  // Redstone blocks. Block 38 is a piston head, placed only by a piston, so it
-  // drops nothing and has no entry here.
-  28: "redstone",
-  29: "redstone_torch",
-  30: "lever",
-  31: "redstone_block",
-  32: "redstone_lamp",
-  33: "redstone_repeater",
-  34: "redstone_comparator",
-  35: "pressure_plate",
-  36: "activator_rail",
-  37: "piston",
-  39: "sticky_piston",
-  40: "observer",
-});
-
-export const ITEM_TO_BLOCK = Object.freeze({
-  stone: 1,
-  dirt: 2,
-  grass: 3,
-  leaves: 4,
-  wood: 5,
-  sand: 6,
-  water: 7,
-  furnace: 11,
-  torch: 12,
-  bed: 13,
-  door: 14,
-  crafting_table: 27,
-  glass: 25,
-  chest: 26,
-  cobblestone: 22,
-  obsidian: 23,
-  redstone: 28,
-  redstone_torch: 29,
-  lever: 30,
-  redstone_block: 31,
-  redstone_lamp: 32,
-  redstone_repeater: 33,
-  redstone_comparator: 34,
-  pressure_plate: 35,
-  activator_rail: 36,
-  piston: 37,
-  sticky_piston: 39,
-  observer: 40,
-});
 
 export const ITEM_INFO = Object.freeze({
-  stone: Object.freeze({ name: "stone", color: BLOCK_INFO[1].color, block: 1, placeable: true, collectible: true }),
-  dirt: Object.freeze({ name: "dirt", color: BLOCK_INFO[2].color, block: 2, placeable: true, collectible: true }),
-  grass: Object.freeze({ name: "grass", color: BLOCK_INFO[3].color, block: 3, placeable: true, collectible: true }),
-  leaves: Object.freeze({ name: "leaves", color: BLOCK_INFO[4].color, block: 4, placeable: true, collectible: true }),
-  wood: Object.freeze({ name: "wood", color: BLOCK_INFO[5].color, block: 5, placeable: true, collectible: true }),
-  sand: Object.freeze({ name: "sand", color: BLOCK_INFO[6].color, block: 6, placeable: true, collectible: true }),
-  water: Object.freeze({ name: "water", color: BLOCK_INFO[7].color, block: 7, placeable: false, collectible: false }),
-  planks: Object.freeze({ name: "wood planks", color: "#c28a4d", block: null, placeable: false, collectible: true }),
-  sticks: Object.freeze({ name: "sticks", color: "#d8a66a", block: null, placeable: false, collectible: true }),
-  crafting_table: Object.freeze({ name: "crafting table", color: "#9d6a3e", block: 27, placeable: true, collectible: true }),
-  wooden_pickaxe: Object.freeze({ name: "wooden pickaxe", color: "#b77b48", block: null, placeable: false, collectible: true }),
-  wool: Object.freeze({ name: "wool", color: "#ece8d8", block: null, placeable: false, collectible: true }),
-  rotten_flesh: Object.freeze({ name: "rotten flesh", color: "#8c4d45", block: null, placeable: false, collectible: true }),
-  coal: Object.freeze({ name: "coal", color: "#24262b", block: null, placeable: false, collectible: true }),
-  raw_iron: Object.freeze({ name: "raw iron", color: "#c28a6d", block: null, placeable: false, collectible: true }),
-  diamond: Object.freeze({ name: "diamond", color: "#68e4df", block: null, placeable: false, collectible: true }),
-  stone_pickaxe: Object.freeze({ name: "stone pickaxe", color: "#92999f", block: null, placeable: false, collectible: true }),
-  iron_pickaxe: Object.freeze({ name: "iron pickaxe", color: "#d5d9dc", block: null, placeable: false, collectible: true }),
-  diamond_pickaxe: Object.freeze({ name: "diamond pickaxe", color: "#5ee8e0", block: null, placeable: false, collectible: true }),
-  iron_ingot: Object.freeze({ name: "iron ingot", color: "#d9dde2", block: null, placeable: false, collectible: true }),
-  furnace: Object.freeze({ name: "furnace", color: "#5b5f66", block: 11, placeable: true, collectible: true }),
-  torch: Object.freeze({ name: "torch", color: "#f5b44c", block: 12, placeable: true, collectible: true }),
-  bed: Object.freeze({ name: "bed", color: "#c94f62", block: 13, placeable: true, collectible: true }),
-  door: Object.freeze({ name: "door", color: "#8c5a38", block: 14, placeable: true, collectible: true }),
-  wheat_seeds: Object.freeze({ name: "wheat seeds", color: "#d5b83f", block: null, placeable: false, collectible: true }),
-  wheat: Object.freeze({ name: "wheat", color: "#f0c84b", block: null, placeable: false, collectible: true }),
-  wooden_hoe: Object.freeze({ name: "wooden hoe", color: "#b77b48", block: null, placeable: false, collectible: true }),
-  empty_bucket: Object.freeze({ name: "empty bucket", color: "#b8c0c8", block: null, placeable: false, collectible: true }),
-  water_bucket: Object.freeze({ name: "water bucket", color: "#4d9bd6", block: null, placeable: false, collectible: true }),
-  lava_bucket: Object.freeze({ name: "lava bucket", color: "#e56b2f", block: null, placeable: false, collectible: true }),
-  cobblestone: Object.freeze({ name: "cobblestone", color: BLOCK_INFO[22].color, block: 22, placeable: true, collectible: true }),
-  obsidian: Object.freeze({ name: "obsidian", color: BLOCK_INFO[23].color, block: 23, placeable: true, collectible: true }),
-  // The redstone items, all placeable and collectible, coloured from the block
-  // contract so a block and the item that places it never disagree.
-  redstone: Object.freeze({ name: "redstone dust", color: BLOCK_INFO[28].color, block: 28, placeable: true, collectible: true }),
-  redstone_torch: Object.freeze({ name: "redstone torch", color: BLOCK_INFO[29].color, block: 29, placeable: true, collectible: true }),
-  lever: Object.freeze({ name: "lever", color: BLOCK_INFO[30].color, block: 30, placeable: true, collectible: true }),
-  redstone_block: Object.freeze({ name: "redstone block", color: BLOCK_INFO[31].color, block: 31, placeable: true, collectible: true }),
-  redstone_lamp: Object.freeze({ name: "redstone lamp", color: BLOCK_INFO[32].color, block: 32, placeable: true, collectible: true }),
-  redstone_repeater: Object.freeze({ name: "redstone repeater", color: BLOCK_INFO[33].color, block: 33, placeable: true, collectible: true }),
-  redstone_comparator: Object.freeze({ name: "redstone comparator", color: BLOCK_INFO[34].color, block: 34, placeable: true, collectible: true }),
-  pressure_plate: Object.freeze({ name: "pressure plate", color: BLOCK_INFO[35].color, block: 35, placeable: true, collectible: true }),
-  activator_rail: Object.freeze({ name: "activator rail", color: BLOCK_INFO[36].color, block: 36, placeable: true, collectible: true }),
-  piston: Object.freeze({ name: "piston", color: BLOCK_INFO[37].color, block: 37, placeable: true, collectible: true }),
-  sticky_piston: Object.freeze({ name: "sticky piston", color: BLOCK_INFO[39].color, block: 39, placeable: true, collectible: true }),
-  observer: Object.freeze({ name: "observer", color: BLOCK_INFO[40].color, block: 40, placeable: true, collectible: true }),
-  wooden_sword: Object.freeze({ name: "wooden sword", color: "#b77b48", block: null, placeable: false, collectible: true }),
-  stone_sword: Object.freeze({ name: "stone sword", color: "#92999f", block: null, placeable: false, collectible: true }),
-  iron_sword: Object.freeze({ name: "iron sword", color: "#d5d9dc", block: null, placeable: false, collectible: true }),
-  diamond_sword: Object.freeze({ name: "diamond sword", color: "#5ee8e0", block: null, placeable: false, collectible: true }),
-  bow: Object.freeze({ name: "bow", color: "#8c5a38", block: null, placeable: false, collectible: true }),
-  shield: Object.freeze({ name: "shield", color: "#7f8a91", block: null, placeable: false, collectible: true }),
-  arrow: Object.freeze({ name: "arrow", color: "#d8cfc0", block: null, placeable: false, collectible: true }),
-  glass: Object.freeze({ name: "glass", color: "#b5d9e8", block: 25, placeable: true, collectible: true }),
-  bread: Object.freeze({ name: "bread", color: "#d59b45", block: null, placeable: false, collectible: true }),
-  apple: Object.freeze({ name: "apple", color: "#c94a3f", block: null, placeable: false, collectible: true }),
-  chest: Object.freeze({ name: "chest", color: "#9d6a3e", block: 26, placeable: true, collectible: true }),
-  leather_helmet: Object.freeze({ name: "leather helmet", color: "#9b5c38", block: null, placeable: false, collectible: true }),
-  iron_chestplate: Object.freeze({ name: "iron chestplate", color: "#c5cbcd", block: null, placeable: false, collectible: true }),
-  iron_leggings: Object.freeze({ name: "iron leggings", color: "#aeb7ba", block: null, placeable: false, collectible: true }),
-  iron_boots: Object.freeze({ name: "iron boots", color: "#92999f", block: null, placeable: false, collectible: true }),
+  stone: Object.freeze({ name: "stone", color: BLOCK_INFO[1].color}),
+  dirt: Object.freeze({ name: "dirt", color: BLOCK_INFO[2].color}),
+  grass: Object.freeze({ name: "grass", color: BLOCK_INFO[3].color}),
+  leaves: Object.freeze({ name: "leaves", color: BLOCK_INFO[4].color}),
+  wood: Object.freeze({ name: "wood", color: BLOCK_INFO[5].color}),
+  sand: Object.freeze({ name: "sand", color: BLOCK_INFO[6].color}),
+  water: Object.freeze({ name: "water", color: BLOCK_INFO[7].color}),
+  planks: Object.freeze({ name: "wood planks", color: "#c28a4d"}),
+  sticks: Object.freeze({ name: "sticks", color: "#d8a66a"}),
+  crafting_table: Object.freeze({ name: "crafting table", color: "#9d6a3e"}),
+  wooden_pickaxe: Object.freeze({ name: "wooden pickaxe", color: "#b77b48"}),
+  wool: Object.freeze({ name: "wool", color: "#ece8d8"}),
+  rotten_flesh: Object.freeze({ name: "rotten flesh", color: "#8c4d45"}),
+  coal: Object.freeze({ name: "coal", color: "#24262b"}),
+  raw_iron: Object.freeze({ name: "raw iron", color: "#c28a6d"}),
+  diamond: Object.freeze({ name: "diamond", color: "#68e4df"}),
+  stone_pickaxe: Object.freeze({ name: "stone pickaxe", color: "#92999f"}),
+  iron_pickaxe: Object.freeze({ name: "iron pickaxe", color: "#d5d9dc"}),
+  diamond_pickaxe: Object.freeze({ name: "diamond pickaxe", color: "#5ee8e0"}),
+  iron_ingot: Object.freeze({ name: "iron ingot", color: "#d9dde2"}),
+  furnace: Object.freeze({ name: "furnace", color: "#5b5f66"}),
+  torch: Object.freeze({ name: "torch", color: "#f5b44c"}),
+  bed: Object.freeze({ name: "bed", color: "#c94f62"}),
+  door: Object.freeze({ name: "door", color: "#8c5a38"}),
+  wheat_seeds: Object.freeze({ name: "wheat seeds", color: "#d5b83f"}),
+  wheat: Object.freeze({ name: "wheat", color: "#f0c84b"}),
+  wooden_hoe: Object.freeze({ name: "wooden hoe", color: "#b77b48"}),
+  empty_bucket: Object.freeze({ name: "empty bucket", color: "#b8c0c8"}),
+  water_bucket: Object.freeze({ name: "water bucket", color: "#4d9bd6"}),
+  lava_bucket: Object.freeze({ name: "lava bucket", color: "#e56b2f"}),
+  cobblestone: Object.freeze({ name: "cobblestone", color: BLOCK_INFO[22].color}),
+  obsidian: Object.freeze({ name: "obsidian", color: BLOCK_INFO[23].color}),
+  // The redstone items, coloured from the block contract so a block and the
+  // item that places it never disagree.
+  redstone: Object.freeze({ name: "redstone dust", color: BLOCK_INFO[28].color}),
+  redstone_torch: Object.freeze({ name: "redstone torch", color: BLOCK_INFO[29].color}),
+  lever: Object.freeze({ name: "lever", color: BLOCK_INFO[30].color}),
+  redstone_block: Object.freeze({ name: "redstone block", color: BLOCK_INFO[31].color}),
+  redstone_lamp: Object.freeze({ name: "redstone lamp", color: BLOCK_INFO[32].color}),
+  redstone_repeater: Object.freeze({ name: "redstone repeater", color: BLOCK_INFO[33].color}),
+  redstone_comparator: Object.freeze({ name: "redstone comparator", color: BLOCK_INFO[34].color}),
+  pressure_plate: Object.freeze({ name: "pressure plate", color: BLOCK_INFO[35].color}),
+  activator_rail: Object.freeze({ name: "activator rail", color: BLOCK_INFO[36].color}),
+  piston: Object.freeze({ name: "piston", color: BLOCK_INFO[37].color}),
+  sticky_piston: Object.freeze({ name: "sticky piston", color: BLOCK_INFO[39].color}),
+  observer: Object.freeze({ name: "observer", color: BLOCK_INFO[40].color}),
+  wooden_sword: Object.freeze({ name: "wooden sword", color: "#b77b48"}),
+  stone_sword: Object.freeze({ name: "stone sword", color: "#92999f"}),
+  iron_sword: Object.freeze({ name: "iron sword", color: "#d5d9dc"}),
+  diamond_sword: Object.freeze({ name: "diamond sword", color: "#5ee8e0"}),
+  bow: Object.freeze({ name: "bow", color: "#8c5a38"}),
+  shield: Object.freeze({ name: "shield", color: "#7f8a91"}),
+  arrow: Object.freeze({ name: "arrow", color: "#d8cfc0"}),
+  glass: Object.freeze({ name: "glass", color: "#b5d9e8"}),
+  bread: Object.freeze({ name: "bread", color: "#d59b45"}),
+  apple: Object.freeze({ name: "apple", color: "#c94a3f"}),
+  chest: Object.freeze({ name: "chest", color: "#9d6a3e"}),
+  leather_helmet: Object.freeze({ name: "leather helmet", color: "#9b5c38"}),
+  iron_chestplate: Object.freeze({ name: "iron chestplate", color: "#c5cbcd"}),
+  iron_leggings: Object.freeze({ name: "iron leggings", color: "#aeb7ba"}),
+  iron_boots: Object.freeze({ name: "iron boots", color: "#92999f"}),
   // What a farm animal leaves behind. Raw, like the wheat and the apple: the
   // cooking recipes for a cooked meal are not part of this slice.
-  raw_porkchop: Object.freeze({ name: "raw porkchop", color: "#e08a80", block: null, placeable: false, collectible: true }),
-  raw_beef: Object.freeze({ name: "raw beef", color: "#b4443c", block: null, placeable: false, collectible: true }),
-  raw_chicken: Object.freeze({ name: "raw chicken", color: "#e0cba6", block: null, placeable: false, collectible: true }),
+  raw_porkchop: Object.freeze({ name: "raw porkchop", color: "#e08a80"}),
+  raw_beef: Object.freeze({ name: "raw beef", color: "#b4443c"}),
+  raw_chicken: Object.freeze({ name: "raw chicken", color: "#e0cba6"}),
 });
 
 function valuesFromList(list) {
@@ -338,8 +268,8 @@ function numericItem(value) {
 function slotView(item, count, durability, previous, durabilityByItem) {
   const name = ITEM_NAMES[item] ?? "empty";
   if (item === 0 || count === 0) return { block: 0, count: 0 };
-  const block = ITEM_TO_BLOCK[name];
-  const view = block === undefined ? { item: name, count } : { block, count };
+  const block = blockForItemNumber(item);
+  const view = block === null ? { item: name, count } : { block, count };
   if ([11, 17, 18, 19, 27, 33, 34, 35, 36, 37, 38, 44, 45, 46, 47].includes(item)) {
     view.durabilityMax = Number(InventoryDomain.tool_max_durability(item));
     view.durability = durability || previous?.durability || durabilityByItem?.get(name) || view.durabilityMax;
@@ -423,11 +353,14 @@ export function selectedItem(inventory, slot) {
 }
 
 export function itemId(value) {
-  if (typeof value === "number") return BLOCK_TO_ITEM[value] ?? null;
+  if (typeof value === "number") {
+    const item = Number(InventoryDomain.mining_item(value));
+    return item === 0 ? null : ITEM_NAMES[item] ?? null;
+  }
   if (typeof value === "string") return ITEM_INFO[value] === undefined ? null : value;
   if (value === null || typeof value !== "object") return null;
   if (typeof value.item === "string") return ITEM_INFO[value.item] === undefined ? null : value.item;
-  if (Number.isInteger(value.block)) return BLOCK_TO_ITEM[value.block] ?? null;
+  if (Number.isInteger(value.block)) return itemId(value.block);
   return null;
 }
 
@@ -446,10 +379,16 @@ export function itemColor(value) {
   return id === null ? BLOCK_INFO[0].color : ITEM_INFO[id].color;
 }
 
+function blockForItemNumber(item) {
+  const placed = Number(InventoryDomain.placed_block(item));
+  if (placed !== 0) return placed;
+  return redstoneBlockForItem(item);
+}
+
 export function blockForItem(value) {
   const id = itemId(value);
-  if (id === null || !InventoryDomain.is_placeable(ITEM_IDS[id])) return null;
-  return ITEM_INFO[id].block;
+  if (id === null) return null;
+  return blockForItemNumber(ITEM_IDS[id]);
 }
 
 export function isPlaceable(value) {
@@ -583,12 +522,12 @@ export function countItem(inventory, value) {
 
 export function collectItem(inventory, value, amount = 1) {
   const id = itemId(value);
-  if (id === null || !ITEM_INFO[id].collectible) return false;
+  if (id === null) return false;
   return applyResult(inventory, InventoryDomain.pickup(stateFor(inventory), ITEM_IDS[id], BigInt(amount)));
 }
 
 export function collect(inventory, block, amount = 1) {
-  return collectItem(inventory, BLOCK_TO_ITEM[block] ?? null, amount);
+  return collectItem(inventory, itemId(block), amount);
 }
 
 export function consume(inventory, slot, amount = 1) {

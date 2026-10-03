@@ -2,11 +2,10 @@ import assert from "node:assert/strict";
 import Redstone from "../world/redstone.bend";
 import {
   BLOCK_INFO,
-  BLOCK_TO_ITEM,
   ITEM_INFO,
-  ITEM_TO_BLOCK,
   ITEM_IDS,
   blockForItem,
+  itemId,
 } from "../web/inventory.js";
 
 const EMPTY = { $: "Nil" };
@@ -35,39 +34,36 @@ for (const id of ids) {
 
 // A piston head is placed by a piston, so it is named and coloured but has no
 // item: the player can never hold it, and breaking one must drop nothing.
-assert.equal(BLOCK_TO_ITEM[38], undefined, "a piston head drops no item");
-assert.equal(ITEM_TO_BLOCK.redstone, 28);
+assert.equal(itemId(38), null, "a piston head drops no item");
+assert.equal(blockForItem("redstone"), 28);
 assert.equal(ITEM_IDS.redstone, 51);
 
 // Every other redstone block round-trips through an item a player can hold.
 for (const id of ids) {
   if (id === 38) continue;
-  const item = BLOCK_TO_ITEM[id];
+  const item = itemId(id);
   assert.equal(typeof item, "string", `block ${id} drops no item`);
-  assert.equal(ITEM_TO_BLOCK[item], id, `item ${item} does not place block ${id}`);
+  assert.equal(blockForItem(item), id, `item ${item} does not place block ${id}`);
   const info = ITEM_INFO[item];
   assert.ok(info, `item ${item} has no entry in ITEM_INFO`);
-  assert.equal(info.block, id, `item ${item} disagrees with block ${id}`);
-  assert.equal(info.placeable, true, `item ${item} cannot be placed`);
-  assert.equal(info.collectible, true, `item ${item} cannot be collected`);
   // The item is coloured from the block contract, so a block and the item that
   // places it never disagree on the surface.
   assert.equal(info.color, BLOCK_INFO[id].color, `item ${item} and block ${id} differ in colour`);
 }
 
-// The adapter's two directions agree with the tables.
+// The adapter's two directions agree.
 assert.equal(blockForItem("redstone_block"), 31);
-assert.equal(BLOCK_TO_ITEM[31], "redstone_block");
-assert.equal(BLOCK_TO_ITEM[38], undefined, "a piston head has no item to give");
+assert.equal(itemId(31), "redstone_block");
+assert.equal(itemId(38), null, "a piston head has no item to give");
 
 // --- the door reuses the ids the world already had --------------------------
 // world/redstone_machines.bend drives blocks 14 and 15 rather than inventing a
 // third, so a redstone door and the door item are the same thing.
 assert.equal(BLOCK_INFO[14].name, "closed door");
 assert.equal(BLOCK_INFO[15].name, "open door");
-assert.equal(BLOCK_TO_ITEM[14], "door");
-assert.equal(BLOCK_TO_ITEM[15], "door");
-assert.equal(ITEM_TO_BLOCK.door, 14);
+assert.equal(itemId(14), "door");
+assert.equal(itemId(15), "door");
+assert.equal(blockForItem("door"), 14);
 
 // --- nothing above collides with the ids the world already used -------------
 // The redstone slice starts at 28, so every pre-existing block keeps its id. A

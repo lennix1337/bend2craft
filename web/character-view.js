@@ -1,22 +1,7 @@
 // Pure presentation data for the first-person item and third-person person views.
 // Positions use camera or character-local coordinates; +x is right and +y is up.
 
-const BLOCK_TO_ITEM = Object.freeze({
-  1: "stone",
-  2: "dirt",
-  3: "grass",
-  4: "leaves",
-  5: "wood",
-  6: "sand",
-  7: "water",
-  22: "cobblestone",
-  23: "obsidian",
-  11: "furnace",
-  12: "torch",
-  13: "bed",
-  14: "door",
-  15: "door",
-});
+import { itemId } from "./inventory.js";
 
 function deepFreeze(value) {
   if (value === null || typeof value !== "object" || Object.isFrozen(value)) return value;
@@ -431,10 +416,10 @@ function normalizedSelection(value) {
   if (typeof value === "string") {
     item = value;
   } else if (typeof value === "number") {
-    item = BLOCK_TO_ITEM[value] ?? null;
+    item = itemId(value);
   } else if (value !== null && typeof value === "object") {
     if (typeof value.item === "string") item = value.item;
-    else if (Number.isInteger(value.block)) item = BLOCK_TO_ITEM[value.block] ?? null;
+    else if (Number.isInteger(value.block)) item = itemId(value.block);
     if (Object.prototype.hasOwnProperty.call(value, "count")) count = Number(value.count);
   }
 

@@ -942,6 +942,7 @@ def mining_item.base(+block: U32) -> U32:
     Bool.pick(U32, U32.is_eq(block, 25), 40,
     Bool.pick(U32, U32.is_eq(block, 20), 2,
     Bool.pick(U32, U32.is_eq(block, 14), 24,
+    Bool.pick(U32, U32.is_eq(block, 15), 24,
     Bool.pick(U32, U32.is_eq(block, 13), 23,
       Bool.pick(U32, U32.is_eq(block, 12), 22,
         Bool.pick(U32, U32.is_eq(block, 11), 21,
@@ -949,7 +950,25 @@ def mining_item.base(+block: U32) -> U32:
             Bool.pick(U32, U32.is_eq(block, 22), 31,
               Bool.pick(U32, U32.is_eq(block, 10), 16,
             Bool.pick(U32, U32.is_eq(block, 9), 15,
-              Bool.pick(U32, U32.is_eq(block, 8), 14, block)))))))))))))
+              Bool.pick(U32, U32.is_eq(block, 8), 14,
+              # The redstone blocks, items 51 through 62, in the same order. A
+              # piston head belongs to its piston and drops nothing. Without
+              # these cases `mining_item` fell to the terrain default and
+              # dropped an unrelated item (a wire as an empty bucket, a lamp as
+              # obsidian, a redstone block as cobblestone).
+              Bool.pick(U32, U32.is_eq(block, 28), 51,
+              Bool.pick(U32, U32.is_eq(block, 29), 52,
+              Bool.pick(U32, U32.is_eq(block, 30), 53,
+              Bool.pick(U32, U32.is_eq(block, 31), 54,
+              Bool.pick(U32, U32.is_eq(block, 32), 55,
+              Bool.pick(U32, U32.is_eq(block, 33), 56,
+              Bool.pick(U32, U32.is_eq(block, 34), 57,
+              Bool.pick(U32, U32.is_eq(block, 35), 58,
+              Bool.pick(U32, U32.is_eq(block, 36), 59,
+              Bool.pick(U32, U32.is_eq(block, 37), 60,
+              Bool.pick(U32, U32.is_eq(block, 38), 0,
+              Bool.pick(U32, U32.is_eq(block, 39), 61,
+              Bool.pick(U32, U32.is_eq(block, 40), 62, block)))))))))))))))))))))))))))
 
 def mining_item(+block: U32) -> U32:
   +seeds = Bool.or(Bool.or(U32.is_eq(block, 16), U32.is_eq(block, 17)), U32.is_eq(block, 18))

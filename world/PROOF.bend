@@ -177,6 +177,12 @@ def Laws.sea_surface_is_water():
 def Laws.cave_is_air():
   {==}
 
+def Laws.caves_run():
+  {==}
+
+def Laws.ground_beside_a_cave_is_solid():
+  {==}
+
 def Laws.known_coal_ore():
   {==}
 
@@ -848,7 +854,16 @@ def Laws.air_and_fluids_are_not_mined():
 def Laws.what_a_block_drops():
   {==}
 
+def Laws.what_a_redstone_block_drops():
+  {==}
+
+def Laws.what_an_open_door_drops():
+  {==}
+
 def Laws.what_a_block_drops_places_it_again():
+  {==}
+
+def Laws.the_bottom_row_is_bedrock():
   {==}
 
 def Laws.every_placeable_item_places_a_block():

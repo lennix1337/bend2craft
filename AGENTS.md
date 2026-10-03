@@ -18,7 +18,7 @@ Non-negotiable rules:
 - Keep browser code limited to adapting Bend 2 values into WebGL/WebGPU presentation, input events, local caches and unavoidable browser APIs. Do not duplicate formulas or silently make browser state authoritative.
 - Every performance-sensitive Bend 2 change needs a reproducible benchmark and a focused correctness test; report measured results, not assumed speedups.
 
-The current browser slice is not fully migrated yet: `web/inventory.js` still owns inventory/crafting transitions, and `web/game-state.js` still owns player physics, collision, raycast and movement transitions. Do not expand those JavaScript authorities; migrate new behavior to Bend 2 as those contracts are extended.
+The current browser slice is not fully migrated yet: `web/game-state.js` still owns player physics, collision, raycast and movement transitions. Do not expand those JavaScript authorities; migrate new behavior to Bend 2 as those contracts are extended.
 
 ## Project
 
@@ -32,7 +32,7 @@ The game model is authored in Bend 2 under `world/`. Two targets consume it:
 Start here:
 
 - Bend world contract: `world/world.bend`
-- Bend laws and proofs: `world/LAWS.bend`, `world/PROOF.bend` (95 laws, 31 of them for
+- Bend laws and proofs: `world/LAWS.bend`, `world/PROOF.bend` (97 laws, 31 of them for
   every input; see "Laws" below)
 - Bend module boundary: `web/bend-modules.js` (wraps every `world/*.bend`
   module; the only place that knows how the JS lane names a datatype)
@@ -395,9 +395,9 @@ console prompt and discover this at the end.
 `Inventory.mine_interaction_at` and placing is `Inventory.place_interaction` — the same two
 calls the browser makes — so what a hand can break, what a block drops, what a tool wears
 and what an item places are `world/inventory.bend`'s answers on both targets.
-`Inventory.placed_block` is the item-to-block table those calls needed and the browser
-still keeps a copy of in `web/inventory.js`; migrate the browser to it rather than adding
-a third.
+`Inventory.placed_block` and `Inventory.mining_item` own the item-to-block table on
+both targets; the browser reads them through `web/inventory.js`'s
+`blockForItem`/`itemId` and keeps no second copy of its own.
 
 - **A refused action changes nothing.** By the rules a bare hand cannot break stone. The
   starting bag is `Inventory.create()` plus a diamond pickaxe in the sixth slot, because
@@ -657,7 +657,7 @@ they mean.
 
 ## Laws
 
-`world/LAWS.bend` states 95 laws and `world/PROOF.bend` closes every one; `npm run proof`
+`world/LAWS.bend` states 97 laws and `world/PROOF.bend` closes every one; `npm run proof`
 prints `ALL PROOFS CHECK` in about nine seconds. There are two kinds, and the difference
 matters:
 

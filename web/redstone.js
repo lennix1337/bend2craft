@@ -29,6 +29,21 @@ const floodKey = (window) =>
 // adapter owns one buffer, keeps it for as long as it is big enough, and grows it
 // when a circuit outgrows it. Sizing a buffer is cache management, which is the
 // adapter's job; what the window has to cover is world/redstone_grid.bend's.
+// Item ids 51 through 62 carry the same order as `is_block_item` prints them
+// in `world/inventory.bend` - one picked by each redstone block in `block_ids`
+// order, minus the piston head. `Inventory.placed_block` refuses to name a
+// redstone block, so this is the one place item names redstone's blocks.
+export function redstoneBlockForItem(item) {
+  const n = Number(item);
+  if (!Number.isInteger(n) || n < 51 || n > 62) return null;
+  const blocks = [];
+  for (let node = Redstone.block_ids(); node?.$ === "Con"; node = node.tail) {
+    const id = Number(node.head);
+    if (id !== Number(Redstone.head_block())) blocks.push(id);
+  }
+  return blocks[n - 51] ?? null;
+}
+
 export function createRedstone(saved) {
   const circuit = saved?.$ === "Circuit" ? saved : RedstoneAll.empty();
   return {

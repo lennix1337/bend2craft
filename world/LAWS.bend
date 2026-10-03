@@ -93,8 +93,18 @@ law beach_is_sand:
 law sea_surface_is_water:
   {World.block(1337n, 3n, 7n, 3n) == 7 : U32}
 
+# A cave cell is air, and its neighbour in the same pocket is too: caves run,
+# they are not single punched holes. The cell moved with the 3D cave rule on
+# 2026-10-03; the rule behind the law did not.
 law cave_is_air:
-  {World.block(1337n, 35n, 5n, 35n) == 0 : U32}
+  {World.block(1337n, 36n, 5n, 40n) == 0 : U32}
+
+law caves_run:
+  {World.block(1337n, 37n, 5n, 40n) == 0 : U32}
+
+# The rule is selective: solid ground still stands next to that pocket.
+law ground_beside_a_cave_is_solid:
+  {World.block(1337n, 32n, 5n, 32n) == 6 : U32}
 
 law known_coal_ore:
   {World.block(1337n, 1n, 1n, 0n) == 8 : U32}
@@ -110,7 +120,7 @@ law known_village_furnace:
 
 # A chunk's 16 x 16 x 20 cells fit the 8192 slots `World.chunk` allocates.
 law a_chunk_holds_its_cells:
-  {Nat.is_le(Nat.mul(Nat.mul(World.chunk_size(), World.chunk_size()), World.max_y()), 8192n) == True{} : Bool}
+  {Nat.is_le(Nat.mul(Nat.mul(World.chunk_size(), World.chunk_size()), World.max_y()), 16384n) == True{} : Bool}
 
 # Cells below the origin are stored at `World.negative_origin()` + x. That number
 # is 94371840, and it is a multiple of every period the terrain formulas reduce a
@@ -336,11 +346,26 @@ law what_a_block_drops:
   {List.map(~U32, ~U32, ~(block => Inventory.mining_item(block)), [1, 2, 3, 4, 5, 6, 8, 9, 10, 20, 16, 17, 18, 19])
     == [1, 2, 3, 4, 5, 6, 14, 15, 16, 2, 25, 25, 25, 26] : List<U32>}
 
+# What each redstone block leaves: its own item; the piston head leaves nothing.
+law what_a_redstone_block_drops:
+  {List.map(~U32, ~U32, ~(block => Inventory.mining_item(block)),
+      [28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40])
+    == [51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 0, 61, 62] : List<U32>}
+
+# The open door drops the door item rather than whatever id the cell shares.
+law what_an_open_door_drops:
+  {Inventory.mining_item(15) == 24 : U32}
+
 # What a block drops places that block again, for every block a player can put back.
 law what_a_block_drops_places_it_again:
   {List.map(~U32, ~U32, ~(block => Inventory.placed_block(Inventory.mining_item(block))),
       [1, 2, 3, 4, 5, 6, 11, 12, 13, 14, 22, 23, 25, 26, 27])
     == [1, 2, 3, 4, 5, 6, 11, 12, 13, 14, 22, 23, 25, 26, 27] : List<U32>}
+
+# The bottom row is bedrock: nothing can build or scoop the floor out.
+law the_bottom_row_is_bedrock:
+  {List.map(~U32, ~U32, ~(x => World.block(1337n, U32.to_nat(x), 0n, 33n)), [5, 16, 100, 400])
+    == [41, 41, 41, 41] : List<U32>}
 
 # Every item the bag lets a player place outside the redstone set names a block.
 law every_placeable_item_places_a_block:

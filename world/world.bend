@@ -299,17 +299,93 @@ def lava_at(+seed: Nat, +x: Nat, +y: Nat, +z: Nat) -> Bool:
   +hash = Nat.mod(Nat.add(mix(seed, x, z), Nat.mul(y, 13n)), 29n)
   Bool.and(Bool.and(deep, inside), Nat.is_eq(hash, 0n))
 
-def ore_block(+seed: Nat, +x: Nat, +y: Nat, +z: Nat) -> U32:
-  +hash = Nat.mod(Nat.add(Nat.add(mix(seed, x, z), Nat.mul(y, 17n)), Nat.mod(seed, 89n)), 97n)
-  +diamond = Nat.is_eq(Nat.mod(hash, 97n), 0n)
-  +iron = Nat.is_eq(Nat.mod(hash, 31n), 0n)
-  +coal = Nat.is_eq(Nat.mod(hash, 11n), 0n)
-  Bool.pick(U32, diamond, 10,
-    Bool.pick(U32, iron, 9,
-      Bool.pick(U32, coal, 8, 1)))
+# ---------------------------------------------------------------------------
+# Ores
+#
+# Every ore generates in a band of its own and at a density of its own, and
+# both come from vanilla's ore table
+# (https://minecraft.wiki/w/Ore_(feature), Java 1.18+):
+#
+#   ore     layers above bedrock   vein   tries/chunk   blocks/chunk
+#   coal    0..192                 17     20            ~280
+#   iron    -64..72                 9     10            ~60
+#   diamond -64..16                 4     7             ~20
+#
+# A column here is five to eighteen cells tall (sea level 7, `max_y` 64), so a
+# vanilla band cannot be copied as a layer count: it is taken as a fraction of
+# the column instead, which is what the player reads as depth. Diamond
+# generates in the bottom quarter and concentrates in the bottom eighth, and
+# coal and iron generate through the whole column. Densities are vanilla's per
+# rock cell, about 1.7% coal, 0.4% iron and 0.13% diamond.
+#
+# Ores come in veins. One vein is placed per eight-cell lattice cell: the lattice
+# cell's hash says which ore the vein holds, and three more say where inside it
+# the vein sits, far enough from the cell's edge that it never reaches across.
+# A cell is ore when it falls within the vein's reach, which is what makes a vein
+# a pocket you can find rather than one block per hash.
+# ---------------------------------------------------------------------------
+
+def ore_lattice() -> Nat:
+  8n
+
+# The ore a vein holds, rarest first, so a lattice cell holds one ore and not a
+# mixture. The three thresholds are the share of lattice cells each ore takes,
+# calibrated against vanilla's densities (see tests/ore-distribution.test.mjs).
+def ore_vein_of(+seed: Nat, +column: Nat, +cell_y: Nat) -> U32:
+  +first = Nat.mod(Nat.add(Nat.add(column, Nat.mul(cell_y, 17n)), Nat.mod(seed, 13n)), 97n)
+  +second = Nat.mod(Nat.add(Nat.add(column, Nat.mul(cell_y, 53n)), Nat.mod(seed, 29n)), 97n)
+  +rare = Nat.add(Nat.mul(first, 97n), second)
+  Bool.pick(U32, Nat.is_lt(rare, 1750n), 10,
+    Bool.pick(U32, Nat.is_lt(rare, 2175n), 9,
+      Bool.pick(U32, Nat.is_lt(rare, 5150n), 8, 1)))
+
+# Whether an ore generates at this height in this column. Stone, and so every
+# vein of no ore, is in every band.
+def ore_band(+ore: U32, +y: Nat, +h: Nat) -> Bool:
+  Bool.or(U32.is_ne(ore, 10), Nat.is_le(Nat.mul(y, 4n), h))
+
+# How far a vein of an ore reaches, in cells, which is what makes it its size: a
+# diamond vein of reach one is the seven cells vanilla's size-4 vein holds, and
+# coal and iron at reach two are the big ones.
+def ore_reach(+ore: U32) -> Nat:
+  Bool.pick(Nat, U32.is_eq(ore, 10), 1n, 2n)
+
+# Where a vein sits on one axis of its lattice cell: held far enough from the
+# cell's edge that a vein of this reach stays inside it, so a vein never reaches
+# across a cell it was not placed in.
+def ore_offset(+cell: Nat, +reach: Nat, +spread: Nat) -> Nat:
+  +inside = Nat.mod(spread, Nat.sub(ore_lattice(), Nat.mul(reach, 2n)))
+  Nat.add(Nat.mul(cell, ore_lattice()), Nat.add(reach, inside))
+
+def abs_nat(+a: Nat, +b: Nat) -> Nat:
+  Bool.pick(Nat, Nat.is_gt(a, b), Nat.sub(a, b), Nat.sub(b, a))
+
+def ore_filled(+seed: Nat, +x: Nat, +y: Nat, +z: Nat, +h: Nat) -> Bool:
+  +cell_x = Nat.div(x, ore_lattice())
+  +cell_y = Nat.div(y, ore_lattice())
+  +cell_z = Nat.div(z, ore_lattice())
+  +column = mix(seed, cell_x, cell_z)
+  +ore = ore_vein_of(seed, column, cell_y)
+  +reach = ore_reach(ore)
+  +across_x = Nat.add(Nat.mul(column, 17n), Nat.mul(cell_y, 71n))
+  +across_y = Nat.add(Nat.mul(column, 53n), Nat.mul(cell_z, 71n))
+  +across_z = Nat.add(Nat.mul(column, 29n), Nat.mul(cell_x, 71n))
+  +distance = Nat.add(
+    Nat.add(abs_nat(x, ore_offset(cell_x, reach, across_x)),
+      abs_nat(y, ore_offset(cell_y, reach, across_y))),
+    abs_nat(z, ore_offset(cell_z, reach, across_z)))
+  Bool.and(Bool.not(U32.is_eq(ore, 1)),
+    Bool.and(ore_band(ore, y, h), Nat.is_le(distance, reach)))
+
+def ore_block(+seed: Nat, +x: Nat, +y: Nat, +z: Nat, +h: Nat) -> U32:
+  +cell_x = Nat.div(x, ore_lattice())
+  +cell_y = Nat.div(y, ore_lattice())
+  +cell_z = Nat.div(z, ore_lattice())
+  +column = mix(seed, cell_x, cell_z)
+  Bool.pick(U32, ore_filled(seed, x, y, z, h), ore_vein_of(seed, column, cell_y), 1)
 
 def deep_block(+seed: Nat, +x: Nat, +y: Nat, +z: Nat, +h: Nat) -> U32:
-  Bool.pick(U32, Bool.and(Nat.is_gt(y, 0n), Nat.is_lt(y, Nat.sub(h, 3n))), ore_block(seed, x, y, z), 2)
+  Bool.pick(U32, Bool.and(Nat.is_gt(y, 0n), Nat.is_lt(y, Nat.sub(h, 3n))), ore_block(seed, x, y, z, h), 2)
 
 def terrain_block_height(+h: Nat, +y: Nat) -> U32:
   +inside = Nat.is_lt(y, h)
@@ -659,19 +735,52 @@ def chunk32.structure(
     case True{}:
       Structures.block(seed, U32.to_nat(x), U32.to_nat(y), U32.to_nat(z), village_height)
 
-def chunk32.ore(+mixed: U32, +y: U32, +s89: U32) -> U32:
-  +hash = U32.mod((mixed + y * 17 + s89 : U32), 97)
-  Bool.pick(U32, U32.is_eq(hash, 0), 10,
-    Bool.pick(U32, U32.is_eq(U32.mod(hash, 31), 0), 9,
-      Bool.pick(U32, U32.is_eq(U32.mod(hash, 11), 0), 8, 1)))
+# The U32 reading of the vein rule: the same lattice, the same thresholds, the
+# same centre and the same reach as the Nat rules above, so the per-chunk path
+# and the per-cell query carve one world and not two.
+def chunk32.ore_vein(+mix: U32, +cell_y: U32, +s13: U32, +s29: U32) -> U32:
+  +first = U32.mod((mix + cell_y * 17 + s13 : U32), 97)
+  +second = U32.mod((mix + cell_y * 53 + s29 : U32), 97)
+  +rare = (first * 97 + second : U32)
+  Bool.pick(U32, U32.is_lt(rare, 1750), 10,
+    Bool.pick(U32, U32.is_lt(rare, 2175), 9,
+      Bool.pick(U32, U32.is_lt(rare, 5150), 8, 1)))
 
-def chunk32.terrain(+s89: U32, +mixed: U32, +h: U32, +sand: Bool, +y: U32, inside: Bool) -> U32:
+def chunk32.ore_offset(+cell: U32, +reach: U32, +spread: U32) -> U32:
+  +inside = U32.mod(spread, (8 - reach * 2 : U32))
+  (cell * 8 + reach + inside : U32)
+
+def chunk32.ore_abs(+a: U32, +b: U32) -> U32:
+  Bool.pick(U32, U32.is_gt(a, b), (a - b : U32), (b - a : U32))
+
+def chunk32.ore(
+  +mix: U32, +x: U32, +y: U32, +z: U32, +s13: U32, +s29: U32, +h: U32
+) -> U32:
+  +cell_x = U32.div(x, 8)
+  +cell_y = U32.div(y, 8)
+  +cell_z = U32.div(z, 8)
+  +column = mix32(mix, cell_x, cell_z)
+  +ore = chunk32.ore_vein(column, cell_y, s13, s29)
+  +reach = Bool.pick(U32, U32.is_eq(ore, 10), 1, 2)
+  +across_x = (column * 17 + cell_y * 71 : U32)
+  +across_y = (column * 53 + cell_z * 71 : U32)
+  +across_z = (column * 29 + cell_x * 71 : U32)
+  +distance = (chunk32.ore_abs(x, chunk32.ore_offset(cell_x, reach, across_x))
+    + chunk32.ore_abs(y, chunk32.ore_offset(cell_y, reach, across_y))
+    + chunk32.ore_abs(z, chunk32.ore_offset(cell_z, reach, across_z)) : U32)
+  +band = Bool.or(U32.is_ne(ore, 10), U32.is_le((y * 4 : U32), h))
+  +inside = Bool.and(Bool.not(U32.is_eq(ore, 1)), Bool.and(band, U32.is_le(distance, reach)))
+  Bool.pick(U32, inside, ore, 1)
+
+def chunk32.terrain(
+  +mix: U32, +x: U32, +z: U32, +h: U32, +sand: Bool, +s13: U32, +s29: U32, +y: U32, inside: Bool
+) -> U32:
   match inside:
     case False{}:
       0
     case True{}:
       +deep_limit = sat_sub32(h, 3)
-      +deep = Bool.pick(U32, Bool.and(U32.is_gt(y, 0), U32.is_lt(y, deep_limit)), chunk32.ore(mixed, y, s89), 2)
+      +deep = Bool.pick(U32, Bool.and(U32.is_gt(y, 0), U32.is_lt(y, deep_limit)), chunk32.ore(mix, x, y, z, s13, s29, h), 2)
       Bool.pick(U32, U32.is_eq(y, sat_sub32(h, 1)), Bool.pick(U32, sand, 6, 3),
         Bool.pick(U32, U32.is_eq(y, sat_sub32(h, 2)), Bool.pick(U32, sand, 6, 2),
           Bool.pick(U32, U32.is_lt(y, deep_limit), deep, 2)))
@@ -715,7 +824,7 @@ def chunk32.cell(
     Bool.and(U32.is_gt(y, 1), U32.is_lt((y + 2 : U32), height)),
     mix, x, y, z, s13, s29)
   +water = Bool.and(U32.is_le(height, y), U32.is_lt(y, 8))
-  +terrain = chunk32.terrain(s89, mixed, height, sand, y, U32.is_lt(y, height))
+  +terrain = chunk32.terrain(mix, x, z, height, sand, s13, s29, y, U32.is_lt(y, height))
   # Bedrock is the same bottom row `World.block` gives, so the fast per-chunk
   # path and the cell query never disagree about the floor of the world.
   +bedrock = U32.is_eq(y, 0)

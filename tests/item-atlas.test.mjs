@@ -65,10 +65,19 @@ const itemNames = [
   "raw_porkchop",
   "raw_beef",
   "raw_chicken",
+  "wooden_shovel",
+  "stone_shovel",
+  "iron_shovel",
+  "diamond_shovel",
+  "wooden_axe",
+  "stone_axe",
+  "iron_axe",
+  "diamond_axe",
+  "shears",
 ];
 
 assert.equal(ITEM_ATLAS_COLUMNS, 5);
-assert.equal(ITEM_ATLAS_ROWS, 11);
+assert.equal(ITEM_ATLAS_ROWS, 15);
 assert.equal(ITEM_TEXTURES.length, itemNames.length);
 assert.equal(TEXTURE_PASS.id, "fallback-pixel-pass-v1");
 assert.equal(TEXTURE_PASS.referenceSheet, null);
@@ -121,16 +130,20 @@ for (const [id, name] of itemNames.entries()) {
   for (const row of texture.pattern) assert.equal(row.length, 16);
 }
 
-// The bed is item 23, so it sits on row 4 of a 5-wide sheet.
+// The bed is item 23, so it sits on row 4 of a 5-wide sheet. The UV maths is
+// `1 - (row + inset) / rows`, which is not bit-exact against the plain division
+// once the sheet is fifteen rows, so these are compared within a rounding step.
 const bedUV = itemTextureUV("bed", { tileSize: ITEM_ATLAS_TILE_SIZE, inset: 0 });
+// Each edge is `rows - (row + inset)` over `rows`, within one rounding step.
+const edge = (n, expected) => Math.abs(bedUV[n] - expected / ITEM_ATLAS_ROWS) < 1e-12;
 assert.equal(bedUV[0], 0.6);
-assert.ok(Math.abs(bedUV[1] - (7 / ITEM_ATLAS_ROWS)) < Number.EPSILON);
+assert.ok(edge(1, 11));
 assert.equal(bedUV[2], 0.8);
-assert.ok(Math.abs(bedUV[3] - (7 / ITEM_ATLAS_ROWS)) < Number.EPSILON);
+assert.ok(edge(3, 11));
 assert.equal(bedUV[4], 0.8);
-assert.ok(Math.abs(bedUV[5] - (6 / ITEM_ATLAS_ROWS)) < Number.EPSILON);
+assert.ok(edge(5, 10));
 assert.equal(bedUV[6], 0.6);
-assert.ok(Math.abs(bedUV[7] - (6 / ITEM_ATLAS_ROWS)) < Number.EPSILON);
+assert.ok(edge(7, 10));
 assert.throws(() => itemTextureUV("bed", { inset: ITEM_ATLAS_TILE_SIZE / 2 }), RangeError);
 
 // Every tile has to land inside the atlas, or the icon is drawn outside the

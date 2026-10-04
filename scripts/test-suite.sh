@@ -43,6 +43,7 @@ TESTS=(
   tests/redstone-all-bend.test.mjs
   tests/redstone-blocks.test.mjs
   tests/world-block-chunk.test.mjs
+  tests/ore-distribution.test.mjs
   tests/inventory-bend-contract.test.mjs
   tests/redstone-adapter.test.mjs
   tests/simulation-ticker.test.mjs

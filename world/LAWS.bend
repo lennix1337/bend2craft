@@ -107,13 +107,54 @@ law ground_beside_a_cave_is_solid:
   {World.block(1337n, 32n, 5n, 32n) == 6 : U32}
 
 law known_coal_ore:
-  {World.block(1337n, 1n, 1n, 0n) == 8 : U32}
+  {World.block(1337n, 0n, 3n, 26n) == 8 : U32}
 
 law known_iron_ore:
-  {World.block(1337n, 7n, 1n, 0n) == 9 : U32}
+  {World.block(1337n, 26n, 4n, 84n) == 9 : U32}
 
 law known_diamond_ore:
-  {World.block(1337n, 19n, 1n, 0n) == 10 : U32}
+  {World.block(1337n, 14n, 1n, 85n) == 10 : U32}
+
+# Ores generate in the bands of the column they are in, and the bands are the
+# fractions of the column that vanilla's ore table gives over a world of its
+# depth: diamond in the bottom quarter, coal and iron through the whole column.
+#
+# `World.ore_band` is one line, so a law with a `for` over it would only restate
+# that line: it would hold for every column and every cell while saying nothing
+# about a world, which is the definition and not a fact. The bands are therefore
+# held as values, at named heights. The placement, the density and the clumping —
+# what a digger actually feels — are held by tests/ore-distribution.test.mjs,
+# because `Nat.mod` and `Nat.div` do not reduce on a variable and the checker
+# cannot decide them.
+law the_diamond_band_is_the_first_quarter_of_a_twelve_cell_column:
+  {List.map(~Nat, ~Bool, ~(y => World.ore_band(10, y, 12n)), [0n, 2n, 3n, 4n, 12n, 13n])
+    == [True{}, True{}, True{}, False{}, False{}, False{}] : List<Bool>}
+
+# And that quarter is a quarter: of a column eight cells tall the band reaches the
+# second cell and not the seventh, and of twelve it reaches the third.
+law the_diamond_band_is_a_quarter_of_the_column:
+  {List.map(~Nat, ~Bool, ~(h => World.ore_band(10, 2n, h)), [7n, 8n, 11n, 12n]) == [False{}, True{}, True{}, True{}] : List<Bool>}
+
+law the_diamond_band_stops_at_the_quarter:
+  {List.map(~Nat, ~Bool, ~(h => World.ore_band(10, 7n, h)), [8n, 16n, 27n, 28n]) == [False{}, False{}, False{}, True{}] : List<Bool>}
+
+# Coal and iron have no band of their own, so they generate through the whole
+# column however tall it is and however deep the cell: seven cells up in a
+# four-cell column, both still generate and diamond does not.
+law only_diamond_has_a_band_of_its_own:
+  {List.map(~U32, ~Bool, ~(ore => World.ore_band(ore, 7n, 4n)), [8, 9, 10]) == [True{}, True{}, False{}] : List<Bool>}
+
+# A vein's reach is its ore's size: seven cells for diamond, and a pocket of coal
+# or iron larger than that.
+law a_vein_is_the_size_its_ore_gives_it:
+  {List.map(~U32, ~Nat, ~(ore => World.ore_reach(ore)), [8, 9, 10]) == [2n, 2n, 1n] : List<Nat>}
+
+# The lattice cells of one row of the default seed's world, in the order the
+# thresholds place them: no ore, coal, iron and diamond all appear, and the
+# rarer an ore the fewer cells hold it.
+law the_veins_are_placed_in_the_order_of_rarity:
+  {List.map(~Nat, ~U32, ~(cell => World.ore_vein_of(1337n, World.mix(1337n, cell, 0n), 0n)), [0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 9n, 10n, 11n])
+    == [1, 1, 8, 9, 8, 10, 1, 8, 1, 1, 10, 1] : List<U32>}
 
 law known_village_furnace:
   {World.block(1337n, 25n, 9n, 27n) == 11 : U32}
@@ -617,6 +658,35 @@ law an_unfed_flow_dries_up:
       Fluids.State{
         Con{Fluids.Flow{5n, 0n, 5n, 3, False{}, 7}, Nil{}}},
       Nil{}))) == 0n : Nat}
+
+# A shovel, an axe and shears: what kind of tool each is, what tier, how long it
+# lasts, and that none of them is a pickaxe or a block. The speeds are floats and
+# so are held by the tests; these are the answers the checker can decide.
+law the_tool_kinds_are_what_they_are:
+  {List.map(~U32, ~U32, ~(item => Inventory.tool_kind(item)),
+      [0, 11, 17, 18, 19, 27, 63, 64, 65, 66, 67, 68, 69, 70, 71])
+    == [0, 1, 1, 1, 1, 3, 3, 3, 3, 3, 2, 2, 2, 2, 4] : List<U32>}
+
+law the_tool_tiers_run_wooden_to_diamond:
+  {List.map(~U32, ~U32, ~(item => Inventory.tool_tier(item)), [63, 64, 65, 66, 67, 68, 69, 70, 71])
+    == [1, 2, 3, 4, 1, 2, 3, 4, 5] : List<U32>}
+
+law a_tool_wears_by_its_tier:
+  {List.map(~U32, ~U32, ~(item => Inventory.tool_max_durability(item)), [63, 64, 65, 66, 70, 71])
+    == [59, 131, 250, 1561, 1561, 238] : List<U32>}
+
+law the_tools_place_nothing:
+  {List.map(~U32, ~U32, ~(item => Inventory.placed_block(item)), [63, 64, 65, 66, 67, 68, 69, 70, 71])
+    == [0, 0, 0, 0, 0, 0, 0, 0, 0] : List<U32>}
+
+law the_tools_break_what_they_are_for:
+  {List.map(~U32, ~Bool, ~(item => Inventory.can_mine(item, 2)), [63, 67, 71])
+    == [True{}, True{}, True{}] : List<Bool>}
+
+# The materials a block wants: dirt a shovel, wood an axe, leaves shears.
+law each_block_wants_its_tool:
+  {List.map(~U32, ~U32, ~(block => Inventory.suited_kind(block)), [2, 3, 6, 20, 5, 4, 1, 23])
+    == [3, 3, 3, 3, 2, 4, 1, 1] : List<U32>}
 
 law the_fluids_are_water_and_lava:
   {(Fluids.water_block(), (Fluids.lava_block(), (Fluids.cobblestone_block(), (Fluids.obsidian_block(), Fire.fire_block()))))

@@ -47,6 +47,13 @@ def and_false(a: Bool) -> {Bool.and(a, False{}) == False{} : Bool}:
     case True{}:
       {==}
 
+def or_false_right(b: Bool) -> {Bool.or(False{}, b) == b : Bool}:
+  match b:
+    case False{}:
+      {==}
+    case True{}:
+      {==}
+
 def false_is_and(a: Bool) -> {False{} == Bool.and(a, False{}) : Bool}:
   match a:
     case False{}:
@@ -1110,6 +1117,42 @@ def Laws.a_settled_pool_keeps_its_cells():
   {==}
 
 def Laws.an_unfed_flow_dries_up():
+  {==}
+
+def Laws.the_tool_kinds_are_what_they_are():
+  {==}
+
+def Laws.the_tool_tiers_run_wooden_to_diamond():
+  {==}
+
+def Laws.a_tool_wears_by_its_tier():
+  {==}
+
+def Laws.the_tools_place_nothing():
+  {==}
+
+def Laws.the_tools_break_what_they_are_for():
+  {==}
+
+def Laws.each_block_wants_its_tool():
+  {==}
+
+def Laws.the_diamond_band_is_the_first_quarter_of_a_twelve_cell_column():
+  {==}
+
+def Laws.the_diamond_band_is_a_quarter_of_the_column():
+  {==}
+
+def Laws.the_diamond_band_stops_at_the_quarter():
+  {==}
+
+def Laws.only_diamond_has_a_band_of_its_own():
+  {==}
+
+def Laws.a_vein_is_the_size_its_ore_gives_it():
+  {==}
+
+def Laws.the_veins_are_placed_in_the_order_of_rarity():
   {==}
 
 def Laws.the_fluids_are_water_and_lava():

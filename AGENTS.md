@@ -32,7 +32,7 @@ The game model is authored in Bend 2 under `world/`. Two targets consume it:
 Start here:
 
 - Bend world contract: `world/world.bend`
-- Bend laws and proofs: `world/LAWS.bend`, `world/PROOF.bend` (99 laws, 31 of them for
+- Bend laws and proofs: `world/LAWS.bend`, `world/PROOF.bend` (114 laws, 31 of them for
   every input; see "Laws" below)
 - Bend module boundary: `web/bend-modules.js` (wraps every `world/*.bend`
   module; the only place that knows how the JS lane names a datatype)
@@ -482,6 +482,27 @@ both targets; the browser reads them through `web/inventory.js`'s
 were once in the texture atlas's order, four ids out of step, and a crafting table painted
 as glass; `native/voxel_test.bend` names the colours.
 
+### A tool is a kind and a tier, and only one block wants it
+
+`world/inventory.bend` answers two questions about what is in hand, and they are
+separate on purpose:
+
+- **Kind** (`Inventory.tool_kind`): 0 nothing, 1 pickaxe, 2 axe, 3 shovel (a hoe is
+  one for digging), 4 shears. `Inventory.suited_kind` says which kind a block
+  wants: dirt, grass, sand and farmland a shovel, wood an axe, leaves shears,
+  everything else a pickaxe.
+- **Tier** (`Inventory.tool_tier`): 1 wooden, 2 stone, 3 iron, 4 diamond, 5
+  shears. The durability is the tier's (`tool_max_durability`), so a wooden
+  shovel lasts as long as a wooden pickaxe and a diamond axe as long as a diamond
+  pickaxe.
+
+`mining_duration` gives a block's row of speeds to the tool that suits it and
+reads the row's hand figure for a bare hand; a tool that suits nothing is worse
+than a hand (`mining_duration.mismatched`), as in vanilla. Six laws name the
+kinds, tiers, durability, what each block wants and that none of them places a
+block; `tests/inventory-bend.test.mjs` holds the speeds, which the checker
+computes no floats for.
+
 ### Water and lava are one field that has to hold still
 
 `world/fluids.bend` is the whole rule: a flow is water or lava at a cell with a
@@ -689,7 +710,7 @@ they mean.
 
 ## Laws
 
-`world/LAWS.bend` states 99 laws and `world/PROOF.bend` closes every one; `npm run proof`
+`world/LAWS.bend` states 114 laws and `world/PROOF.bend` closes every one; `npm run proof`
 prints `ALL PROOFS CHECK` in about nine seconds. There are two kinds, and the difference
 matters:
 

@@ -78,10 +78,10 @@ On Windows that is run inside WSL. `native/README.md` has the controls and the l
 
 ### Laws
 
-`world/LAWS.bend` states 99 laws about the rules and `world/PROOF.bend` proves every one;
+`world/LAWS.bend` states 114 laws about the rules and `world/PROOF.bend` proves every one;
 `npm run proof` is the gate and prints `ALL PROOFS CHECK`.
 
-**Thirty hold for every input**, proved by cases and induction. Among them:
+**Thirty-one hold for every input**, proved by cases and induction. Among them:
 
 - an edit reads back from any edit log, for every log, seed, cell and block;
 - an edit changes no other cell;
@@ -167,7 +167,7 @@ physics and both renderers are held by tests rather than laws.
 - Nine-slot hotbar inventory with stack counts.
 - Inventory drag transfer, half-stack right-click moves, shift-click section transfer and `Q` item drops.
 - Collecting a block adds it to the inventory; placing consumes one item.
-- Bend laws and proofs: 99 laws in `world/LAWS.bend`, 31 of them for every input (see
+- Bend laws and proofs: 114 laws in `world/LAWS.bend`, 31 of them for every input (see
   "Laws" above).
 
 Block IDs:
@@ -434,7 +434,7 @@ shell on macOS or Linux:
 ```bash
 npm run verify       # all Bend, proof, test, build and diff checks
 npm run check:bend   # type-check world/world.bend
-npm run proof        # prove all 99 laws of world/LAWS.bend
+npm run proof        # prove all 114 laws of world/LAWS.bend
 npm run test         # world, inventory and game-state regression tests, then the native Bend ones
 bash lab/native/paint/run.sh   # the native client's frame cost, per size and thread count
 bash lab/native/paint/shot.sh  # the native client's frame as PNG files

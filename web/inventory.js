@@ -205,6 +205,18 @@ export const ITEM_INFO = Object.freeze({
   raw_porkchop: Object.freeze({ name: "raw porkchop", color: "#e08a80"}),
   raw_beef: Object.freeze({ name: "raw beef", color: "#b4443c"}),
   raw_chicken: Object.freeze({ name: "raw chicken", color: "#e0cba6"}),
+  // The tool kinds, coloured by their head: wood, stone, iron, diamond, and
+  // iron for the shears. `world/inventory.bend` says which material each suits
+  // and how long it lasts.
+  wooden_shovel: Object.freeze({ name: "wooden shovel", color: "#b77b48"}),
+  stone_shovel: Object.freeze({ name: "stone shovel", color: "#92999f"}),
+  iron_shovel: Object.freeze({ name: "iron shovel", color: "#d5d9dc"}),
+  diamond_shovel: Object.freeze({ name: "diamond shovel", color: "#5ee8e0"}),
+  wooden_axe: Object.freeze({ name: "wooden axe", color: "#b77b48"}),
+  stone_axe: Object.freeze({ name: "stone axe", color: "#92999f"}),
+  iron_axe: Object.freeze({ name: "iron axe", color: "#d5d9dc"}),
+  diamond_axe: Object.freeze({ name: "diamond axe", color: "#5ee8e0"}),
+  shears: Object.freeze({ name: "shears", color: "#c3ccd4"}),
 });
 
 function valuesFromList(list) {
@@ -241,6 +253,15 @@ const RECIPE_IDS = [
   "iron_chestplate",
   "iron_leggings",
   "iron_boots",
+  "wooden_shovel",
+  "stone_shovel",
+  "iron_shovel",
+  "diamond_shovel",
+  "wooden_axe",
+  "stone_axe",
+  "iron_axe",
+  "diamond_axe",
+  "shears",
 ];
 export const RECIPES = Object.freeze(RECIPE_IDS.map((id, recipeIndex) => {
   const offset = recipeIndex * 8;
@@ -258,6 +279,14 @@ export const RECIPES = Object.freeze(RECIPE_IDS.map((id, recipeIndex) => {
   });
 }));
 
+// Every item that wears: the mining tools, the sword and the bow, and armour.
+// The contract says how long each lasts (`Inventory.tool_max_durability`), so the
+// slot only needs to know which items carry a wear figure at all.
+const TOOL_IDS = new Set([
+  11, 17, 18, 19, 27, 33, 34, 35, 36, 37, 38, 44, 45, 46, 47,
+  63, 64, 65, 66, 67, 68, 69, 70, 71,
+]);
+
 const DOMAIN_STATES = new WeakMap();
 
 function numericItem(value) {
@@ -270,7 +299,7 @@ function slotView(item, count, durability, previous, durabilityByItem) {
   if (item === 0 || count === 0) return { block: 0, count: 0 };
   const block = blockForItemNumber(item);
   const view = block === null ? { item: name, count } : { block, count };
-  if ([11, 17, 18, 19, 27, 33, 34, 35, 36, 37, 38, 44, 45, 46, 47].includes(item)) {
+  if (TOOL_IDS.has(item)) {
     view.durabilityMax = Number(InventoryDomain.tool_max_durability(item));
     view.durability = durability || previous?.durability || durabilityByItem?.get(name) || view.durabilityMax;
   }

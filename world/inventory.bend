@@ -51,22 +51,74 @@ type MiningResult is Data:
 type InteractionResult is Data:
   InteractionResult{edit: WorldState.Edit, slots: List<&2, Slot>, ok: Bool}
 
+# What kind of tool a thing is: 0 nothing in hand, 1 a pickaxe, 2 an axe, 3 a
+# shovel (a hoe is one for digging), 4 shears. The kind is what says which
+# material a tool suits; the tier is what says how good it is.
+def tool_kind(+item: U32) -> U32:
+  Bool.pick(U32, U32.is_eq(item, 71), 4,
+    Bool.pick(U32, U32.is_eq(item, 67), 2,
+      Bool.pick(U32, U32.is_eq(item, 68), 2,
+        Bool.pick(U32, U32.is_eq(item, 69), 2,
+          Bool.pick(U32, U32.is_eq(item, 70), 2,
+            Bool.pick(U32, U32.is_eq(item, 63), 3,
+              Bool.pick(U32, U32.is_eq(item, 64), 3,
+                Bool.pick(U32, U32.is_eq(item, 65), 3,
+                  Bool.pick(U32, U32.is_eq(item, 66), 3,
+                    Bool.pick(U32, U32.is_eq(item, 27), 3,
+                      Bool.pick(U32, U32.is_eq(item, 11), 1,
+                        Bool.pick(U32, U32.is_eq(item, 17), 1,
+                          Bool.pick(U32, U32.is_eq(item, 18), 1,
+                            Bool.pick(U32, U32.is_eq(item, 19), 1, 0))))))))))))))
+
+# The tier of a mining tool: 1 wooden, 2 stone, 3 iron, 4 diamond, 5 shears.
+def tool_tier(+item: U32) -> U32:
+  Bool.pick(U32, U32.is_eq(item, 71), 5,
+    Bool.pick(U32, U32.is_eq(item, 66), 4,
+      Bool.pick(U32, U32.is_eq(item, 70), 4,
+        Bool.pick(U32, U32.is_eq(item, 19), 4,
+          Bool.pick(U32, U32.is_eq(item, 65), 3,
+            Bool.pick(U32, U32.is_eq(item, 69), 3,
+              Bool.pick(U32, U32.is_eq(item, 18), 3,
+                Bool.pick(U32, U32.is_eq(item, 64), 2,
+                  Bool.pick(U32, U32.is_eq(item, 68), 2,
+                    Bool.pick(U32, U32.is_eq(item, 17), 2,
+                      Bool.pick(U32, U32.is_eq(item, 63), 1,
+                        Bool.pick(U32, U32.is_eq(item, 67), 1,
+                          Bool.pick(U32, U32.is_eq(item, 11), 1,
+                            Bool.pick(U32, U32.is_eq(item, 27), 1, 0))))))))))))))
+
+def suited_kind(+block: U32) -> U32:
+  Bool.pick(U32, U32.is_eq(block, 4), 4,
+    Bool.pick(U32, U32.is_eq(block, 5), 2,
+      Bool.pick(U32, U32.is_eq(block, 6), 3,
+        Bool.pick(U32, U32.is_eq(block, 2), 3,
+          Bool.pick(U32, U32.is_eq(block, 3), 3,
+            Bool.pick(U32, U32.is_eq(block, 20), 3, 1))))))
+
+# The materials that are not mining tools: swords and the bow, which wear when
+# they are used to hit, and armour, which wears when it is worn.
+def tool_max_durability.other(+item: U32) -> U32:
+  Bool.pick(U32, U32.is_eq(item, 36), 1561,
+    Bool.pick(U32, U32.is_eq(item, 35), 250,
+      Bool.pick(U32, U32.is_eq(item, 34), 131,
+        Bool.pick(U32, U32.is_eq(item, 33), 59,
+          Bool.pick(U32, U32.is_eq(item, 37), 384,
+            Bool.pick(U32, U32.is_eq(item, 38), 336,
+              Bool.pick(U32, U32.is_eq(item, 44), 55,
+                Bool.pick(U32, U32.is_eq(item, 45), 400,
+                  Bool.pick(U32, U32.is_eq(item, 46), 450,
+                    Bool.pick(U32, U32.is_eq(item, 47), 385, 0))))))))))
+
 def tool_max_durability(+item: U32) -> U32:
-  Bool.pick(U32, U32.is_eq(item, 27), 59,
-    Bool.pick(U32, U32.is_eq(item, 19), 1561,
-      Bool.pick(U32, U32.is_eq(item, 18), 250,
-        Bool.pick(U32, U32.is_eq(item, 17), 131,
-          Bool.pick(U32, U32.is_eq(item, 11), 59,
-            Bool.pick(U32, U32.is_eq(item, 36), 1561,
-              Bool.pick(U32, U32.is_eq(item, 35), 250,
-                Bool.pick(U32, U32.is_eq(item, 34), 131,
-                  Bool.pick(U32, U32.is_eq(item, 33), 59,
-                    Bool.pick(U32, U32.is_eq(item, 37), 384,
-                      Bool.pick(U32, U32.is_eq(item, 38), 336,
-                        Bool.pick(U32, U32.is_eq(item, 44), 55,
-                          Bool.pick(U32, U32.is_eq(item, 45), 400,
-                            Bool.pick(U32, U32.is_eq(item, 46), 450,
-                              Bool.pick(U32, U32.is_eq(item, 47), 385, 0)))))))))))))))
+  # The mining tools wear by tier, whatever they are: a wooden shovel lasts as
+  # long as a wooden pickaxe, and a diamond axe as long as a diamond pickaxe.
+  +tier = tool_tier(item)
+  +mining = Bool.pick(U32, U32.is_eq(tier, 5), 238,
+    Bool.pick(U32, U32.is_eq(tier, 4), 1561,
+      Bool.pick(U32, U32.is_eq(tier, 3), 250,
+        Bool.pick(U32, U32.is_eq(tier, 2), 131,
+          Bool.pick(U32, U32.is_eq(tier, 1), 59, 0)))))
+  Bool.pick(U32, U32.is_ne(mining, 0), mining, tool_max_durability.other(item))
 
 def weapon_damage(+item: U32) -> U32:
   Bool.pick(U32, U32.is_eq(item, 36), 7,
@@ -260,7 +312,7 @@ def collect(slots: List<&2, Slot>, +item: U32, +amount: Nat) -> InventoryResult:
 def pickup_item(+item: U32) -> Bool:
   +mob = Bool.or(Bool.or(U32.is_eq(item, 11), U32.is_eq(item, 12)), Bool.or(U32.is_eq(item, 13), Bool.or(Bool.or(U32.is_eq(item, 48), U32.is_eq(item, 49)), U32.is_eq(item, 50))))
   +ore = Bool.or(Bool.or(U32.is_eq(item, 14), U32.is_eq(item, 15)), U32.is_eq(item, 16))
-  +tools = Bool.or(Bool.or(Bool.or(U32.is_eq(item, 17), U32.is_eq(item, 18)), U32.is_eq(item, 19)), U32.is_eq(item, 27))
+  +tools = Bool.or(Bool.or(Bool.or(Bool.or(U32.is_eq(item, 17), U32.is_eq(item, 18)), Bool.or(U32.is_eq(item, 19), U32.is_eq(item, 27))), Bool.or(Bool.or(Bool.or(U32.is_eq(item, 63), U32.is_eq(item, 64)), Bool.or(U32.is_eq(item, 65), U32.is_eq(item, 66))), Bool.or(Bool.or(Bool.or(U32.is_eq(item, 67), U32.is_eq(item, 68)), Bool.or(U32.is_eq(item, 69), U32.is_eq(item, 70))), U32.is_eq(item, 71)))), False{})
   +combat = Bool.or(Bool.or(Bool.or(U32.is_eq(item, 33), U32.is_eq(item, 34)), Bool.or(U32.is_eq(item, 35), U32.is_eq(item, 36))), Bool.or(Bool.or(U32.is_eq(item, 37), U32.is_eq(item, 38)), U32.is_eq(item, 39)))
   +goods = Bool.or(Bool.or(U32.is_eq(item, 40), U32.is_eq(item, 41)), Bool.or(U32.is_eq(item, 42), U32.is_eq(item, 43)))
   +smelted = Bool.or(Bool.or(U32.is_eq(item, 20), U32.is_eq(item, 21)), Bool.or(Bool.or(Bool.or(U32.is_eq(item, 22), U32.is_eq(item, 23)), U32.is_eq(item, 24)), Bool.or(U32.is_eq(item, 25), U32.is_eq(item, 26))))
@@ -495,7 +547,16 @@ def recipe_data() -> List<U32>:
   12 <> 5 <> 0 <> 0 <> 44 <> 1 <> 0 <> 0 <>
   20 <> 8 <> 0 <> 0 <> 45 <> 1 <> 0 <> 0 <>
   20 <> 7 <> 0 <> 0 <> 46 <> 1 <> 0 <> 0 <>
-  20 <> 4 <> 0 <> 0 <> 47 <> 1 <> 0 <> 0 <> Nil{}
+  20 <> 4 <> 0 <> 0 <> 47 <> 1 <> 0 <> 0 <>
+  8 <> 1 <> 9 <> 2 <> 63 <> 1 <> 0 <> 0 <>
+  31 <> 1 <> 9 <> 2 <> 64 <> 1 <> 0 <> 0 <>
+  20 <> 1 <> 9 <> 2 <> 65 <> 1 <> 0 <> 0 <>
+  16 <> 1 <> 9 <> 2 <> 66 <> 1 <> 0 <> 0 <>
+  8 <> 3 <> 9 <> 2 <> 67 <> 1 <> 0 <> 0 <>
+  31 <> 3 <> 9 <> 2 <> 68 <> 1 <> 0 <> 0 <>
+  20 <> 3 <> 9 <> 2 <> 69 <> 1 <> 0 <> 0 <>
+  16 <> 3 <> 9 <> 2 <> 70 <> 1 <> 0 <> 0 <>
+  20 <> 2 <> 0 <> 0 <> 71 <> 1 <> 0 <> 0 <> Nil{}
 
 def grid_result_slots(state: GridCraftResult) -> List<&2, Slot>:
   GridCraftResult{+slots, grid, output, amount, ok} = state
@@ -914,6 +975,45 @@ def mining_duration.tool(
       Bool.pick(F32, U32.is_eq(item, 17), stone,
         Bool.pick(F32, U32.is_eq(item, 11), wooden, hand))))
 
+# A tool in hand that does not suit what is in front of it is worse than a bare
+# hand, the way it is in vanilla: the axe on stone, the shovel on wood.
+def mining_duration.mismatched(+item: U32) -> F32:
+  Bool.pick(F32, U32.is_eq(tool_kind(item), 0), 0.0, 5.0)
+
+# The tiers below the pickaxe are the shovels, the axes and the shears: what a
+# tier is worth is its speed on its own material, and shears are the best there
+# is on leaves whatever their number says.
+def mining_duration.row(
+  +tier: U32, +hand: F32, +wooden: F32, +stone: F32, +iron: F32, +diamond: F32
+) -> F32:
+  Bool.pick(F32, U32.is_eq(tier, 5), diamond,
+    Bool.pick(F32, U32.is_eq(tier, 4), diamond,
+      Bool.pick(F32, U32.is_eq(tier, 3), iron,
+        Bool.pick(F32, U32.is_eq(tier, 2), stone,
+          Bool.pick(F32, U32.is_eq(tier, 1), wooden, hand)))))
+
+def mining_duration.suited(
+  suits: Bool, +item: U32, +tier: U32,
+  +hand: F32, +wooden: F32, +stone: F32, +iron: F32, +diamond: F32
+) -> F32:
+  match suits:
+    case True{}:
+      mining_duration.row(tier, hand, wooden, stone, iron, diamond)
+    case False{}:
+      mining_duration.mismatched(item)
+
+# One material's row of speeds, asked of the tool in hand: the row belongs to
+# the tool that suits it, and a hand reads the row's own hand figure.
+def mining_duration.for_block(
+  +item: U32, +block: U32, +hand: F32, +wooden: F32, +stone: F32, +iron: F32, +diamond: F32
+) -> F32:
+  +kind = tool_kind(item)
+  mining_duration.suited(
+    Bool.or(U32.is_eq(kind, 0), U32.is_eq(kind, suited_kind(block))),
+    item,
+    tool_tier(item),
+    hand, wooden, stone, iron, diamond)
+
 def mining_duration.material(+item: U32, +block: U32) -> F32:
   +obsidian = U32.is_eq(block, 23)
   +diamond_ore = U32.is_eq(block, 10)
@@ -921,17 +1021,24 @@ def mining_duration.material(+item: U32, +block: U32) -> F32:
   +stone = Bool.or(Bool.or(U32.is_eq(block, 1), U32.is_eq(block, 8)),
     Bool.or(U32.is_eq(block, 11), U32.is_eq(block, 22)))
   +wood = U32.is_eq(block, 5)
+  +dirt = Bool.or(Bool.or(U32.is_eq(block, 2), U32.is_eq(block, 3)),
+    Bool.or(U32.is_eq(block, 6), U32.is_eq(block, 20)))
+  +leaves = U32.is_eq(block, 4)
   Bool.pick(F32, obsidian,
-    mining_duration.tool(item, 0.0, 0.0, 0.0, 0.0, 9.0),
+    mining_duration.for_block(item, block, 0.0, 0.0, 0.0, 0.0, 9.0),
     Bool.pick(F32, diamond_ore,
-      mining_duration.tool(item, 0.0, 0.0, 0.0, 1.1, 0.7),
+      mining_duration.for_block(item, block, 0.0, 0.0, 0.0, 1.1, 0.7),
       Bool.pick(F32, iron_ore,
-        mining_duration.tool(item, 0.0, 0.0, 2.0, 0.8, 0.6),
+        mining_duration.for_block(item, block, 0.0, 0.0, 2.0, 0.8, 0.6),
         Bool.pick(F32, stone,
-          mining_duration.tool(item, 0.45, 1.5, 0.8, 0.55, 0.4),
+          mining_duration.for_block(item, block, 0.45, 1.5, 0.8, 0.55, 0.4),
           Bool.pick(F32, wood,
-            mining_duration.tool(item, 1.2, 1.0, 0.75, 0.55, 0.4),
-            mining_duration.tool(item, 0.35, 0.3, 0.25, 0.2, 0.15))))))
+            mining_duration.for_block(item, block, 1.2, 0.9, 0.55, 0.35, 0.25),
+            Bool.pick(F32, dirt,
+              mining_duration.for_block(item, block, 0.75, 0.55, 0.35, 0.22, 0.15),
+              Bool.pick(F32, leaves,
+                mining_duration.for_block(item, block, 0.3, 0.25, 0.2, 0.15, 0.12),
+                mining_duration.for_block(item, block, 0.35, 0.3, 0.25, 0.2, 0.15))))))))
 
 def mining_duration(+item: U32, +block: U32) -> F32:
   Bool.pick(F32, can_mine(item, block), mining_duration.material(item, block), 0.0)

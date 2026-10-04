@@ -30,7 +30,7 @@ assert.equal(collected.ok, true);
 assert.deepEqual(slotsFromList(collected.slots)[4], { $: "Slot", item: 5, count: 9, durability: 0 });
 
 const recipes = valuesFromList(Inventory.recipe_data());
-assert.equal(recipes.length, 200);
+assert.equal(recipes.length, 272);
 assert.deepEqual(recipes.slice(0, 6), [5, 1, 0, 0, 8, 4]);
 assert.deepEqual(recipes.slice(88, 94), [8, 2, 9, 2, 27, 1]);
 assert.deepEqual(recipes.slice(96, 102), [20, 3, 0, 0, 28, 1]);
@@ -42,6 +42,19 @@ assert.deepEqual(recipes.slice(168, 200), [
   20, 8, 0, 0, 45, 1, 0, 0,
   20, 7, 0, 0, 46, 1, 0, 0,
   20, 4, 0, 0, 47, 1, 0, 0,
+]);
+// The tool kinds: a shovel and an axe are a head on a shaft, and the shears are
+// two blades.
+assert.deepEqual(recipes.slice(200, 272), [
+  8, 1, 9, 2, 63, 1, 0, 0,
+  31, 1, 9, 2, 64, 1, 0, 0,
+  20, 1, 9, 2, 65, 1, 0, 0,
+  16, 1, 9, 2, 66, 1, 0, 0,
+  8, 3, 9, 2, 67, 1, 0, 0,
+  31, 3, 9, 2, 68, 1, 0, 0,
+  20, 3, 9, 2, 69, 1, 0, 0,
+  16, 3, 9, 2, 70, 1, 0, 0,
+  20, 2, 0, 0, 71, 1, 0, 0,
 ]);
 assert.equal(Number(Inventory.weapon_damage(36)), 7);
 assert.equal(Number(Inventory.weapon_damage(33)), 4);
@@ -182,6 +195,86 @@ console.log("bend inventory ok");
   assert.equal(Number(Rules.melee_damage(19)), Number(Rules.hand_damage()), "a pickaxe hits like a hand");
   assert.equal(Number(Rules.melee_damage(0)), Number(Rules.hand_damage()), "an empty hand hits like a hand");
   console.log("melee damage ok");
+}
+
+// A shovel, an axe and shears, each at the four tiers, and what they are for.
+// Every rule here is the contract's: the tool table, the tier it reaches, how
+// fast it works on the material it suits, how slow it is on one it does not,
+// and how long it lasts.
+{
+  const { Inventory: Rules } = await import("../web/bend-modules.js");
+  const SHOVEL = 63;
+  const AXE = 67;
+  const SHEARS = 71;
+
+  // Dirt is a shovel's material and wood is an axe's, and neither tool is a
+  // wasted swing on the other's.
+  const dirt = 2;
+  const wood = 5;
+  const stone = 1;
+  const dirtByHand = Number(Rules.mining_duration(0, dirt));
+  const dirtByWoodenShovel = Number(Rules.mining_duration(SHOVEL, dirt));
+  const dirtByWoodenAxe = Number(Rules.mining_duration(AXE, dirt));
+  assert.ok(dirtByWoodenShovel < dirtByHand, `a wooden shovel digs dirt faster than a hand, got ${dirtByWoodenShovel} against ${dirtByHand}`);
+  assert.ok(dirtByWoodenAxe > dirtByHand, `an axe on dirt is worse than a hand, got ${dirtByWoodenAxe} against ${dirtByHand}`);
+
+  const woodByHand = Number(Rules.mining_duration(0, wood));
+  const woodByWoodenAxe = Number(Rules.mining_duration(AXE, wood));
+  const woodByWoodenShovel = Number(Rules.mining_duration(SHOVEL, wood));
+  assert.ok(woodByWoodenAxe < woodByHand, `a wooden axe chops wood faster than a hand, got ${woodByWoodenAxe} against ${woodByHand}`);
+  assert.ok(woodByWoodenShovel > woodByHand, `a shovel on wood is worse than a hand, got ${woodByWoodenShovel} against ${woodByHand}`);
+
+  // Leaves are a pair of shears' work, and fast work at that.
+  const leaves = 4;
+  const leavesByHand = Number(Rules.mining_duration(0, leaves));
+  const leavesByShears = Number(Rules.mining_duration(SHEARS, leaves));
+  assert.ok(leavesByShears < leavesByHand * 0.5, `shears cut leaves fast, got ${leavesByShears} against ${leavesByHand}`);
+  // A tool that cannot break what is in front of it is refused outright, so the
+  // wrong-tool case is asked on dirt, which anything can dig.
+  assert.ok(Number(Rules.mining_duration(SHEARS, dirt)) > dirtByHand, "shears on dirt are worse than a hand");
+
+  // The tiers: a better tool digs the same material faster, and the tool that
+  // suits a material still cannot mine what the material's rule says it cannot.
+  assert.ok(
+    Number(Rules.mining_duration(SHOVEL + 3, dirt)) < Number(Rules.mining_duration(SHOVEL, dirt)),
+    "a diamond shovel digs dirt faster than a wooden one",
+  );
+  assert.ok(
+    Number(Rules.mining_duration(AXE + 3, wood)) < Number(Rules.mining_duration(AXE, wood)),
+    "a diamond axe chops wood faster than a wooden one",
+  );
+  assert.equal(Rules.can_mine(SHOVEL, 1), false, "no shovel breaks stone");
+  assert.equal(Rules.can_mine(AXE, 1), false, "no axe breaks stone");
+  assert.equal(Rules.can_mine(SHEARS, 1), false, "shears break no stone");
+  assert.equal(Rules.can_mine(SHOVEL, 2), true, "a shovel digs dirt");
+  assert.equal(Rules.can_mine(AXE, 5), true, "an axe chops wood");
+  assert.equal(Rules.can_mine(SHEARS, 4), true, "shears cut leaves");
+
+  // Durability, per tier, and the tool wears while it is used.
+  assert.equal(Number(Rules.tool_max_durability(SHOVEL)), 59);
+  assert.equal(Number(Rules.tool_max_durability(SHOVEL + 1)), 131);
+  assert.equal(Number(Rules.tool_max_durability(SHOVEL + 2)), 250);
+  assert.equal(Number(Rules.tool_max_durability(SHOVEL + 3)), 1561);
+  assert.equal(Number(Rules.tool_max_durability(AXE + 3)), 1561);
+  assert.equal(Number(Rules.tool_max_durability(SHEARS)), 238);
+  const worn = Rules.use_tool(SHOVEL, 59);
+  assert.equal(Number(worn.durability), 58, "a shovel loses one use");
+  assert.equal(worn.broken, false);
+  const spent = Rules.use_tool(SHEARS, 1);
+  assert.equal(Number(spent.durability), 0);
+  assert.equal(spent.broken, true, "the last use breaks it");
+  assert.equal(Rules.use_tool(0, 0).valid, false, "a hand wears nothing");
+  assert.equal(Rules.use_tool(SHOVEL, 0).valid, false, "a tool with no uses left cannot be used");
+
+  // They are items a player can hold and craft, and they place nothing.
+  assert.equal(Number(Rules.tool_level(SHOVEL)), 0, "a shovel is not a pickaxe tier");
+  assert.equal(Rules.placed_block(SHOVEL), 0);
+  assert.equal(Rules.placed_block(AXE), 0);
+  assert.equal(Rules.placed_block(SHEARS), 0);
+  assert.equal(Rules.pickup_item(SHOVEL), true, "a shovel can be picked up");
+  assert.equal(Rules.pickup_item(AXE), true);
+  assert.equal(Rules.pickup_item(SHEARS), true);
+  console.log("tool tiers ok");
 }
 
 // A click is a transition on two stacks: the slot's and the cursor's.

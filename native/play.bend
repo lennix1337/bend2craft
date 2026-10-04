@@ -20,6 +20,7 @@ import ./slabs.bend as Slabs
 import ./stash.bend as Stash
 import ./stores.bend as Stores
 import ./tag.bend as Tag
+import ./debug.bend as Debug
 import ../world/world.bend as World
 import ../world/world_state.bend as WorldState
 
@@ -41,17 +42,20 @@ type Avatar is Data:
   Avatar{player: Player.State, pose: Frame.Pose, keys: U32}
 
 # `Ground` is the world as the client holds it: the edit log, the collision region cut from
-# it, the faces of the view region, and where that region is.
+# it, the faces of the view region, where that region is, and what the last world update
+# cost. `world_ms` is the F3 overlay's reading and nothing else: the tick writes it, the
+# overlay reads it, and no rule turns on it. It lives here because it is a measurement of
+# the world this record holds, not of the session.
 type Ground is Data:
   Ground{edits: List<&2, WorldState.Edit>, region: PlayerProbe.Region, world: Slabs.World,
-    home: Frame.Home}
+    home: Frame.Home, world_ms: U32}
 
 # `Setup` is what the session was started with and the tick does not change. `hosted` says
 # where the look comes from: `True` when `native/pointer.bend` is reading the pointer from the
 # Windows host, `False` when the runtime's own grab is what measures it. `path` is where `T`
-# saves, and `size` the window.
+# saves, and `size` the window. `debug` is the one field the tick does change: F3 flips it.
 type Setup is Data:
-  Setup{hosted: Bool, path: String, size: Size.Size}
+  Setup{hosted: Bool, path: String, size: Size.Size, debug: Bool}
 
 # `clock` counts ticks from `Sky.clock_start`. It is the hour: the sky, the light and where
 # the clouds have drifted to are rules on it, and nothing else reads it. It is not saved, so
@@ -84,16 +88,16 @@ def with_bag(client: Client, bag: Bag.Bag) -> Client:
   Client{avatar, ground, setup, bag, clock, dig}
 
 def size_of(client: Client) -> Size.Size:
-  Client{avatar, ground, Setup{hosted, path, size}, bag, clock, dig} = client
+  Client{avatar, ground, Setup{hosted, path, size, debug}, bag, clock, dig} = client
   size
 
 def path_of(client: Client) -> String:
-  Client{avatar, ground, Setup{hosted, path, size}, bag, clock, dig} = client
+  Client{avatar, ground, Setup{hosted, path, size, debug}, bag, clock, dig} = client
   path
 
 def hosting(client: Client, hosted: Bool) -> Client:
-  Client{avatar, ground, Setup{old, path, size}, bag, clock, dig} = client
-  Client{avatar, ground, Setup{hosted, path, size}, bag, clock, dig}
+  Client{avatar, ground, Setup{old, path, size, debug}, bag, clock, dig} = client
+  Client{avatar, ground, Setup{hosted, path, size, debug}, bag, clock, dig}
 
 def player_of(client: Client) -> Player.State:
   Client{Avatar{player, pose, keys}, ground, setup, bag, clock, dig} = client
@@ -112,19 +116,19 @@ def keys_of(client: Client) -> U32:
   keys
 
 def edits_of(client: Client) -> List<&2, WorldState.Edit>:
-  Client{avatar, Ground{edits, region, world, home}, setup, bag, clock, dig} = client
+  Client{avatar, Ground{edits, region, world, home, world_ms}, setup, bag, clock, dig} = client
   edits
 
 def region_of(client: Client) -> PlayerProbe.Region:
-  Client{avatar, Ground{edits, region, world, home}, setup, bag, clock, dig} = client
+  Client{avatar, Ground{edits, region, world, home, world_ms}, setup, bag, clock, dig} = client
   region
 
 def world_of(client: Client) -> Slabs.World:
-  Client{avatar, Ground{edits, region, world, home}, setup, bag, clock, dig} = client
+  Client{avatar, Ground{edits, region, world, home, world_ms}, setup, bag, clock, dig} = client
   world
 
 def home_of(client: Client) -> Frame.Home:
-  Client{avatar, Ground{edits, region, world, home}, setup, bag, clock, dig} = client
+  Client{avatar, Ground{edits, region, world, home, world_ms}, setup, bag, clock, dig} = client
   home
 
 def path() -> String:
@@ -266,15 +270,20 @@ def labels(others: List<&2, Net.Other>, home: Frame.Home) -> List<&2, Tag.Label>
 # `Tag` makes of the players' names; `Face` still answers the pointer's ray and is what
 # `native/paint_test.bend` holds the painter against. `clock` is the client's own ticks,
 # which is where the clouds are, and `hour` the clock the sun is read from.
+#
+# `debug` is the diagnostics overlay's lines, already empty when F3 is off, so "the overlay
+# is showing" is the same fact as "there is anything to draw" and needs no second flag.
 def image_among(+world: Slabs.World, +pose: Frame.Pose, +depth: Nat, +bag: Bag.Bag, +health: U32,
   +food: U32, +clock: U32, +hour: U32, +others: List<&2, Net.Other>,
-  things: List<&2, Net.Thing>, +mining: U32) -> Image:
+  things: List<&2, Net.Thing>, +mining: U32, debug: List<&2, String>) -> Image:
   +eye = Frame.view_eye(Frame.eye_of(pose), Slabs.w_home(world))
+  +p : U32 = U32.shln((1 : U32), depth)
   Scenery.paint_among(Slabs.w_groups(world), eye, Frame.yaw_of(pose), Frame.pitch_of(pose), depth,
     Paint.quads.after(
-      Screen.quads(bag, U32.shln((1 : U32), depth),
-        Hud.progress(mining, U32.shln((1 : U32), depth),
-          Hud.overlay(bag, U32.shln((1 : U32), depth), health, food))),
+      Screen.quads(bag, p,
+        Debug.quads(debug, p, p,
+          Hud.progress(mining, p,
+            Hud.overlay(bag, p, health, food)))),
       Tag.quads(labels(others, Slabs.w_home(world)), eye, Frame.yaw_of(pose), Frame.pitch_of(pose), depth,
         Paint.QNil{})),
     region_shift(Frame.home_x(Slabs.w_home(world))),
@@ -283,7 +292,7 @@ def image_among(+world: Slabs.World, +pose: Frame.Pose, +depth: Nat, +bag: Bag.B
 
 def image_at(+world: Slabs.World, +pose: Frame.Pose, +depth: Nat, bag: Bag.Bag, +health: U32,
   +food: U32, +clock: U32) -> Image:
-  image_among(world, pose, depth, bag, health, food, clock, clock, [], [], 0)
+  image_among(world, pose, depth, bag, health, food, clock, clock, [], [], 0, [])
 
 # The frame at the hour a session starts, which is the one the benchmark prices.
 def image_at_depth(+world: Slabs.World, +pose: Frame.Pose, +depth: Nat, bag: Bag.Bag, +health: U32,
@@ -296,23 +305,26 @@ def points(+value: F32) -> U32:
 
 def image_of(+world: Slabs.World, +pose: Frame.Pose, size: Size.Size, bag: Bag.Bag,
   player: Player.State, +clock: U32, +hour: U32, others: List<&2, Net.Other>,
-  things: List<&2, Net.Thing>, mining: U32) -> Image:
+  things: List<&2, Net.Thing>, mining: U32, debug: List<&2, String>) -> Image:
   Player.State{x, y, z, yaw, pitch, velocity_y, grounded, health, hunger, air, fall,
     poison} = player
   image_among(world, pose, Size.depth_of(size), bag, points(health), points(hunger), clock, hour,
-    others, things, mining)
+    others, things, mining, debug)
 
 # The client's frame with what else is in a room's world in it, at the room's hour.
+#
+# The world's own update happens in the tick now, not here: `Slabs.world_for` builds a
+# chunk when one has come into view, and a viewer is a pure function of the state, so a
+# build here could not be timed and the one number a player asking "why did it stutter"
+# wants is exactly that. The tick measures it into `Ground.world_ms` and this reads it.
 def view_among(state: Client, others: List<&2, Net.Other>, hour: Hour.Hour,
   things: List<&2, Net.Thing>) -> Client & Image:
-  Client{Avatar{+player, +pose, keys}, Ground{+edits, region, +world, +home}, Setup{hosted, path, +size},
-    +bag, +clock, +dig} = state
-  +next : Slabs.World = Slabs.world_for(world, edits, home)
-  (Client{Avatar{player, pose, keys}, Ground{edits, region, next, home}, Setup{hosted, path, size},
-      bag, clock, dig},
-    image_of(next, pose, size, bag, player, clock, Hour.hour.clock(hour, clock), others, things,
-      Digging.progress(dig)))
-
+  Client{Avatar{+player, +pose, keys}, Ground{+edits, region, +world, +home, +world_ms},
+    Setup{+hosted, path, +size, +debug}, +bag, +clock, +dig} = state
+  (Client{Avatar{player, pose, keys}, Ground{edits, region, world, home, world_ms},
+      Setup{hosted, path, size, debug}, bag, clock, dig},
+    image_of(world, pose, size, bag, player, clock, Hour.hour.clock(hour, clock), others, things,
+      Digging.progress(dig), Debug.lines(debug, player, home, world_ms, size, clock)))
 def view(state: Client) -> Client & Image:
   view_among(state, [], Hour.Unheard{}, [])
 
@@ -457,8 +469,8 @@ def screened(turn: Action.Turn, +previous: U32, +mask: U32, +dx: F32, +dy: F32, 
 def tick.folded(folded: Folded, text: String, client: Client, +guarded: Bool,
   +roomed: Bool) -> IO(Maybe<Client>):
   Folded{shared, closing} = folded
-  Client{Avatar{+player, +pose, +keys}, Ground{+edits, +region, world, +home}, Setup{+hosted, path, +size},
-    +bag, +clock, dig} = client
+  Client{Avatar{+player, +pose, +keys}, Ground{+edits, +region, world, +home, world_ms},
+    Setup{+hosted, path, +size, debug}, +bag, +clock, dig} = client
   +heard : List<&2, Event> = Pointer.events(hosted, text, shared)
   # With the inventory screen open the player stands still and looks nowhere: the same
   # events move the screen's arrow and click its slots instead, and the body is stepped
@@ -492,24 +504,59 @@ def tick.folded(folded: Folded, text: String, client: Client, +guarded: Bool,
       Bool.and(Frame.wants_place(keys, mask), Bool.not(screen)), Size.width_of(size)),
     keys, mask, Frame.look_dx(folded_keys), Frame.look_dy(folded_keys), Size.width_of(size), roomed)
   # Both regions follow the player the tick just moved. The collision region is rebuilt
-  # here when the log changed or the player left its middle; the faces follow in `view`.
+  # here when the log changed or the player left its middle; the faces are rebuilt by
+  # `tick.world`, which is where the clock is.
+  # F3 flips the overlay, and it is read whatever else the tick decided: the overlay is a
+  # diagnostic, so it stays available with the screen open and while the player is falling.
+  +shown : Bool = Bool.pick(Bool, debug, Bool.not(Frame.wants_debug(keys, mask)),
+    Frame.wants_debug(keys, mask))
   tick.finish(
     Client{moved(staged, mask),
       Ground{Action.turn_edits(acts),
         region_after(region, edits, Action.turn_edits(acts),
           Frame.den_for(den_of(region), Frame.staged_player(staged))),
-        world, Frame.home_for(home, Frame.staged_player(staged))},
-      Setup{hosted, path, size}, Action.turn_bag(acts), U32.add(clock, 1), Digging.mined_dig(mined)},
+        world, Frame.home_for(home, Frame.staged_player(staged)), world_ms},
+      Setup{hosted, path, size, shown}, Action.turn_bag(acts), U32.add(clock, 1), Digging.mined_dig(mined)},
     Bool.and(Frame.wants_save(keys, mask), Bool.not(screen)), Frame.quitting_from(closing, keys, mask, screen))
 
 # The host's pointer is read once per tick, hosted or not: an unopened host has nothing to
 # say, so the read is what keeps this one code path. `guarded` is a room's mob under the
 # crosshair, and `roomed` says the client is in a room, where the world's chests and furnaces
 # are the room's.
+# The client's world update, and the clock that measures it.
+#
+# This used to happen in `view`, which cannot be timed: `App`'s view is a pure function of
+# the state, and the only clock in the program is an effect. Moving the build here costs
+# nothing - the tick already runs before the view every frame, and the world's home is
+# already the one the tick just moved - and it buys the one reading that answers "why did
+# it stutter": a frame that built a chunk is dearer than one that did not, and that
+# difference is invisible until it is on screen. A client that is leaving is handed back
+# untouched, because there is no frame left to draw.
+def world.timed(+client: Client) -> IO(Client):
+  Client{avatar, ground, setup, bag, clock, dig} = client
+  Ground{edits, region, world, home, world_ms} = ground
+  do IO<Client>:
+    started : Nat <- IO.now()
+    next : Slabs.World = Slabs.world_for(world, edits, home)
+    finished : Nat <- IO.now()
+    IO.pure(Client, Client{avatar,
+      Ground{edits, region, next, home, U32.from_nat(Nat.sub(finished, started))},
+      setup, bag, clock, dig})
+
+def tick.world(answer: Maybe<&1, Client>) -> IO(Maybe<Client>):
+  match answer:
+    case Some{client}:
+      do IO<Maybe<Client>>:
+        timed : Client <- world.timed(client)
+        IO.pure(Maybe<Client>, Some{timed})
+    case None{}:
+      IO.pure(Maybe<Client>, None{})
+
 def tick.room(events: List<&1, Event>, client: Client, guarded: Bool, roomed: Bool) -> IO(Maybe<Client>):
   do IO<Maybe<Client>>:
     text : String <- Pointer.host_read()
-    tick.folded(share_events(events), text, client, guarded, roomed)
+    answer : Maybe<&1, Client> <- tick.folded(share_events(events), text, client, guarded, roomed)
+    tick.world(answer)
 
 def tick.events(events: List<&1, Event>, client: Client) -> IO(Maybe<Client>):
   tick.room(events, client, False{}, False{})
@@ -524,8 +571,8 @@ def start.readied(player: Player.State, +pose: Frame.Pose, +region: PlayerProbe.
   +world : Slabs.World = Slabs.world_built(edits, Frame.home_start())
   do IO<Client>:
     stash : String <- load_text.at(stash_path(path))
-    return Client{Avatar{player, pose, 0}, Ground{edits, region, world, Frame.home_start()},
-      Setup{False{}, path, size}, Stash.decode(stash, Bag.start()), Sky.clock_start(), Digging.resting()}
+    return Client{Avatar{player, pose, 0}, Ground{edits, region, world, Frame.home_start(), 0},
+      Setup{False{}, path, size, False{}}, Stash.decode(stash, Bag.start()), Sky.clock_start(), Digging.resting()}
 
 def start.placed(+player: Player.State, region: PlayerProbe.Region,
   +edits: List<&2, WorldState.Edit>, +path: String, +size: Size.Size) -> IO(Client):

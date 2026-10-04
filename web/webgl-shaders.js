@@ -6,6 +6,8 @@ import {
 import {
   AERIAL_FOG_HEIGHT_FALLOFF,
   AERIAL_FOG_MIN_DENSITY,
+  CLOUD_DIFFUSE_SCATTER,
+  CLOUD_PHASE_SCATTER,
   FIRE_ALPHA,
   FIRE_PULSE_AMPLITUDE,
   FIRE_PULSE_SPEED,
@@ -31,8 +33,16 @@ export function isSoftwareRenderer(rendererName) {
 
 /** Hard cap on shadow-filter taps, so the loop bound stays a GLSL constant. */
 export const SHADOW_MAX_TAPS = 24;
-/** Hard cap on cloud-march samples, for the same reason. */
-export const CLOUD_MAX_STEPS = 24;
+/**
+ * Hard cap on cloud-march samples, for the same reason.
+ *
+ * This is a compile-time bound and not a budget: the march costs what the tier
+ * asks for and breaks out of the loop, so a larger constant costs nothing until
+ * something asks for more. It is set at twice the densest tier so a player who
+ * turns clouds up to 200% on the top tier gets twice the march rather than the
+ * same march twice promised.
+ */
+export const CLOUD_MAX_STEPS = 48;
 
 export const SKY_CLOUD_BOTTOM = 58;
 export const SKY_CLOUD_TOP = 96;
@@ -280,10 +290,16 @@ export function createWebglSkyFragmentShader({ volumetricClouds = true } = {}) {
             // Powder term: dense cloud interiors stay dark even when backlit.
             float powder = 1.0 - exp(-density * 2.6);
             float shade = mix(0.5, 1.0, lightTransmittance) * powder;
-            vec3 sunLit = uSunColor * shade * phase * (0.35 + 0.65 * sunUp) * 0.9;
+            // A cloud is a bright diffuse reflector, so most of its light comes
+            // from the whole sunlit hemisphere rather than from the forward lobe
+            // alone. With the phase term by itself the deck could never out-shine
+            // the sky behind it and read as a flat grey stain across it, so the
+            // sun term carries an isotropic part and the lobe adds the glow on top.
+            vec3 sunLit = uSunColor * shade * (${CLOUD_DIFFUSE_SCATTER.toFixed(3)}
+              + phase * ${CLOUD_PHASE_SCATTER.toFixed(3)}) * (0.35 + 0.65 * sunUp);
             // The underside of a cumulus is lit by bounce, not by the sun, so the
-            // ambient term is generous. Too little and the deck reads as a flat
-            // grey stain across the sky instead of a lit volume.
+            // ambient term is generous; too little of it and the shaded half of
+            // the deck collapses to the flat dark grey it used to be everywhere.
             vec3 ambient = mix(uSkyHorizonColor, uSkyColor, 0.5) * (0.55 + 0.4 * uDaylight);
             // Energy-conserving absorption. A linear density*stepSize term
             // over-counts on the first sample that lands inside a cloud, which is

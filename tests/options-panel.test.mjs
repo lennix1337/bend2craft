@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { GRAPHICS_QUALITY_CHOICES, FPS_LIMIT_CHOICES } from "../web/settings.js";
+import { GRAPHICS_EFFECTS, graphicsEffectKeys } from "../web/graphics-effects.js";
 
 const html = await readFile(new URL("../web/index.html", import.meta.url), "utf8");
 const css = await readFile(new URL("../web/styles.css", import.meta.url), "utf8");
@@ -20,7 +21,7 @@ assert.ok(panel.length > 0, "the options panel must exist");
 
 // 1. The groups, in order, and only those.
 const headings = [...panel.matchAll(/<h3[^>]*>([^<]+)<\/h3>/g)].map((match) => match[1]);
-assert.deepEqual(headings, ["Video", "Audio", "Controls", "Interface"],
+assert.deepEqual(headings, ["Video", "Graphics", "Audio", "Controls", "Interface"],
   "the options must stay grouped, and video has to come first");
 for (const heading of headings) {
   assert.ok(
@@ -48,7 +49,7 @@ for (const id of controlIds) {
 }
 // The families must be handled as families, so a fourth bus or a sixth binding
 // does not need its own branch.
-for (const family of ["input-volume-", "input-control-"]) {
+for (const family of ["input-volume-", "input-control-", "input-effect-"]) {
   assert.ok(handlerPrefixes.includes(family), `${family} controls must be handled as a family`);
 }
 // The readouts next to the sliders have to be driven, or the panel shows a stale
@@ -169,5 +170,39 @@ assert.ok(!panel.includes('data-action="toggle-coords"'), "the old coords button
 assert.ok(!menu.includes('"toggle-coords"'), "the old coords handler must be gone");
 assert.ok(game.includes("options.showCoords") || game.includes("showCoords"),
   "the game must still read the coordinates preference");
+
+// 9. The per-effect graphics controls. They are generated from the effect table
+//    rather than written out, so an effect the runtime cannot apply cannot be
+//    offered, and one it can apply cannot be lost between table and panel.
+assert.ok(panel.includes('id="graphics-effect-fields"'), "the graphics section needs a container for the effect controls");
+assert.ok(
+  panel.indexOf('id="graphics-effect-fields"') > panel.indexOf('id="options-graphics-heading"'),
+  "the effect controls belong to the graphics section",
+);
+assert.ok(
+  !/<input id="input-effect-/.test(panel),
+  "the per-effect sliders must be built in code, not duplicated in the markup",
+);
+assert.ok(menu.includes("GRAPHICS_EFFECTS"), "menu.js must build the effect controls from the shared table");
+assert.ok(menu.includes("buildGraphicsEffectFields"), "menu.js needs a builder for the effect controls");
+assert.ok(
+  /input-effect-/.test(menu),
+  "the effect controls must be addressed as a family, so a new effect needs no new branch",
+);
+for (const effect of GRAPHICS_EFFECTS) {
+  assert.ok(effect.label.length > 0, `${effect.key} needs a label`);
+}
+// Every effect needs a readout the menu writes, or the slider moves and the panel
+// keeps showing the number it was left on.
+assert.ok(menu.includes("effect-"), "the effect readouts have to be written by key");
+assert.ok(/`effect-\$\{key\}-value`/.test(menu), "the effect readouts must be written from the key, so all of them stay in step");
+// And the runtime has to read what they store, or twelve sliders do nothing.
+assert.ok(game.includes("options.graphics"), "the game must read the stored per-effect amounts");
+assert.ok(
+  game.includes("resolveGraphicsEffects"),
+  "the game must resolve the stored amounts through the shared contract",
+);
+assert.deepEqual(graphicsEffectKeys(), GRAPHICS_EFFECTS.map((effect) => effect.key),
+  "the effect table is the single source of the key list");
 
 console.log("options panel ok");

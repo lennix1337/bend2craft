@@ -2,13 +2,15 @@
 // Pure and dependency-free; persistence is injected by the caller so the
 // rules stay testable without a browser. Only options the game implements
 // are exposed: field of view, mouse sensitivity, render distance, distant
-// terrain, the coordinates readout, the renderer backend and the graphics
-// quality tier.
+// terrain, the coordinates readout, the renderer backend, the graphics
+// quality tier and the per-effect graphics amounts.
 import { normalizeRendererMode, RENDERER_MODES } from "./webgpu-capabilities.js";
 import { VISUAL_QUALITY_TIERS } from "./visual-quality.js";
+import { createDefaultGraphicsEffects, normalizeGraphicsEffects } from "./graphics-effects.js";
 import { DEFAULT_FPS_LIMIT, normalizeFpsLimit } from "./frame-pacer.js";
 
 export { RENDERER_MODES };
+export { GRAPHICS_EFFECTS, createDefaultGraphicsEffects } from "./graphics-effects.js";
 
 /** Tier names, cheapest first, with `auto` in front to leave adaptation on. */
 export const GRAPHICS_QUALITY_CHOICES = Object.freeze([
@@ -109,6 +111,7 @@ export function createDefaultOptions() {
     lodDistance: DEFAULT_LOD_DISTANCE,
     renderer: DEFAULT_RENDERER,
     graphicsQuality: DEFAULT_GRAPHICS_QUALITY,
+    graphics: createDefaultGraphicsEffects(),
     fpsLimit: DEFAULT_FPS_LIMIT,
     volumeMaster: DEFAULT_VOLUME_MASTER,
     volumeMusic: DEFAULT_VOLUME_MUSIC,
@@ -147,6 +150,7 @@ export function sanitizeOptions(raw = {}) {
     lodDistance: raw.lodDistance === undefined ? fallback.lodDistance : normalizeLodDistance(raw.lodDistance),
     renderer: runtimeRendererMode(raw.renderer),
     graphicsQuality: normalizeGraphicsQuality(raw.graphicsQuality),
+    graphics: normalizeGraphicsEffects(raw.graphics),
     fpsLimit: normalizeFpsLimit(raw.fpsLimit),
     volumeMaster: clampVolume(raw.volumeMaster, fallback.volumeMaster),
     volumeMusic: clampVolume(raw.volumeMusic, fallback.volumeMusic),

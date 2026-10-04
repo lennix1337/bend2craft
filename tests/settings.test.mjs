@@ -32,6 +32,7 @@ import {
   normalizeFpsLimit,
 } from "../web/settings.js";
 import { VISUAL_QUALITY_TIERS } from "../web/visual-quality.js";
+import { createDefaultGraphicsEffects, graphicsEffectKeys } from "../web/graphics-effects.js";
 
 function memoryStore(entries = {}) {
   const data = new Map(Object.entries(entries));
@@ -93,6 +94,7 @@ assert.deepEqual(createDefaultOptions(), {
   lodDistance: 512,
   renderer: "webgl",
   graphicsQuality: "auto",
+  graphics: createDefaultGraphicsEffects(),
   fpsLimit: 0,
   volumeMaster: 0.7,
   volumeMusic: 0.7,
@@ -107,12 +109,29 @@ assert.deepEqual(sanitizeOptions({ fov: 200, sensitivity: -1, renderDistance: 99
   lodDistance: 512,
   renderer: "webgl",
   graphicsQuality: "auto",
+  graphics: createDefaultGraphicsEffects(),
   fpsLimit: 0,
   volumeMaster: 0.7,
   volumeMusic: 0.7,
   volumeEffects: 0.9,
   controls: DEFAULT_CONTROLS,
 });
+
+// The per-effect amounts ride inside the options document rather than beside it,
+// so a stored set survives a save/load round trip and a document written before
+// the effects existed still loads with the shipped look.
+assert.deepEqual(Object.keys(createDefaultOptions().graphics), graphicsEffectKeys(),
+  "every effect has to be in the default document the menu writes");
+assert.equal(sanitizeOptions({ graphics: { bloom: 0 } }).graphics.bloom, 0,
+  "an effect the player switched off has to survive sanitising");
+assert.equal(sanitizeOptions({ graphics: { bloom: 0 } }).graphics.godRays, createDefaultGraphicsEffects().godRays,
+  "editing one effect must not reset the others");
+assert.deepEqual(loadOptions(memoryStore({ "bend2craft-options": '{"fov":90}' })).graphics,
+  createDefaultGraphicsEffects(),
+  "a document from before the effects existed must load the shipped look");
+const effectStore = memoryStore();
+assert.equal(saveOptions(effectStore, { ...createDefaultOptions(), graphics: { ...createDefaultGraphicsEffects(), bloom: 200 } }), true);
+assert.equal(loadOptions(effectStore).graphics.bloom, 200, "a chosen amount must survive a round trip");
 
 // The graphics tier must only ever hold a name the runtime has a tier for, and
 // a corrupted preference must fall back to `auto` rather than to a specific
@@ -145,6 +164,7 @@ assert.deepEqual(loadOptions(memoryStore({ "bend2craft-options": "{\"fov\":90}" 
   lodDistance: 512,
   renderer: "webgl",
   graphicsQuality: "auto",
+  graphics: createDefaultGraphicsEffects(),
   fpsLimit: 0,
   volumeMaster: 0.7,
   volumeMusic: 0.7,
@@ -170,6 +190,7 @@ assert.deepEqual(loadOptions(store), {
   lodDistance: 512,
   renderer: "webgpu",
   graphicsQuality: "auto",
+  graphics: createDefaultGraphicsEffects(),
   fpsLimit: 0,
   volumeMaster: 0.7,
   volumeMusic: 0.7,

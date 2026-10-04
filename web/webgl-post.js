@@ -626,34 +626,42 @@ export function createPostPipeline(gl, {
       } = params;
 
       // --- bloom: prefilter into mip 0, then walk down and back up ---
-      blit(scene.texture, bloomMips[0], programs.prefilter, uniforms.prefilter, (u) => {
-        gl.uniform1i(u.uSource, 0);
-        gl.uniform2f(u.uTexel, 1 / scene.width, 1 / scene.height);
-        gl.uniform1f(u.uThreshold, bloomThreshold);
-        gl.uniform1f(u.uSoftKnee, Math.max(bloomSoftKnee, 0.0001));
-        gl.uniform1f(u.uClamp, bloomClamp);
-      });
-      for (let level = 1; level < bloomMips.length; level += 1) {
-        const source = bloomMips[level - 1];
-        blit(source.texture, bloomMips[level], programs.downsample, uniforms.downsample, (u) => {
+      // Skipped entirely at zero strength. The chain is six downsamples, six
+      // upsamples and an additive blend over the whole frame, so a player who
+      // turns bloom off should stop paying for it rather than multiply the result
+      // by zero. The composite below is given an inert sampler and a zero
+      // strength in that case, the same way the god-ray stage is.
+      const bloomActive = bloomStrength > 0;
+      if (bloomActive) {
+        blit(scene.texture, bloomMips[0], programs.prefilter, uniforms.prefilter, (u) => {
           gl.uniform1i(u.uSource, 0);
-          gl.uniform2f(u.uTexel, 1 / source.width, 1 / source.height);
+          gl.uniform2f(u.uTexel, 1 / scene.width, 1 / scene.height);
+          gl.uniform1f(u.uThreshold, bloomThreshold);
+          gl.uniform1f(u.uSoftKnee, Math.max(bloomSoftKnee, 0.0001));
+          gl.uniform1f(u.uClamp, bloomClamp);
         });
+        for (let level = 1; level < bloomMips.length; level += 1) {
+          const source = bloomMips[level - 1];
+          blit(source.texture, bloomMips[level], programs.downsample, uniforms.downsample, (u) => {
+            gl.uniform1i(u.uSource, 0);
+            gl.uniform2f(u.uTexel, 1 / source.width, 1 / source.height);
+          });
+        }
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.ONE, gl.ONE);
+        for (let level = bloomMips.length - 1; level > 0; level -= 1) {
+          const source = bloomMips[level];
+          bindRenderTarget(gl, bloomMips[level - 1]);
+          gl.useProgram(programs.upsample);
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, source.texture);
+          gl.uniform1i(uniforms.upsample.uSource, 0);
+          gl.uniform2f(uniforms.upsample.uTexel, 1 / source.width, 1 / source.height);
+          gl.uniform1f(uniforms.upsample.uRadius, bloomRadius);
+          quad.draw();
+        }
+        gl.disable(gl.BLEND);
       }
-      gl.enable(gl.BLEND);
-      gl.blendFunc(gl.ONE, gl.ONE);
-      for (let level = bloomMips.length - 1; level > 0; level -= 1) {
-        const source = bloomMips[level];
-        bindRenderTarget(gl, bloomMips[level - 1]);
-        gl.useProgram(programs.upsample);
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, source.texture);
-        gl.uniform1i(uniforms.upsample.uSource, 0);
-        gl.uniform2f(uniforms.upsample.uTexel, 1 / source.width, 1 / source.height);
-        gl.uniform1f(uniforms.upsample.uRadius, bloomRadius);
-        quad.draw();
-      }
-      gl.disable(gl.BLEND);
 
       // --- god rays: occlusion mask from depth, then a radial march ---
       const godrayActive = godrayEnabled && godrayStrength > 0 && sunVisible > 0.001;
@@ -683,8 +691,10 @@ export function createPostPipeline(gl, {
       // --- composite onto the default framebuffer ---
       // When the god-ray stage did not run, its sampler is pointed at something
       // inert and its strength forced to zero; multiplying a real image by a
-      // zero strength is cheaper than branching again here.
-      const bloomTexture = bloomMips[0].texture;
+      // zero strength is cheaper than branching again here. The same goes for a
+      // bloom that was skipped.
+      const bloomTexture = bloomActive ? bloomMips[0].texture : scene.texture;
+      const effectiveBloomStrength = bloomActive ? bloomStrength : 0;
       const effectiveGodrayStrength = godrayActive ? godrayStrength : 0;
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       // Blit across the whole canvas, not the scaled scene target: the
@@ -708,7 +718,7 @@ export function createPostPipeline(gl, {
       gl.uniform1i(uniforms.composite.uDepth, 3);
       gl.uniform2f(uniforms.composite.uTexel, 1 / scene.width, 1 / scene.height);
       gl.uniform1f(uniforms.composite.uExposure, exposure);
-      gl.uniform1f(uniforms.composite.uBloomStrength, bloomStrength);
+      gl.uniform1f(uniforms.composite.uBloomStrength, effectiveBloomStrength);
       gl.uniform1f(uniforms.composite.uGodrayStrength, effectiveGodrayStrength);
       gl.uniform3f(uniforms.composite.uGodrayColor, godrayColor[0], godrayColor[1], godrayColor[2]);
       gl.uniform1f(uniforms.composite.uVignette, vignette);

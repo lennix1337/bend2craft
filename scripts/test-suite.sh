@@ -65,6 +65,8 @@ TESTS=(
   tests/terrain-vertex-builder.test.mjs
   tests/material-textures.test.mjs
   tests/visual-quality.test.mjs
+  tests/graphics-effects.test.mjs
+  tests/cloud-lighting.test.mjs
   tests/frame-pacer.test.mjs
   tests/gl-render-target.test.mjs
   tests/sun-shadow.test.mjs
@@ -181,6 +183,8 @@ BEND_TESTS=(
   native/pointer_test.bend
   native/bag_test.bend
   native/hud_test.bend
+  native/debug_test.bend
+  native/debug_toggle_test.bend
   native/texture_test.bend
   native/net_test.bend
   native/body_test.bend

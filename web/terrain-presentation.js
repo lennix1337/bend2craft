@@ -65,6 +65,19 @@ export const WATER_DETAIL_STRENGTH = 1;
 /** Volumetric cloud raymarch samples at the top quality tier. */
 export const CLOUD_COVERAGE = 0.42;
 export const CLOUD_WIND_SPEED = 1;
+// How a lit cloud gets its light, split in two. The isotropic part is the whole
+// sunlit hemisphere arriving on a bright diffuse reflector, which is where most of
+// a cloud's brightness actually comes from; the phase part is the extra forward
+// glow around the sun, which is what the Henyey-Greenstein lobe describes and what
+// makes a backlit edge shine.
+//
+// With the phase term alone the deck could never be brighter than the sky behind
+// it, which is what made it read as a flat grey stain rather than as a volume:
+// away from the sun the sun contributed a few percent of the sky's own colour.
+// The gain below is calibrated from pictures rather than derived - see
+// `tests/cloud-lighting.test.mjs`, which holds the measured span.
+export const CLOUD_DIFFUSE_SCATTER = 1.8;
+export const CLOUD_PHASE_SCATTER = 0.9;
 /** How much of the ambient's blue cast is washed out toward neutral. */
 export const AMBIENT_DESATURATION = 0.34;
 

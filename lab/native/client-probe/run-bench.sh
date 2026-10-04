@@ -9,7 +9,10 @@
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
-ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
+# Three levels up, like run-fps.sh beside it: this file is lab/native/client-probe,
+# so `../..` is `lab`, which holds neither the compiler nor the scratch folder, and
+# the script refused to run at all.
+ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../../.." && pwd)
 SCRATCH="$ROOT/scratchpad/client-probe"
 BEND="${BEND_BIN:-$ROOT/.tools/bend-local/bin/bend}"
 RUNS="${RUNS:-7}"

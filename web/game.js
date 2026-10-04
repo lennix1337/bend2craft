@@ -195,6 +195,7 @@ import {
   parseVisualQuality,
   VISUAL_QUALITY_TIERS,
 } from "./visual-quality.js";
+import { resolveGraphicsEffects } from "./graphics-effects.js";
 import { createFramePacer, measureDisplayCadenceMs } from "./frame-pacer.js";
 import { concatFloat32Arrays } from "./vertex-buffer-compose.js";
 import { skyPalette } from "./sky-palette.js";
@@ -545,6 +546,12 @@ let shadowDiskTexture = null;
 let shadowFallbackTexture = null;
 let visualQuality = null;
 let framePacer = null;
+// The player's dial, resolved once at boot: the quality tier owns what a frame
+// may cost and these own how much of each effect it shows. Resolved here rather
+// than inside the WebGL setup because both renderers read it, and per frame would
+// only re-read a document that cannot change mid-session - the options screen is
+// on the title, so a change is a world reload.
+const graphicsEffects = resolveGraphicsEffects(options.graphics);
 let terrainVertexCount = 0;
 let waterVertexCount = 0;
 let dynamicVertexCount = 0;
@@ -4235,9 +4242,11 @@ try {
 
     // ---- shadow cascade ---------------------------------------------------
     // The cascade resolution follows the tier: a depth-only map that covers a
-    // fixed world area can easily out-rasterise the whole colour frame.
+    // fixed world area can easily out-rasterise the whole colour frame. A player
+    // who turned shadows off gets no pass at all rather than a pass nobody reads.
     shadowPass.resize(tier.shadowMapSize);
-    if (shadowPass.supported) {
+    const shadowsOn = shadowPass.supported && graphicsEffects.shadows > 0;
+    if (shadowsOn) {
       lightViewProjection.set(
         fitSunShadowMatrix(sunDirection, [player.x, player.y, player.z], {
           radius: SHADOW_RADIUS,
@@ -4248,7 +4257,7 @@ try {
     }
 
     // ---- scene into the HDR target ---------------------------------------
-    postPipeline.resize(canvas.width, canvas.height, tier.renderScale);
+    postPipeline.resize(canvas.width, canvas.height, tier.renderScale * graphicsEffects.renderScale);
     postPipeline.beginScene();
     gl.clearColor(sky[0], sky[1], sky[2], 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -4270,7 +4279,7 @@ try {
     gl.uniform1f(terrainBumpStrengthLocation, shaderQuality >= 0.5 ? BUMP_STRENGTH : 0);
     gl.uniform1f(terrainDetailStrengthLocation, DETAIL_STRENGTH);
     gl.uniform1f(terrainDetailScaleLocation, DETAIL_SCALE);
-    gl.uniform1f(terrainWaterDetailLocation, WATER_DETAIL_STRENGTH * tier.waterDetail);
+    gl.uniform1f(terrainWaterDetailLocation, WATER_DETAIL_STRENGTH * tier.waterDetail * graphicsEffects.waterDetail);
     gl.uniform1f(terrainNearLocation, 0.05);
     gl.uniform1f(terrainFarLocation, RENDER_FAR);
     gl.uniformMatrix4fv(lightViewProjectionLocation, false, lightViewProjection);
@@ -4281,7 +4290,9 @@ try {
       shadowStrengthLocation,
       // A sun on the horizon casts almost no readable shadow, and the cascade
       // would only produce noise there, so fade the term out with it.
-      shadowPass.supported ? Math.max(0, Math.min(1, (sunDirection[1] + 0.05) / 0.25)) * 0.94 : 0,
+      shadowsOn
+        ? Math.max(0, Math.min(1, (sunDirection[1] + 0.05) / 0.25)) * 0.94 * graphicsEffects.shadows
+        : 0,
     );
     gl.uniform1f(shadowTapsLocation, tier.shadowTaps);
     gl.uniform1f(shadowFloorLocation, SHADOW_FLOOR);
@@ -4337,7 +4348,7 @@ try {
     gl.uniform1f(skyTanHalfFovLocation, Math.tan(fov * Math.PI / 360));
     gl.uniform1f(skyDaylightLocation, daylight);
     gl.uniform1f(skyTimeLocation, shaderTime);
-    gl.uniform1f(skyCloudStepsLocation, tier.cloudSteps);
+    gl.uniform1f(skyCloudStepsLocation, tier.cloudSteps * graphicsEffects.clouds);
     gl.uniform1f(skyCloudLightStepsLocation, tier.cloudLightSteps);
     gl.uniform1f(skyCloudCoverageLocation, CLOUD_COVERAGE);
     gl.uniform1f(skyWindSpeedLocation, CLOUD_WIND_SPEED);
@@ -4424,6 +4435,9 @@ try {
     }
 
     // ---- composite --------------------------------------------------------
+    // The shipped values below are what the pipeline was tuned against; the
+    // player's sliders are multipliers on top of them, so 100% is the look these
+    // comments describe and a stored preference is a deliberate departure from it.
     const headUnderwater = isHeadUnderwater(world, player);
     postPipeline.composite({
       // Exposure sets how much of the HDR range the tonemapper gets to work with.
@@ -4434,32 +4448,32 @@ try {
       // highlights for the bloom and the god rays and leaves the midtones legible.
       exposure: headUnderwater ? 1.6 : 1.9,
       bloomThreshold: 0.42,
-      bloomStrength: 0.062,
+      bloomStrength: 0.062 * graphicsEffects.bloom,
       bloomRadius: 1.0,
-      godrayStrength: sunVisibleForGodrays * 0.34,
+      godrayStrength: sunVisibleForGodrays * 0.34 * graphicsEffects.godRays,
       godrayColor: sunColor,
       godrayDensity: 0.78,
       godrayDecay: 0.955,
       godrayWeight: 1.0,
       sunUv: sunScreenPosition,
       sunVisible: sunVisibleForGodrays,
-      vignette: 0.3,
+      vignette: 0.3 * graphicsEffects.vignette,
       // Lateral chromatic aberration, scaled by the squared radius. This is a
       // lens artefact and it only reads as one at the very edge of the frame: at
       // 0.0018 it was fringing the red and green channels apart along every
       // high-contrast edge, including near the centre, which is a defect rather
       // than an effect. Keep it just visible in the corners.
-      aberration: 0.0007,
-      grain: 0.02,
-      sharpen: 0.2,
+      aberration: 0.0007 * graphicsEffects.aberration,
+      grain: 0.02 * graphicsEffects.grain,
+      sharpen: 0.2 * graphicsEffects.sharpen,
       saturation: 1.0,
       contrast: 1.06,
       lift: [-0.004, -0.002, 0.004],
       gain: [1.0, 0.995, 0.985],
-      fxaa: 0.9,
+      fxaa: 0.9 * graphicsEffects.antiAliasing,
       underwater: headUnderwater ? 1 : 0,
       underwaterColor: [0.26, 0.55, 0.64],
-      caustics: 0.75,
+      caustics: 0.75 * graphicsEffects.caustics,
       time: shaderTime,
       near: 0.05,
       far: RENDER_FAR,

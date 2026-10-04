@@ -288,6 +288,18 @@ def save_code() -> U32:
 def escape_code() -> U32:
   27
 
+# The diagnostics overlay's key, F3, as the runtime's own code for it.
+#
+# Not X11's keysym for F3 (0xFFC0, 65472): the runtime never hands that on. Its
+# `window_key` translates the function keys itself, `63236 + (ks - XK_F1)`, so F1 is 63236
+# and F3 is 63238 - and the macOS path lands on the same numbers through the function
+# key's character. The four arrow codes above come from the same table. This number was
+# read out of `vendor/bend/bend2/effs/window.c` rather than guessed: a keysym that never
+# arrives is a key that does nothing and reports no error, which is the worst kind of
+# wrong.
+def debug_code() -> U32:
+  63238
+
 def key_bit(+code: U32) -> U32:
   Bool.pick(U32, U32.is_eq(code, 119), 1,
     Bool.pick(U32, U32.is_eq(code, 115), 4,
@@ -305,9 +317,10 @@ def key_bit(+code: U32) -> U32:
                             Bool.pick(U32, U32.is_eq(code, arrow_left()), 8192,
                               Bool.pick(U32, U32.is_eq(code, arrow_right()), 16384,
                                 Bool.pick(U32, U32.is_eq(code, dig_code()), 131072,
-                                  Bool.pick(U32, Bool.or(U32.is_eq(code, 65595), U32.is_eq(code, 65598)), 32,
-                                    Bool.pick(U32, Bool.or(U32.is_eq(code, 65592), U32.is_eq(code, 65596)), 64,
-                                      0))))))))))))))))))
+                                  Bool.pick(U32, U32.is_eq(code, debug_code()), 262144,
+                                    Bool.pick(U32, Bool.or(U32.is_eq(code, 65595), U32.is_eq(code, 65598)), 32,
+                                      Bool.pick(U32, Bool.or(U32.is_eq(code, 65592), U32.is_eq(code, 65596)), 64,
+                                        0)))))))))))))))))))
 
 def key_turn(+keys: U32) -> F32:
   axis(held(keys, key_bit(arrow_left())), held(keys, key_bit(arrow_right())), turn_rate())
@@ -367,6 +380,11 @@ def wants_place(+previous: U32, +keys: U32) -> Bool:
 
 def wants_save(previous: U32, keys: U32) -> Bool:
   edge(keys, previous, key_bit(save_code()))
+
+# The diagnostics overlay is a toggle, so it reads as an edge like every other key: a held
+# F3 would otherwise flip it sixty times a second.
+def wants_debug(previous: U32, keys: U32) -> Bool:
+  edge(keys, previous, key_bit(debug_code()))
 
 # Escape asks to leave; the window manager's own close is noticed while the events are shared
 # and quits just the same.

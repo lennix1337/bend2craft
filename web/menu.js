@@ -22,6 +22,7 @@ import {
   createWorldConfig,
   DEFAULT_GRAPHICS_QUALITY,
   DEFAULT_RENDER_DISTANCE,
+  GRAPHICS_EFFECTS,
   GRAPHICS_QUALITY_CHOICES,
   MAX_RENDER_DISTANCE,
   MAX_VOLUME,
@@ -39,6 +40,7 @@ import {
   normalizeFpsLimit,
 } from "./settings.js";
 import { VISUAL_QUALITY_TIERS } from "./visual-quality.js";
+import { graphicsEffectByKey, normalizeGraphicsEffects } from "./graphics-effects.js";
 import { getAudioMixer } from "./audio.js";
 import { probeWebGpu } from "./webgpu-capabilities.js";
 import { describeBackendNotice, takeBackendNotice } from "./backend-notice.js";
@@ -332,6 +334,44 @@ export function runMenu() {
     select.dataset.built = "true";
   }
 
+  // The graphics section's own wording, read once from the markup before anything
+  // can overwrite it, so the panel has one place that explains it and the WebGPU
+  // case does not need a second copy of the default. `runMenu` owns the document,
+  // so this is its own element lookup and not the `doc` that holds saved profiles.
+  const graphicsEffectHintDefault = document.getElementById("graphics-effect-hint")?.textContent ?? "";
+
+  // The per-effect controls are built from the same table the renderer resolves
+  // its amounts through, so the panel cannot offer an effect the pipeline does
+  // not have, and one it does have cannot go missing between the table and the
+  // menu. Built in code rather than written into the markup because there are
+  // twelve of them and every one has to stay in step with that table.
+  function buildGraphicsEffectFields(container) {
+    if (container === null || container.dataset.built === "true") return;
+    for (const effect of GRAPHICS_EFFECTS) {
+      const field = document.createElement("label");
+      field.className = "field";
+      const caption = document.createElement("span");
+      caption.append(`${effect.label}: `);
+      const readout = document.createElement("output");
+      readout.id = `effect-${effect.key}-value`;
+      readout.textContent = String(effect.amount);
+      caption.append(readout, "%");
+      const input = document.createElement("input");
+      input.type = "range";
+      input.id = `input-effect-${effect.key}`;
+      input.min = String(effect.min);
+      input.max = String(effect.max);
+      input.step = String(effect.step);
+      input.value = String(effect.amount);
+      const hint = document.createElement("span");
+      hint.className = "field-hint";
+      hint.textContent = effect.hint;
+      field.append(caption, input, hint);
+      container.append(field);
+    }
+    container.dataset.built = "true";
+  }
+
   // A WebGPU option the player can select but cannot run is worse than no option:
   // it looks like the browser is supported and the failure only shows up as a hang
   // at boot. So the menu probes the same way the runtime does and disables the
@@ -413,6 +453,29 @@ export function runMenu() {
         ? "Auto scales shadows, volumetric clouds, water detail, cascade resolution and internal render resolution to hold the frame rate. Pinning a tier turns that off."
         : TIER_SUMMARY[chosen.name] ?? "";
     }
+    buildGraphicsEffectFields(element("graphics-effect-fields"));
+    // Normalised on the way in as well as on the way out, so the panel can only
+    // ever show an amount the runtime is willing to apply.
+    const effects = normalizeGraphicsEffects(fresh.graphics);
+    // The optional WebGPU lane draws straight to the canvas: it has no bloom
+    // chain, no god rays and no shadow cascade, so there is nothing for these
+    // amounts to scale. Saying so is the whole point - a control that looks live
+    // and quietly does nothing is worse than one that explains itself. `auto`
+    // resolves to the verified WebGL path, so this only fires on an explicit pin.
+    const postless = fresh.renderer === "webgpu";
+    for (const effect of GRAPHICS_EFFECTS) {
+      const input = element(`input-effect-${effect.key}`);
+      input.value = String(effects[effect.key]);
+      input.disabled = postless;
+      element(`effect-${effect.key}-value`).textContent = String(effects[effect.key]);
+    }
+    const effectHint = element("graphics-effect-hint");
+    // The default wording lives in the markup; only the WebGPU case is written
+    // from here, and switching back to WebGL has to put the original back rather
+    // than leave the excuse on screen.
+    effectHint.textContent = postless
+      ? "The WebGPU renderer draws straight to the canvas, with no bloom, sunbeams or sun shadows to scale, so these are unavailable on it. Choose WebGL under Graphics API to use them."
+      : graphicsEffectHintDefault;
     for (const [key, option] of [["master", "volumeMaster"], ["music", "volumeMusic"], ["effects", "volumeEffects"]]) {
       const value = fresh[option];
       element(`input-volume-${key}`).value = String(Math.round(value * 100));
@@ -613,6 +676,23 @@ export function runMenu() {
     } else if (event.target.id === "input-graphics-quality") {
       saveOptions(window.localStorage, { ...loadOptions(window.localStorage), graphicsQuality: event.target.value });
       renderOptions();
+    } else if (event.target.id?.startsWith("input-effect-")) {
+      const key = event.target.id.replace("input-effect-", "");
+      // A control this build does not know is a stale document or a stale panel,
+      // and writing it through would put an effect the runtime cannot apply into
+      // the stored options.
+      const effect = graphicsEffectByKey(key);
+      if (effect === null) return;
+      const parsed = Number(event.target.value);
+      if (!Number.isFinite(parsed)) return;
+      const value = Math.min(effect.max, Math.max(effect.min, Math.round(parsed)));
+      event.target.value = String(value);
+      element(`effect-${key}-value`).textContent = String(value);
+      const stored = loadOptions(window.localStorage);
+      saveOptions(window.localStorage, {
+        ...stored,
+        graphics: { ...stored.graphics, [key]: value },
+      });
     } else if (event.target.id === "input-show-coords") {
       saveOptions(window.localStorage, { ...loadOptions(window.localStorage), showCoords: event.target.value === "on" });
     } else if (event.target.id.startsWith("input-volume-")) {

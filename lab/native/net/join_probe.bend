@@ -143,8 +143,8 @@ def until_gained(fuel: Nat, session: Room.Session, +more: U32) -> IO(Room.Sessio
 # The session with one cell set by the player, as a dig or a placing leaves it.
 def placed(session: Room.Session, x: Nat, y: Nat, z: Nat, block: U32) -> Room.Session:
   Room.Session{client, link} = session
-  Play.Client{avatar, Play.Ground{edits, region, world, home}, setup, bag, clock, dig} = client
-  Room.Session{Play.Client{avatar, Play.Ground{WorldState.set(edits, x, y, z, block), region, world, home},
+  Play.Client{avatar, Play.Ground{edits, region, world, home, world_ms}, setup, bag, clock, dig} = client
+  Room.Session{Play.Client{avatar, Play.Ground{WorldState.set(edits, x, y, z, block), region, world, home, world_ms},
     setup, bag, clock, dig}, link}
 
 def target(result: Result<&1, &1, U32 & String, String>) -> IO(String):

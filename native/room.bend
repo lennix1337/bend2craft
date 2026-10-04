@@ -127,9 +127,9 @@ def absorbed.at(nothing: Bool, +client: Play.Client, +batch: List<&2, WorldState
     case True{}:
       client
     case False{}:
-      Play.Client{avatar, Play.Ground{edits, +region, world, home}, setup, bag, clock, dig} = client
+      Play.Client{avatar, Play.Ground{edits, +region, world, home, world_ms}, setup, bag, clock, dig} = client
       +next : List<&2, WorldState.Edit> = WorldState.set_many(edits, batch)
-      Play.Client{avatar, Play.Ground{next, Play.region_or(Play.collision_region(next, Play.den_of(region)), region), world, home},
+      Play.Client{avatar, Play.Ground{next, Play.region_or(Play.collision_region(next, Play.den_of(region)), region), world, home, world_ms},
         setup, bag, clock, dig}
 
 def absorbed(+client: Play.Client, +batch: List<&2, WorldState.Edit>) -> Play.Client:
